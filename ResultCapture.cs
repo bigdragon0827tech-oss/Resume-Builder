@@ -126,6 +126,18 @@ public static class ProfileResultStore {
 
     public static string ResultPath(string jobId) => Path.Combine(ResultsDir, Safe(jobId) + ".json");
     public static string RawPath(string jobId) => Path.Combine(ResultsDir, Safe(jobId) + ".raw.txt");
+    public static string DocGenLogPath(string jobId) => Path.Combine(ResultsDir, Safe(jobId) + ".docgen.txt");
+
+    /// <summary>Records why documents could not be produced. Never touches the validated JSON.</summary>
+    public static void SaveDocGenLog(string? jobId, string text) {
+        try {
+            Directory.CreateDirectory(ResultsDir);
+            File.WriteAllText(DocGenLogPath(string.IsNullOrWhiteSpace(jobId) ? ResultCapture.BaselineJobId : jobId),
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + Environment.NewLine + text);
+        } catch {
+            // Logging must never affect the outcome.
+        }
+    }
 
     public static string? SaveRaw(string? jobId, string text) {
         try {

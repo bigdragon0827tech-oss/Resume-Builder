@@ -4,7 +4,7 @@ These rules are permanent. Follow them in every session unless the user explicit
 
 ## The project
 
-- **This directory is the authoritative development project.** Current baseline: **A6.6.8**
+- **This directory is the authoritative development project.** Current baseline: **A6.6.9**
   (.NET 8 / `net8.0-windows`, WPF + WinForms interop, WebView2).
 - The user is **not a developer**. Never hand them source snippets, patches, or instructions to edit
   files themselves. Make every change yourself, in this project.
@@ -154,4 +154,23 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 | `Clipboard.cs` | `ClipboardService` (the single clipboard implementation) and `ClipboardWatcher` (armed capture) |
 | `ResultCapture.cs` | `ResultCapture` (capture gate + routing), `ProfileResultStore` (per-job result files) |
 | `ChatAutomation.cs` | `ChatComposer` — write-only WebView2 composer fill |
+| `DocumentGeneration.cs` | `ResumeDocument`, `DocxWriter`, `PdfWriter`, `ResumeGenerator` — DOCX/PDF from a validated profile |
 | `Models.cs` | `JobBatch`, `JobInput`, `JobTask`, `AppSettings`, `PreparedRequest` |
+
+## Document generation (A6.6.9)
+
+- **Documents are generated only from an already-validated profile file**, after the JSON is saved and
+  the job is marked Completed. `ResumeGenerator` only ever *reads* `results\<jobId>.json`; it never
+  writes a profile and never touches `candidate-profile.json`.
+- **A document failure never changes the job's Completed state** and never destroys the saved JSON.
+  Failures are reported on their own status line, logged to `results\<jobId>.docgen.txt`, and the
+  Generate Documents button regenerates from the saved JSON.
+- **DOCX comes from `DocumentFormat.OpenXml`** — no Word, no COM, no Office automation, ever.
+  **PDF comes from WebView2 `PrintToPdfAsync`** over the HTML rendering; do not add another PDF engine.
+- **Both renderers are driven by the same `ResumeDocument`**, so DOCX and PDF always carry identical
+  content. A test asserts the DOCX round-trips every model line; keep it that way.
+- **Filenames are `<Company> - <Role>.docx` / `.pdf` in the configured Resume Root, and overwrite.**
+  Never append job ids, timestamps or "(2)".
+- Documents are written to a temp file and moved into place, so a crash cannot leave a truncated file.
+- The `Docx` / `Pdf` checkboxes are authoritative; both off means "disabled", which is reported as a
+  skip, not a failure.

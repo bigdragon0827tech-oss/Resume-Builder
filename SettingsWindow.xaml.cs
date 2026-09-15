@@ -94,16 +94,30 @@ public partial class SettingsWindow : Window {
         else ProfileStatus.Text="The clipboard holds no text, or it stayed locked after several retries. Paste into the result box with Ctrl+V.";
     }
 
-    void SaveProfile_Click(object s,RoutedEventArgs e) {
-        try {
-            var report=CandidateProfileStore.NormalizeAndSave(ResultInputBox.Text);
-            var detail=report.Describe();
-            ProfileStatus.Text="PASS — candidate-profile.json normalized, validated and saved."+Environment.NewLine+detail;
-            System.Windows.MessageBox.Show("Candidate profile saved successfully."+Environment.NewLine+Environment.NewLine+detail);
-        } catch(Exception ex) {
-            ProfileStatus.Text="FAIL — "+ex.Message;
-            System.Windows.MessageBox.Show("Profile could not be normalized:\n\n"+ex.Message);
+    /// <summary>
+    /// Manual fallback. A6.6.9: this routes exactly like automatic capture — a job's answer goes to
+    /// results\&lt;jobId&gt;.json and only the BASELINE flow writes candidate-profile.json. Using the
+    /// fallback for a job must never overwrite the baseline every future job is tailored from.
+    /// </summary>
+    async void SaveProfile_Click(object s,RoutedEventArgs e) {
+        var jobId=RequestPreparation.Load()?.JobId;
+        var result=ResultCapture.Accept(ResultInputBox.Text,jobId);
+
+        if(!result.Saved) {
+            ProfileStatus.Text="FAIL — "+result.Message;
+            System.Windows.MessageBox.Show("Profile could not be normalized:\n\n"+(result.Error ?? result.Message));
+            return;
         }
+
+        var detail=result.Report?.Describe() ?? "";
+        ProfileStatus.Text="PASS — "+System.IO.Path.GetFileName(result.TargetPath)+
+            " normalized, validated and saved."+Environment.NewLine+detail;
+        System.Windows.MessageBox.Show("Profile saved successfully to "+result.TargetPath+
+            Environment.NewLine+Environment.NewLine+detail);
+
+        // Same generation path as automatic capture, so the manual fallback produces documents too.
+        if(!ResultCapture.IsBaseline(jobId) && Owner is MainWindow main)
+            await main.GenerateForJobAsync(jobId!);
     }
 
 }

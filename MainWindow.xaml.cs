@@ -11,6 +11,7 @@ public partial class MainWindow : Window {
     readonly ClipboardWatcher _watcher = new();
     SettingsWindow? _settings;
     JobTask? _pendingJob;
+    CoreWebView2Environment? _webEnvironment;
 
     public MainWindow() {
         InitializeComponent();
@@ -38,6 +39,7 @@ public partial class MainWindow : Window {
                 browserExecutableFolder: null,
                 userDataFolder: profileDir);
 
+            _webEnvironment = environment;
             await ChatView.EnsureCoreWebView2Async(environment);
             ChatView.CoreWebView2.Settings.AreDevToolsEnabled = false;
             ChatView.Source = new Uri("https://chatgpt.com/");
@@ -45,7 +47,7 @@ public partial class MainWindow : Window {
         catch (Exception ex) {
             System.Windows.MessageBox.Show(
                 "ChatGPT browser could not be initialized.\n\n" + ex.Message,
-                "Resume Builder A6.6.8",
+                "Resume Builder A6.6.9",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
@@ -77,9 +79,7 @@ public partial class MainWindow : Window {
 
     void UpdateSummary()=>SummaryText.Text=$"{_tasks.Count} task(s) • {_tasks.Count(x=>x.Status=="Queued")} queued • {_tasks.Count(x=>x.Status=="Completed")} completed";
 
-    void TaskList_SelectionChanged(object sender,SelectionChangedEventArgs e) {
-        ProcessSelectedButton.IsEnabled = TaskList.SelectedItem is JobTask j && j.Status!="Processing";
-    }
+    void TaskList_SelectionChanged(object sender,SelectionChangedEventArgs e)=>RefreshButtons();
 
     void RetryFailed_Click(object sender,RoutedEventArgs e) {
         var n=0;
@@ -92,6 +92,7 @@ public partial class MainWindow : Window {
 
     void RefreshButtons() {
         RetryFailedButton.IsEnabled=_tasks.Any(t=>t.Status=="Failed");
+        GenerateDocumentsButton.IsEnabled = TaskList.SelectedItem is JobTask g && g.Status=="Completed";
         ProcessSelectedButton.IsEnabled = TaskList.SelectedItem is JobTask j && j.Status!="Processing";
     }
 
@@ -145,19 +146,20 @@ public partial class MainWindow : Window {
 
     // ---------- armed result capture ----------
 
-    void OnClipboardTextCaptured(string text) {
+    async void OnClipboardTextCaptured(string text) {
         if(!ResultCapture.ShouldCapture(text)) return;   // not a profile: ignored, never stored
 
-        var jobId=_pendingJob?.JobId ?? RequestPreparation.Load()?.JobId;
+        var job=_pendingJob;
+        var jobId=job?.JobId ?? RequestPreparation.Load()?.JobId;
         var result=ResultCapture.Accept(text,jobId);
 
         if(result.Saved) {
             _watcher.Disarm();
-            if(_pendingJob is not null) _pendingJob.Status="Completed";
+            if(job is not null) job.Status="Completed";
             CaptureStatus.Text=result.Message+(result.Report is not null && result.Report.Changed
                 ? Environment.NewLine+result.Report.Describe() : "");
         } else {
-            if(_pendingJob is not null) _pendingJob.Status="Failed";
+            if(job is not null) job.Status="Failed";
             CaptureStatus.Text=result.Message+Environment.NewLine+
                 "Still waiting — copy a corrected answer, or use Settings → Result.";
         }
@@ -166,5 +168,41 @@ public partial class MainWindow : Window {
         UpdateSummary();
         RefreshButtons();
         _pendingJob=result.Saved ? null : _pendingJob;
+
+        // A6.6.9 — documents are generated only after the JSON is saved, and only from that file.
+        if(result.Saved && job is not null) await GenerateDocumentsAsync(job,result.TargetPath);
+    }
+
+    // ---------- A6.6.9 document generation ----------
+
+    void GenerateDocuments_Click(object sender,RoutedEventArgs e) {
+        if(TaskList.SelectedItem is not JobTask job) return;
+        _ = GenerateDocumentsAsync(job,ResultCapture.TargetPathFor(job.JobId));
+    }
+
+    /// <summary>
+    /// Generates the enabled documents from an already-validated profile file. A document failure is
+    /// reported on its own line and never changes the job's Completed state or the saved JSON.
+    /// </summary>
+    public async Task GenerateDocumentsAsync(JobTask job,string profilePath) {
+        var settings=Storage.LoadSettings();
+        CaptureStatus.Text=$"Generating documents for {job.Company} — {job.Title}…";
+        try {
+            var generation=await ResumeGenerator.GenerateAsync(
+                job.Company,job.Title,profilePath,settings,
+                new System.Windows.Interop.WindowInteropHelper(this).Handle,_webEnvironment);
+
+            DocumentStatus.Text=generation.Describe();
+            if(generation.AnyFailure) ProfileResultStore.SaveDocGenLog(job.JobId,generation.Describe());
+        } catch(Exception ex) {
+            DocumentStatus.Text="Documents not generated — "+ResumeGenerator.Explain(ex)+" The tailored JSON is saved.";
+            ProfileResultStore.SaveDocGenLog(job.JobId,ex.ToString());
+        }
+    }
+
+    /// <summary>Lets the Settings window reuse the same generation path after a manual save.</summary>
+    public Task GenerateForJobAsync(string jobId) {
+        var job=_tasks.FirstOrDefault(t=>t.JobId.Equals(jobId,StringComparison.OrdinalIgnoreCase));
+        return job is null ? Task.CompletedTask : GenerateDocumentsAsync(job,ResultCapture.TargetPathFor(jobId));
     }
 }

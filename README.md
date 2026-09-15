@@ -1,84 +1,57 @@
-# Resume Builder A6.6.8
+# Resume Builder A6.6.9
 
-Based on A6.6.7. Everything A6.6.6 (normalization) and A6.6.7 (clipboard) did is unchanged.
+Based on A6.6.8. Everything A6.6.6 (normalization), A6.6.7 (clipboard) and A6.6.8 (AI round trip)
+does is unchanged.
 
-## Change in A6.6.8 — fewer manual steps in the AI round trip
+## Change in A6.6.9 — automatic DOCX/PDF generation
 
-| Before (A6.6.7) | Now (A6.6.8) |
-| --- | --- |
-| Click Prepare | Click **Prepare & Send to ChatGPT** — the prompt is typed into the ChatGPT box for you |
-| Switch app, Ctrl+V, Enter | **Press Enter** |
-| Select the answer, Ctrl+C | Click ChatGPT's own **Copy** button |
-| Open Settings → Result | — captured automatically |
-| Ctrl+V | — |
-| Click Validate + Save | — normalized, validated and saved automatically |
+When a tailored profile is captured and validated, the resume documents are now produced
+automatically. No extra click, no Word, no Office automation.
 
-Five manual actions become two, and both remaining ones are deliberate.
+```
+results\<jobId>.json  ->  ResumeDocument  ->  <Company> - <Role>.docx   (DocumentFormat.OpenXml)
+                                          ->  <Company> - <Role>.pdf    (WebView2 PrintToPdf)
+```
 
-### How it works
+- **Output folder:** the Resume Root Folder already configured in Settings.
+- **Filenames:** `<Company> - <Role>.docx` / `.pdf`, nothing appended. Regenerating overwrites.
+- **Checkboxes:** the existing DOCX / PDF checkboxes decide what is produced. Both off is reported as
+  "documents disabled", not a failure.
+- **DOCX** is built with Microsoft's Open XML SDK — a real `.docx` with proper paragraphs, so ATS
+  parsers read it. **PDF** is printed by the WebView2 that the app already uses, from the same content
+  model, so both documents always carry identical content.
+- `candidate-profile.json` is never touched. Generation only ever *reads* the validated per-job JSON.
 
-**Sending — `ChatAutomation.cs` (`ChatComposer`).** The prepared request is typed into the ChatGPT
-composer through the WebView2 you are already signed into. The text is embedded in the injection
-script with `JsonSerializer`, so quotes, backticks and newlines cannot break it. **Send is not
-clicked for you** — you review and press Enter. If the composer cannot be found (page still loading,
-signed out, ChatGPT changed its markup), you are told so and the full prompt is already on your
-clipboard.
+### If document generation fails
 
-**Capturing — `Clipboard.cs` (`ClipboardWatcher`) + `ResultCapture.cs`.** While a request is waiting
-for its answer, the app listens for clipboard changes (`WM_CLIPBOARDUPDATE`; no polling). Text that
-is recognisably a candidate profile goes straight through the unchanged pipeline — **normalize →
-strict validate → save**. Everything else is ignored and never stored. A recognisable but broken
-answer (a truncated response, for example) is reported rather than silently dropped.
+The job stays **✓ Completed** — the validated JSON is saved before generation starts and is never
+affected by a document problem. The failure is reported on its own line (DOCX failed / PDF failed /
+documents disabled / Resume Root not configured), written to `results\<jobId>.docgen.txt`, and
+**Generate Documents** regenerates from the saved JSON once the cause is fixed (for example, closing
+the file in Word). Documents are written to a temp file and moved into place, so an interrupted run
+never leaves a half-written resume in your Resume Root.
 
-**The answer is never read out of the ChatGPT page.** Page structure changes without notice; a
-drifted selector on the read path would feed a wrong or truncated answer into your resume. The
-clipboard route depends on no page structure at all, and works the same with Claude or any other tool.
+### Also in A6.6.9
 
-### Where results are saved
-
-- `candidate-profile.json` — the **baseline** profile, the input to every job. Only the
-  "Prepare Profile Creation" (BASELINE) flow writes it.
-- `results\<jobId>.json` — the tailored profile for that job.
-- `results\<jobId>.raw.txt` — the raw answer, kept only when a capture fails validation.
-
-This is the A6.6.8 fix for a real problem: previously a tailored answer overwrote
-`candidate-profile.json`, so the next job was tailored from the previous job's output.
-
-### Also in A6.6.8
-
-- The task queue now shows real progress: Queued → Processing → Completed / Failed, and **Retry
-  Failed** re-queues failed jobs.
-- Settings → General has two toggles (both on by default): type the request into ChatGPT
-  automatically, and capture the answer from the clipboard.
-
-### Privacy and safety
-
-Clipboard capture is armed **only** between sending a request and receiving its answer, reads only
-through `ClipboardService`, ignores the text the app itself copied, and never stores anything that is
-not a profile. No credentials, cookies or API keys are used or stored; nothing bypasses ChatGPT
-authentication; sending remains a human keystroke.
+The manual fallback now routes like automatic capture: **Settings → Result → Validate + Save** writes
+`results\<jobId>.json` when a job is pending and only writes `candidate-profile.json` for the BASELINE
+flow — using the fallback can no longer overwrite the baseline every future job is tailored from. It
+generates documents afterwards too.
 
 ## Unchanged
 
-- Normalize → strict validate → save, with every A6.6.6 variation still handled (profile wrapper,
-  json fences, prose, trailing commas, skills as an object, bullets/highlights → descriptionLines,
-  dates and start_date/end_date → startDate/endDate, institution → school, field_of_study → major,
-  info aliases, Markdown mailto cleanup, certification strings, removal of employment_type /
-  work_arrangement / work_mode).
+- Prepare & Send, armed clipboard capture, normalize -> strict validate -> save, and every A6.6.6
+  output variation still handled.
 - Strict validation is not weakened; nothing is invented; experience and education keep their count
   and order.
-- The Master Prompt is still read from the external file configured in Settings.
-- The job payload is still built with `System.Text.Json`.
-- The canonical profile schema is unchanged.
-- The manual path (Settings → Result → Paste → Validate + Save) works exactly as before and is the
-  fallback for every automation failure.
+- The Master Prompt is still read from the external file configured in Settings; the job payload is
+  still built with `System.Text.Json`; the canonical schema is unchanged.
+- The manual Settings → Result path remains the fallback for every automation failure.
 
 ## Test
 
 1. `dotnet clean`
 2. `dotnet build`  (expect 0 errors, 0 warnings)
 3. `dotnet run`
-4. Select the Google sample job and click **Prepare & Send to ChatGPT** — the prompt should appear in
-   the ChatGPT box.
-5. Press Enter, wait for the answer, click ChatGPT's Copy button — the job should flip to Completed
-   and the result should appear under `results\`.
+4. Prepare & send a job, press Enter, click ChatGPT's Copy button.
+5. The job goes Completed and the DOCX/PDF appear in your Resume Root as `<Company> - <Role>`.
