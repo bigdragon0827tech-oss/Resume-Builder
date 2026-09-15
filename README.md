@@ -1,57 +1,48 @@
-# Resume Builder A6.6.9
+# Resume Builder A6.6.10
 
-Based on A6.6.8. Everything A6.6.6 (normalization), A6.6.7 (clipboard) and A6.6.8 (AI round trip)
-does is unchanged.
+Based on A6.6.9. Normalization (A6.6.6), clipboard (A6.6.7), the AI round trip (A6.6.8) and document
+generation (A6.6.9) are unchanged.
 
-## Change in A6.6.9 — automatic DOCX/PDF generation
+## Change in A6.6.10 — sequential queue processing
 
-When a tailored profile is captured and validated, the resume documents are now produced
-automatically. No extra click, no Word, no Office automation.
+Run the whole queue instead of picking each job by hand:
 
 ```
-results\<jobId>.json  ->  ResumeDocument  ->  <Company> - <Role>.docx   (DocumentFormat.OpenXml)
-                                          ->  <Company> - <Role>.pdf    (WebView2 PrintToPdf)
+Start Queue
+  -> prepare job 1, fill the ChatGPT box   -> you press Enter -> you click Copy
+  -> validate + save results\<jobId>.json  -> generate DOCX/PDF
+  -> immediately prepare job 2 ...          until the queue is finished
 ```
 
-- **Output folder:** the Resume Root Folder already configured in Settings.
-- **Filenames:** `<Company> - <Role>.docx` / `.pdf`, nothing appended. Regenerating overwrites.
-- **Checkboxes:** the existing DOCX / PDF checkboxes decide what is produced. Both off is reported as
-  "documents disabled", not a failure.
-- **DOCX** is built with Microsoft's Open XML SDK — a real `.docx` with proper paragraphs, so ATS
-  parsers read it. **PDF** is printed by the WebView2 that the app already uses, from the same content
-  model, so both documents always carry identical content.
-- `candidate-profile.json` is never touched. Generation only ever *reads* the validated per-job JSON.
+**Controls:** ▶ Start Queue, ⏸ Pause / Resume, ⏹ Stop, ⏭ Skip Job. A new queue status line shows
+`Queue 2 of 5 — Google — Senior Software Engineer`, and the active job is selected in the list.
 
-### If document generation fails
+### Rules that keep the run honest
 
-The job stays **✓ Completed** — the validated JSON is saved before generation starts and is never
-affected by a document problem. The failure is reported on its own line (DOCX failed / PDF failed /
-documents disabled / Resume Root not configured), written to `results\<jobId>.docgen.txt`, and
-**Generate Documents** regenerates from the saved JSON once the cause is fixed (for example, closing
-the file in Word). Documents are written to a temp file and moved into place, so an interrupted run
-never leaves a half-written resume in your Resume Root.
+- **One active job at a time.** A captured answer is attributed to the queue's active job id, never to
+  "whatever was prepared last". A capture with no active job is discarded.
+- **Stale answers are refused.** Clicking Copy again on an earlier response is detected and rejected,
+  so an old answer can never be saved against a later job.
+- **A bad answer never blocks the queue.** The first rejected response keeps the job in progress and
+  asks for another Copy. The second marks it Failed, keeps the raw diagnostic, and moves on.
+- **Completed, Failed and Ignored jobs are skipped**, including a job that was finished elsewhere
+  while the run was in progress.
+- **Pause** lets the current job finish and stops advancing. **Stop** puts the in-flight job back to
+  Queued so it is never stranded. **Skip** marks the active job Failed and advances.
+- **Startup recovery:** a job left `Processing` by a crash or a close is returned to `Queued` when the
+  app starts, so nothing is stranded.
 
-### Also in A6.6.9
+### Unchanged
 
-The manual fallback now routes like automatic capture: **Settings → Result → Validate + Save** writes
-`results\<jobId>.json` when a job is pending and only writes `candidate-profile.json` for the BASELINE
-flow — using the fallback can no longer overwrite the baseline every future job is tailored from. It
-generates documents afterwards too.
-
-## Unchanged
-
-- Prepare & Send, armed clipboard capture, normalize -> strict validate -> save, and every A6.6.6
-  output variation still handled.
-- Strict validation is not weakened; nothing is invented; experience and education keep their count
-  and order.
-- The Master Prompt is still read from the external file configured in Settings; the job payload is
-  still built with `System.Text.Json`; the canonical schema is unchanged.
-- The manual Settings → Result path remains the fallback for every automation failure.
+Manual single-job processing (Prepare & Send), Retry Failed, individual Generate Documents, the
+manual Settings → Result fallback, normalize → strict validate → save, per-job result routing with
+`candidate-profile.json` as the untouched baseline, and the human Send + Copy steps. API mode is not
+part of this release.
 
 ## Test
 
 1. `dotnet clean`
 2. `dotnet build`  (expect 0 errors, 0 warnings)
 3. `dotnet run`
-4. Prepare & send a job, press Enter, click ChatGPT's Copy button.
-5. The job goes Completed and the DOCX/PDF appear in your Resume Root as `<Company> - <Role>`.
+4. With two or more queued jobs, click **Start Queue**; press Enter in ChatGPT, click Copy, and the
+   next job should prepare itself automatically.

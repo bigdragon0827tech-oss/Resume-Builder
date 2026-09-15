@@ -4,7 +4,7 @@ These rules are permanent. Follow them in every session unless the user explicit
 
 ## The project
 
-- **This directory is the authoritative development project.** Current baseline: **A6.6.9**
+- **This directory is the authoritative development project.** Current baseline: **A6.6.10**
   (.NET 8 / `net8.0-windows`, WPF + WinForms interop, WebView2).
 - The user is **not a developer**. Never hand them source snippets, patches, or instructions to edit
   files themselves. Make every change yourself, in this project.
@@ -155,6 +155,7 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 | `ResultCapture.cs` | `ResultCapture` (capture gate + routing), `ProfileResultStore` (per-job result files) |
 | `ChatAutomation.cs` | `ChatComposer` — write-only WebView2 composer fill |
 | `DocumentGeneration.cs` | `ResumeDocument`, `DocxWriter`, `PdfWriter`, `ResumeGenerator` — DOCX/PDF from a validated profile |
+| `QueueRunner.cs` | `QueueRunner`, `QueueState`, `FailureOutcome` — sequencing state machine, no I/O |
 | `Models.cs` | `JobBatch`, `JobInput`, `JobTask`, `AppSettings`, `PreparedRequest` |
 
 ## Document generation (A6.6.9)
@@ -174,3 +175,21 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 - Documents are written to a temp file and moved into place, so a crash cannot leave a truncated file.
 - The `Docx` / `Pdf` checkboxes are authoritative; both off means "disabled", which is reported as a
   skip, not a failure.
+
+## Sequential queue (A6.6.10)
+
+- **`QueueRunner` contains no I/O** — no files, clipboard, WebView2 or UI. All sequencing decisions live
+  there so they stay unit-testable; `MainWindow` performs the effects. Keep it that way.
+- **One active job at a time.** A captured answer is always attributed to `QueueRunner.ActiveJobId`,
+  never to "whatever was prepared last". A capture arriving with no active job is discarded.
+- **Duplicate responses are refused.** An answer already accepted (hash match) is never written against
+  a second job — that is how a stale Copy would corrupt another job's resume.
+- **Two-strike failure policy.** The first rejected response keeps the job Processing and asks for
+  another Copy; the second marks it Failed, keeps the raw diagnostic and advances, so a bad answer can
+  never block the rest of the queue. Strikes reset per job and apply to manual runs too.
+- **Stop re-queues the in-flight job** (Processing -> Queued); Pause lets the current job finish and
+  stops advancing. Skip marks the active job Failed and advances.
+- **Stale `Processing` jobs are recovered to `Queued` at startup** (`QueueRunner.RecoverStaleProcessing`),
+  so a crash or a close cannot strand a job forever.
+- Manual single-job processing, Retry Failed and A6.6.9 document generation must keep working unchanged;
+  the queue reuses the same `RunJobAsync` path rather than duplicating it.

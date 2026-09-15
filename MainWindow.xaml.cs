@@ -9,17 +9,24 @@ namespace ResumeBuilder;
 public partial class MainWindow : Window {
     readonly ObservableCollection<JobTask> _tasks = new(Storage.LoadTasks());
     readonly ClipboardWatcher _watcher = new();
+    readonly QueueRunner _queue = new();
     SettingsWindow? _settings;
-    JobTask? _pendingJob;
+    JobTask? _activeJob;
     CoreWebView2Environment? _webEnvironment;
 
     public MainWindow() {
         InitializeComponent();
+
+        // A job left Processing by a crash or a close would never be re-run; put it back in the queue.
+        var recovered = QueueRunner.RecoverStaleProcessing(_tasks);
+        if (recovered > 0) Storage.SaveTasks(_tasks);
+
         TaskList.ItemsSource = _tasks;
         Loaded += MainWindow_Loaded;
         Closed += (_, _) => _watcher.Dispose();
         _watcher.TextCaptured += OnClipboardTextCaptured;
         UpdateSummary();
+        if (recovered > 0) QueueStatus.Text = $"Recovered {recovered} job(s) left in progress by the previous session.";
     }
 
     async void MainWindow_Loaded(object sender, RoutedEventArgs e) {
@@ -47,7 +54,7 @@ public partial class MainWindow : Window {
         catch (Exception ex) {
             System.Windows.MessageBox.Show(
                 "ChatGPT browser could not be initialized.\n\n" + ex.Message,
-                "Resume Builder A6.6.9",
+                "Resume Builder A6.6.10",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
@@ -91,39 +98,48 @@ public partial class MainWindow : Window {
     }
 
     void RefreshButtons() {
-        RetryFailedButton.IsEnabled=_tasks.Any(t=>t.Status=="Failed");
-        GenerateDocumentsButton.IsEnabled = TaskList.SelectedItem is JobTask g && g.Status=="Completed";
-        ProcessSelectedButton.IsEnabled = TaskList.SelectedItem is JobTask j && j.Status!="Processing";
+        var running=_queue.IsRunning;
+        RetryFailedButton.IsEnabled=!running && _tasks.Any(t=>t.Status=="Failed");
+        GenerateDocumentsButton.IsEnabled=!running && TaskList.SelectedItem is JobTask g && g.Status=="Completed";
+        ProcessSelectedButton.IsEnabled=!running && TaskList.SelectedItem is JobTask j && j.Status!="Processing";
+        StartQueueButton.IsEnabled=!running && _tasks.Any(t=>t.Status=="Queued");
+        PauseQueueButton.IsEnabled=running;
+        PauseQueueButton.Content=_queue.State==QueueState.Paused ? "▶ Resume Queue" : "⏸ Pause Queue";
+        StopQueueButton.IsEnabled=running;
+        SkipJobButton.IsEnabled=running && _queue.ActiveJobId is not null;
     }
 
-    // ---------- prepare and send ----------
+    // ---------- shared single-job run (manual and queue take the same path) ----------
 
-    async void ProcessSelected_Click(object sender,RoutedEventArgs e) {
-        if(TaskList.SelectedItem is not JobTask job) return;
+    /// <summary>
+    /// Prepares one job, puts it on the clipboard, arms the capture and types it into ChatGPT.
+    /// Returns false only when preparation itself failed — the step that can genuinely fail.
+    /// </summary>
+    async Task<bool> RunJobAsync(JobTask job) {
         var settings=Storage.LoadSettings();
 
-        // Step 1 — preparation. This is the operation that can actually fail.
         PreparedRequest prepared;
         try {
             prepared=RequestPreparation.Prepare(job,settings);
         } catch(Exception ex) {
             ImportMessage.Text="Prepare failed: "+ex.Message;
-            return;
+            return false;
         }
 
-        // The prepared input is saved and visible before anything else is attempted.
         job.Status="Processing";
-        _pendingJob=job;
+        _activeJob=job;
         Storage.SaveTasks(_tasks);
         UpdateSummary();
         RefreshButtons();
         _settings?.RefreshInspector();
+        TaskList.SelectedItem=job;
+        TaskList.ScrollIntoView(job);
 
-        // Step 2 — clipboard. A clipboard problem never marks the preparation as failed.
+        // Clipboard: a clipboard problem never marks the preparation as failed.
         var clip=ClipboardService.SetText(prepared.Text);
         ImportMessage.Text=$"Prepared {job.Company} — {job.Title} successfully. "+clip.Message;
 
-        // Step 3 — arm the capture before the answer can possibly arrive.
+        // Arm the capture before the answer can possibly arrive.
         if(settings.AutoCaptureResult && _watcher.IsListening) {
             _watcher.Arm(prepared.Text);
             CaptureStatus.Text="Waiting for the AI answer — click Copy on the ChatGPT response and it will be captured automatically.";
@@ -134,14 +150,102 @@ public partial class MainWindow : Window {
                 : "Automatic capture is turned off; paste the answer in Settings → Result.";
         }
 
-        // Step 4 — type it into ChatGPT. Convenience only: failure leaves the clipboard fallback.
-        if(ChatView.CoreWebView2 is null) return;
-        if(!(ChatView.Source?.Host?.Contains("chatgpt.com",StringComparison.OrdinalIgnoreCase) ?? false))
-            ChatView.CoreWebView2.Navigate(ChatComposer.ChatUrl);
+        // Type it into ChatGPT. Convenience only: failure leaves the clipboard fallback.
+        if(ChatView.CoreWebView2 is not null) {
+            if(!(ChatView.Source?.Host?.Contains("chatgpt.com",StringComparison.OrdinalIgnoreCase) ?? false))
+                ChatView.CoreWebView2.Navigate(ChatComposer.ChatUrl);
+            if(settings.AutoFillComposer) {
+                var fill=await ChatComposer.FillAsync(ChatView.CoreWebView2,prepared.Text);
+                ImportMessage.Text=$"Prepared {job.Company} — {job.Title}. "+fill.Message;
+            }
+        }
+        return true;
+    }
 
-        if(!settings.AutoFillComposer) return;
-        var fill=await ChatComposer.FillAsync(ChatView.CoreWebView2,prepared.Text);
-        ImportMessage.Text=$"Prepared {job.Company} — {job.Title}. "+fill.Message;
+    void ProcessSelected_Click(object sender,RoutedEventArgs e) {
+        if(_queue.IsRunning) return;                       // the queue owns the active job while it runs
+        if(TaskList.SelectedItem is not JobTask job) return;
+        _queue.BeginJob(job.JobId);                        // strike counting applies to manual runs too
+        _ = RunJobAsync(job);
+    }
+
+    // ---------- A6.6.10 sequential queue ----------
+
+    async void StartQueue_Click(object sender,RoutedEventArgs e) {
+        var count=_queue.Start(_tasks);
+        if(count==0) { QueueStatus.Text="Nothing to run — no queued jobs."; RefreshButtons(); return; }
+        QueueStatus.Text=$"Queue started — {count} job(s).";
+        RefreshButtons();
+        await AdvanceQueueAsync();
+    }
+
+    void PauseQueue_Click(object sender,RoutedEventArgs e) {
+        if(_queue.State==QueueState.Paused) {
+            _queue.Resume();
+            QueueStatus.Text="Queue resumed.";
+            RefreshButtons();
+            if(_queue.ActiveJobId is null) _ = AdvanceQueueAsync();
+        } else {
+            _queue.Pause();
+            QueueStatus.Text="Queue paused — the current job finishes, then the run stops advancing.";
+            RefreshButtons();
+        }
+    }
+
+    void StopQueue_Click(object sender,RoutedEventArgs e) {
+        var inFlight=_queue.Stop();
+        _watcher.Disarm();
+        // The in-flight job never finished, so it goes back in the queue rather than being stranded.
+        if(inFlight is not null) {
+            var job=_tasks.FirstOrDefault(t=>t.JobId.Equals(inFlight,StringComparison.OrdinalIgnoreCase));
+            if(job is not null && job.Status=="Processing") job.Status="Queued";
+        }
+        _activeJob=null;
+        Storage.SaveTasks(_tasks);
+        UpdateSummary();
+        RefreshButtons();
+        QueueStatus.Text="Queue stopped."+(inFlight is null ? "" : " The job in progress was put back in the queue.");
+    }
+
+    async void SkipJob_Click(object sender,RoutedEventArgs e) {
+        var skipped=_queue.SkipActive();
+        if(skipped is null) return;
+        var job=_tasks.FirstOrDefault(t=>t.JobId.Equals(skipped,StringComparison.OrdinalIgnoreCase));
+        if(job is not null) job.Status="Failed";
+        _watcher.Disarm();
+        _activeJob=null;
+        Storage.SaveTasks(_tasks);
+        UpdateSummary();
+        QueueStatus.Text=$"Skipped {job?.Company} — {job?.Title}. It stays retryable with Retry Failed.";
+        await AdvanceQueueAsync();
+    }
+
+    /// <summary>Moves to the next queued job. A job that cannot be prepared is failed and skipped.</summary>
+    async Task AdvanceQueueAsync() {
+        if(_queue.State==QueueState.Paused) { QueueStatus.Text="Queue paused."; RefreshButtons(); return; }
+
+        while(true) {
+            var next=_queue.Next();
+            if(next is null) {
+                _activeJob=null;
+                _watcher.Disarm();
+                QueueStatus.Text = _queue.State==QueueState.Finished ? "Queue finished." : "Queue stopped.";
+                Storage.SaveTasks(_tasks);
+                UpdateSummary();
+                RefreshButtons();
+                return;
+            }
+
+            QueueStatus.Text=$"Queue {_queue.Position} of {_queue.Total} — {next.Company} — {next.Title}";
+            if(await RunJobAsync(next)) return;            // now waiting for this job's answer
+
+            // Preparation failed: fail this one and keep going rather than stalling the run.
+            next.Status="Failed";
+            _queue.AbandonActive();
+            Storage.SaveTasks(_tasks);
+            UpdateSummary();
+            RefreshButtons();
+        }
     }
 
     // ---------- armed result capture ----------
@@ -149,31 +253,55 @@ public partial class MainWindow : Window {
     async void OnClipboardTextCaptured(string text) {
         if(!ResultCapture.ShouldCapture(text)) return;   // not a profile: ignored, never stored
 
-        var job=_pendingJob;
-        var jobId=job?.JobId ?? RequestPreparation.Load()?.JobId;
-        var result=ResultCapture.Accept(text,jobId);
+        var job=_activeJob;
+        if(job is null) return;                          // no active job: nothing to attribute it to
+
+        // A stale Copy of an answer already captured must never be written against another job.
+        if(_queue.IsDuplicate(text)) {
+            CaptureStatus.Text="That is an answer already captured for an earlier job — copy the new response.";
+            return;
+        }
+
+        var result=ResultCapture.Accept(text,job.JobId);
 
         if(result.Saved) {
             _watcher.Disarm();
-            if(job is not null) job.Status="Completed";
+            _queue.OnCaptureSucceeded(text);
+            job.Status="Completed";
             CaptureStatus.Text=result.Message+(result.Report is not null && result.Report.Changed
                 ? Environment.NewLine+result.Report.Describe() : "");
-        } else {
-            if(job is not null) job.Status="Failed";
-            CaptureStatus.Text=result.Message+Environment.NewLine+
-                "Still waiting — copy a corrected answer, or use Settings → Result.";
+            Storage.SaveTasks(_tasks);
+            UpdateSummary();
+            RefreshButtons();
+            _activeJob=null;
+
+            // Documents are generated only after the JSON is saved, and only from that file.
+            await GenerateDocumentsAsync(job,result.TargetPath);
+
+            if(_queue.IsRunning) await AdvanceQueueAsync();
+            return;
         }
 
+        // Rejected response: the first one only asks for another Copy; the job stays Processing.
+        if(_queue.OnCaptureFailed()==FailureOutcome.RetryCopy) {
+            CaptureStatus.Text=result.Message+Environment.NewLine+
+                "The job is still in progress — ask the AI to return the corrected JSON and click Copy again.";
+            return;
+        }
+
+        job.Status="Failed";
+        _watcher.Disarm();
+        _activeJob=null;
         Storage.SaveTasks(_tasks);
         UpdateSummary();
         RefreshButtons();
-        _pendingJob=result.Saved ? null : _pendingJob;
+        CaptureStatus.Text=result.Message+Environment.NewLine+
+            "Second attempt rejected — the job is marked Failed and the raw response was kept. Retry Failed re-queues it.";
 
-        // A6.6.9 — documents are generated only after the JSON is saved, and only from that file.
-        if(result.Saved && job is not null) await GenerateDocumentsAsync(job,result.TargetPath);
+        if(_queue.IsRunning) await AdvanceQueueAsync();
     }
 
-    // ---------- A6.6.9 document generation ----------
+    // ---------- document generation ----------
 
     void GenerateDocuments_Click(object sender,RoutedEventArgs e) {
         if(TaskList.SelectedItem is not JobTask job) return;
@@ -186,7 +314,7 @@ public partial class MainWindow : Window {
     /// </summary>
     public async Task GenerateDocumentsAsync(JobTask job,string profilePath) {
         var settings=Storage.LoadSettings();
-        CaptureStatus.Text=$"Generating documents for {job.Company} — {job.Title}…";
+        DocumentStatus.Text=$"Generating documents for {job.Company} — {job.Title}…";
         try {
             var generation=await ResumeGenerator.GenerateAsync(
                 job.Company,job.Title,profilePath,settings,
