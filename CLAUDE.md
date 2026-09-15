@@ -104,6 +104,22 @@ restore it when finished.
 - **Job preparation must never depend on the clipboard.** Prepare and persist first, copy afterwards;
   a clipboard failure is never reported as a failed preparation.
 
+## Usage efficiency
+
+Claude usage is a limited development resource. Spend it on correctness, not on re-derivation.
+
+- Treat this CLAUDE.md, the Git history and the source itself as the persistent project context.
+  Read them instead of relying on a long conversation, and instead of re-reading what is already known.
+- Search narrowly (grep/glob for the symbol) before opening a large file; read only the relevant range.
+- Batch related inspections and related edits into single calls where practical.
+- Do not run redundant builds or test suites. One `dotnet clean && dotnet build` per change set, and run
+  only the regression suites the change can actually affect.
+- Keep progress updates short. Do not re-explain work that is already finished.
+- After a feature or fix is completed, tested and committed, recommend starting a fresh conversation
+  for the next independent task.
+- **Never trade away correctness, regression testing, or source safety to save tokens.** If a check is
+  needed to know whether something works, run it.
+
 ## Source control
 
 - Git is installed but **this project is not currently a repository**. Do not run `git init`, commit,
