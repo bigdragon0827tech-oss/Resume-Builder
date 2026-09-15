@@ -15,7 +15,7 @@ public sealed class JobInput {
     [JsonPropertyName("link")] public string Link { get; set; } = "";
     [JsonPropertyName("about")] public string About { get; set; } = "";
 }
-public sealed class JobTask {
+public sealed class JobTask : System.ComponentModel.INotifyPropertyChanged {
     public string JobId { get; set; } = "";
     public string Source { get; set; } = "";
     public string Company { get; set; } = "";
@@ -24,7 +24,21 @@ public sealed class JobTask {
     public string Jd { get; set; } = "";
     public string Link { get; set; } = "";
     public string About { get; set; } = "";
-    public string Status { get; set; } = "Queued";
+
+    string _status = "Queued";
+    /// <summary>Queued -> Processing -> Completed/Failed. A6.6.8 drives these; the queue shows them live.</summary>
+    public string Status {
+        get => _status;
+        set {
+            if (_status == value) return;
+            _status = value;
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(Status)));
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(StatusDisplay)));
+        }
+    }
+
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+
     public string StatusDisplay => Status switch {
         "Completed" => "✓ Completed", "Processing" => "● Processing",
         "Failed" => "✕ Failed", "Ignored" => "↷ Ignored — Existing Job",
@@ -40,6 +54,10 @@ public sealed class AppSettings {
     public string ResumeRootFolder { get; set; } = "";
     public bool Docx { get; set; } = true;
     public bool Pdf { get; set; } = true;
+    /// <summary>A6.6.8: type the prepared request into the ChatGPT box automatically.</summary>
+    public bool AutoFillComposer { get; set; } = true;
+    /// <summary>A6.6.8: capture the AI answer from the clipboard while a request is pending.</summary>
+    public bool AutoCaptureResult { get; set; } = true;
 }
 public sealed class PreparedRequest {
     public string JobId { get; set; } = "";

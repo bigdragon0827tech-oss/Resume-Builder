@@ -280,7 +280,14 @@ public static class CandidateProfileStore {
     /// Known AI output variations (skills as an object, bullets, dates, institution, start_date/end_date,
     /// Markdown contact links, extra non-schema fields) are converted instead of rejected.
     /// </summary>
-    public static NormalizationReport NormalizeAndSave(string resultText) {
+    public static NormalizationReport NormalizeAndSave(string resultText) => NormalizeAndSaveTo(resultText,CandidateProfilePath);
+
+    /// <summary>
+    /// Same pipeline, writing to a caller-chosen file. A6.6.8 uses this so a tailored per-job result
+    /// lands in results\&lt;jobId&gt;.json while candidate-profile.json stays the baseline that every
+    /// future job is tailored from.
+    /// </summary>
+    public static NormalizationReport NormalizeAndSaveTo(string resultText,string targetPath) {
         var json=ExtractJson(resultText);
         System.Text.Json.Nodes.JsonNode root;
         try { root=ProfileNormalizer.Parse(json); }
@@ -290,8 +297,8 @@ public static class CandidateProfileStore {
         var canonical=ProfileNormalizer.ToCanonicalJson(report.Profile);
         using(var doc=System.Text.Json.JsonDocument.Parse(canonical)) Validate(doc.RootElement);
 
-        Directory.CreateDirectory(Storage.DataDir);
-        File.WriteAllText(CandidateProfilePath,canonical);
+        Directory.CreateDirectory(Path.GetDirectoryName(targetPath) ?? Storage.DataDir);
+        File.WriteAllText(targetPath,canonical);
         return report;
     }
 

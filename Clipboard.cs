@@ -2,7 +2,9 @@ using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Windows.Interop;
 using System.Windows.Threading;
+using Window = System.Windows.Window;
 // UseWindowsForms also imports System.Windows.Forms, so the WPF types are aliased explicitly.
 using Application = System.Windows.Application;
 using Clipboard = System.Windows.Clipboard;
@@ -243,5 +245,104 @@ public static class ClipboardService {
             return "Another application is holding the Windows clipboard open (CLIPBRD_E_CANT_OPEN), so the copy did not complete.";
         if (ex is null) return "The copy did not complete.";
         return "The copy did not complete (" + ex.GetType().Name + ").";
+    }
+}
+
+/// <summary>
+/// Watches for clipboard changes while a request is waiting for an answer, so clicking the AI's own
+/// Copy button is enough to bring the response back into the application.
+///
+/// Scoping matters here. The watcher is ARMED only between sending a request and capturing its
+/// answer, it reads through ClipboardService (no second clipboard implementation), it ignores the
+/// text this application itself put on the clipboard, and text that is not recognisably a profile is
+/// discarded without being stored anywhere. It is event-driven via WM_CLIPBOARDUPDATE, so it never
+/// polls the clipboard and cannot contend with the user's own copying.
+/// </summary>
+public sealed class ClipboardWatcher : IDisposable {
+    const int WM_CLIPBOARDUPDATE = 0x031D;
+
+    [DllImport("user32.dll", SetLastError = true)] static extern bool AddClipboardFormatListener(IntPtr hwnd);
+    [DllImport("user32.dll", SetLastError = true)] static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
+
+    HwndSource? _source;
+    IntPtr _handle = IntPtr.Zero;
+    bool _listening;
+    string? _ignore;
+    string? _lastSeen;
+
+    /// <summary>Raised on the UI thread with clipboard text that arrived while armed.</summary>
+    public event Action<string>? TextCaptured;
+
+    public bool IsArmed { get; private set; }
+    public bool IsListening => _listening;
+
+    /// <summary>Hooks the window's message loop. Safe to call once the window handle exists.</summary>
+    public bool Attach(Window window) {
+        if (_listening) return true;
+        try {
+            _handle = new WindowInteropHelper(window).EnsureHandle();
+            _source = HwndSource.FromHwnd(_handle);
+            if (_source is null) return false;
+            _source.AddHook(WndProc);
+            _listening = AddClipboardFormatListener(_handle);
+            if (!_listening) _source.RemoveHook(WndProc);
+            return _listening;
+        } catch {
+            _listening = false;
+            return false;
+        }
+    }
+
+    /// <summary>Starts capturing. <paramref name="ignoreText"/> is what this app just copied itself.</summary>
+    public void Arm(string? ignoreText) {
+        _ignore = ignoreText;
+        _lastSeen = ignoreText;
+        IsArmed = true;
+    }
+
+    public void Disarm() {
+        IsArmed = false;
+        _ignore = null;
+        _lastSeen = null;
+    }
+
+    /// <summary>Decision logic, kept pure so it can be tested without a window or a message pump.</summary>
+    public static bool ShouldCapture(bool armed, string? text, string? ignoreText, string? lastSeen) {
+        if (!armed || string.IsNullOrWhiteSpace(text)) return false;
+        if (Same(text, ignoreText)) return false;
+        if (Same(text, lastSeen)) return false;
+        return true;
+    }
+
+    static bool Same(string? a, string? b) {
+        if (a is null || b is null) return false;
+        return string.Equals(a.Replace("\r\n", "\n").TrimEnd(), b.Replace("\r\n", "\n").TrimEnd(), StringComparison.Ordinal);
+    }
+
+    IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) {
+        if (msg != WM_CLIPBOARDUPDATE || !IsArmed) return IntPtr.Zero;
+        try {
+            var text = ClipboardService.TryGetText();
+            if (ShouldCapture(IsArmed, text, _ignore, _lastSeen)) {
+                _lastSeen = text;
+                TextCaptured?.Invoke(text!);
+            }
+        } catch {
+            // A clipboard read failure must never break the window's message loop.
+        }
+        return IntPtr.Zero;
+    }
+
+    public void Dispose() {
+        Disarm();
+        try {
+            if (_listening && _handle != IntPtr.Zero) RemoveClipboardFormatListener(_handle);
+            _source?.RemoveHook(WndProc);
+        } catch {
+            // Shutting down; nothing useful to do.
+        }
+        _listening = false;
+        _source = null;
+        _handle = IntPtr.Zero;
     }
 }

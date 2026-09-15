@@ -4,7 +4,7 @@ These rules are permanent. Follow them in every session unless the user explicit
 
 ## The project
 
-- **This directory is the authoritative development project.** Current baseline: **A6.6.7**
+- **This directory is the authoritative development project.** Current baseline: **A6.6.8**
   (.NET 8 / `net8.0-windows`, WPF + WinForms interop, WebView2).
 - The user is **not a developer**. Never hand them source snippets, patches, or instructions to edit
   files themselves. Make every change yourself, in this project.
@@ -103,6 +103,20 @@ restore it when finished.
   `OleFlushClipboard` behind `SetDataObject(data, copy: true)` throws `CLIPBRD_E_CANT_OPEN`.
 - **Job preparation must never depend on the clipboard.** Prepare and persist first, copy afterwards;
   a clipboard failure is never reported as a failed preparation.
+- **The AI answer is never read out of the ChatGPT page.** `ChatComposer` is write-only: it types the
+  prepared request into the composer and stops there. A third-party DOM changes without notice, and a
+  drifted selector on the read path would feed a truncated or wrong answer into the profile. The answer
+  comes back through the clipboard (`ClipboardWatcher` + `ResultCapture`), which depends on no page
+  structure. Do not add response scraping, and do not auto-click Send — sending stays a human keystroke.
+- **The clipboard watcher stays scoped.** Armed only between sending a request and capturing its answer,
+  reads only through `ClipboardService`, ignores what this app copied itself, and discards anything that
+  is not a recognisable profile without storing it anywhere.
+- **`candidate-profile.json` is the baseline and the input to every job.** Tailored per-job answers are
+  written to `results\<jobId>.json` (`ProfileResultStore`); only the BASELINE flow writes the baseline
+  file. Never let a job result overwrite the baseline — that would tailor job 2 from job 1's output.
+- **A failed capture saves nothing.** The raw answer goes to `results\<jobId>.raw.txt`, the job is marked
+  Failed, and the message says why. The manual Settings → Result path must keep working as the fallback
+  for every automation failure.
 
 ## Usage efficiency
 
@@ -122,19 +136,22 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 
 ## Source control
 
-- Git is installed but **this project is not currently a repository**. Do not run `git init`, commit,
-  tag, or push unless the user asks.
-- If it is placed under Git later: inspect `git status` / `git diff` before substantial changes, use
-  history and checkpoints instead of development ZIPs, and never reset, revert, discard or overwrite
-  the user's own changes without explicit authorization.
+- This project **is a Git repository** (branch `main`, baseline commit "Baseline: ResumeBuilder A6.6.7").
+  Inspect `git status` / `git diff` before substantial changes and use commits as checkpoints instead of
+  development ZIPs.
+- Commit only what the user asked for, and **never reset, revert, discard or overwrite their changes**
+  without explicit authorization. Do not tag or push unless asked.
+- The repo is configured with `core.autocrlf false` and a repo-local identity; leave both alone.
 
 ## File map
 
 | File | Contents |
 | --- | --- |
-| `MainWindow.xaml(.cs)` | Task queue, Prepare Selected Job, embedded ChatGPT WebView2 |
-| `SettingsWindow.xaml(.cs)` | General settings, Job Details inspector, Result capture, Development tab |
+| `MainWindow.xaml(.cs)` | Task queue, Prepare & Send, armed capture wiring, embedded ChatGPT WebView2 |
+| `SettingsWindow.xaml(.cs)` | General settings + automation toggles, Job Details inspector, manual Result capture, Development tab |
 | `Services.cs` | `Storage`, `JobImporter`, `RequestPreparation`, `BaselineProfileImporter`, `CandidateProfileStore` |
 | `Normalization.cs` | `ProfileNormalizer`, `NormalizationReport` — AI output -> canonical schema |
-| `Clipboard.cs` | `ClipboardService` — the single STA-aware, verifying, retrying clipboard implementation |
+| `Clipboard.cs` | `ClipboardService` (the single clipboard implementation) and `ClipboardWatcher` (armed capture) |
+| `ResultCapture.cs` | `ResultCapture` (capture gate + routing), `ProfileResultStore` (per-job result files) |
+| `ChatAutomation.cs` | `ChatComposer` — write-only WebView2 composer fill |
 | `Models.cs` | `JobBatch`, `JobInput`, `JobTask`, `AppSettings`, `PreparedRequest` |
