@@ -1,0 +1,75 @@
+# ---------------------------------------------------------------------------
+# ResumeBuilder (.NET 8 / WPF) — ignored files
+#
+# Only build output, IDE state and temporary artifacts are ignored.
+# Source files, project files, CLAUDE.md, README.md, test-data/ and any
+# configuration or prompt file the application needs are tracked.
+# ---------------------------------------------------------------------------
+
+# Build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]uild/
+[Ll]og/
+*.dll
+*.exe
+*.pdb
+*.cache
+*.binlog
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+.nuget/
+
+# Visual Studio / VS Code / Rider / JetBrains
+.vs/
+.vscode/
+.idea/
+_ReSharper*/
+*.DotSettings.user
+
+# User-specific project and IDE files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+*.rsuser
+*.csproj.user
+launchSettings.json
+
+# Test results and coverage
+[Tt]est[Rr]esult*/
+TestResults/
+*.coverage
+*.coveragexml
+*.trx
+
+# Publish output
+publish/
+[Pp]ublish[Pp]rofiles/*.user
+*.[Pp]ublish.xml
+*.azurePubxml
+*.pubxml
+*.pubxml.user
+
+# Release packages (ZIPs are release artifacts, never development files)
+*.zip
+
+# Temporary and OS files
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store

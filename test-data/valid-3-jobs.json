@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "1.0",
+  "source": "jobright",
+  "jobs": [
+    {
+      "jobId": "SAMPLE-001",
+      "company": "Google",
+      "title": "Senior Software Engineer",
+      "location": "Mountain View, CA",
+      "jd": "Sample JD for a senior software engineer role.",
+      "link": "https://example.com/1",
+      "about": "Sample data."
+    },
+    {
+      "jobId": "SAMPLE-002",
+      "company": "Stripe",
+      "title": "Backend Engineer",
+      "location": "Remote",
+      "jd": "Sample JD for a backend engineer role.",
+      "link": "https://example.com/2",
+      "about": "Sample data."
+    },
+    {
+      "jobId": "SAMPLE-003",
+      "company": "Amazon",
+      "title": "Software Engineer II",
+      "location": "Seattle, WA",
+      "jd": "Sample JD for a software engineer role.",
+      "link": "https://example.com/3",
+      "about": "Sample data."
+    }
+  ]
+}

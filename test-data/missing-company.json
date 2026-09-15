@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "1.0",
+  "source": "jobright",
+  "jobs": [
+    {
+      "jobId": "BAD-001",
+      "company": "",
+      "title": "Engineer",
+      "jd": "JD"
+    }
+  ]
+}
