@@ -10,6 +10,7 @@ public partial class MainWindow : Window {
     readonly ObservableCollection<JobTask> _tasks = new(Storage.LoadTasks());
     readonly ClipboardWatcher _watcher = new();
     readonly QueueRunner _queue = new();
+    readonly GlobalHotkey _hotkey = new();
     SettingsWindow? _settings;
     JobTask? _activeJob;
     CoreWebView2Environment? _webEnvironment;
@@ -28,7 +29,7 @@ public partial class MainWindow : Window {
 
         TaskList.ItemsSource = _tasks;
         Loaded += MainWindow_Loaded;
-        Closed += (_, _) => { DismissAnswerReady(); _watcher.Dispose(); _ = DisposeChatViewAsync(); };
+        Closed += (_, _) => { DismissAnswerReady(); _hotkey.Dispose(); _watcher.Dispose(); _ = DisposeChatViewAsync(); };
         _watcher.TextCaptured += OnClipboardTextCaptured;
         UpdateSummary();
         if (recovered > 0) QueueStatus.Text = $"Recovered {recovered} job(s) left in progress by the previous session.";
@@ -37,6 +38,7 @@ public partial class MainWindow : Window {
     async void MainWindow_Loaded(object sender, RoutedEventArgs e) {
         PerfLog.Snapshot("startup");
         _watcher.Attach(this);
+        RegisterFocusHotkey();
         await EnsureChatAsync();          // show ChatGPT so the user can sign in
         RefreshInput();
     }
@@ -332,7 +334,9 @@ public partial class MainWindow : Window {
     }
 
     void ShowAnswerReady(JobTask job,AppSettings settings) {
-        var instruction=$"Press {ChatCompletionWatcher.ShortcutText} to copy the answer's code block (or click that code block's Copy button).";
+        var instruction=_hotkey.IsRegistered
+            ? $"From any app: press {GlobalHotkey.DisplayText}, then {ChatCompletionWatcher.ShortcutText}."
+            : $"Press {ChatCompletionWatcher.ShortcutText} to copy the answer's code block (or click that code block's Copy button).";
         QueueStatus.Text=$"✓ Answer ready — {job.Company} — {job.Title}. {instruction}";
 
         if(settings.ReadySound) System.Media.SystemSounds.Asterisk.Play();
@@ -342,19 +346,40 @@ public partial class MainWindow : Window {
 
         if(!settings.ReadyToast) return;
         CloseReadyToast();
-        var toast=new ReadyToast("✓ Answer ready",$"{job.Company} — {job.Title}",
-            $"Click here, then press {ChatCompletionWatcher.ShortcutText} (or click Copy on the answer's code block).");
+        var toastInstruction=_hotkey.IsRegistered
+            ? $"Press {GlobalHotkey.DisplayText}, then {ChatCompletionWatcher.ShortcutText}.  (Or click here.)"
+            : $"Click here, then press {ChatCompletionWatcher.ShortcutText} (or click Copy on the answer's code block).";
+        var toast=new ReadyToast("✓ Answer ready",$"{job.Company} — {job.Title}",toastInstruction);
         toast.Clicked+=() => { BringToFrontForCopy(); toast.Close(); };
         toast.Closed+=(_,_) => { if(ReferenceEquals(_readyToast,toast)) _readyToast=null; };
         _readyToast=toast;
         toast.Show();
     }
 
-    /// <summary>The user clicked the notification: bring ResumeBuilder forward so the shortcut reaches ChatGPT.</summary>
+    /// <summary>The user clicked the notification or pressed Ctrl+Shift+': bring ResumeBuilder forward.</summary>
     void BringToFrontForCopy() {
-        if(WindowState==WindowState.Minimized) WindowState=WindowState.Normal;
-        Activate();
+        GlobalHotkey.BringToFront(this);
         FocusChatPane();
+    }
+
+    /// <summary>
+    /// Registers Ctrl+Shift+' system-wide. It only brings this window forward and focuses the ChatGPT
+    /// pane; the user's own Ctrl+Shift+; still does the copy.
+    /// </summary>
+    void RegisterFocusHotkey() {
+        if(!Storage.LoadSettings().FocusHotkey) return;
+        _hotkey.Pressed+=() => {
+            PerfLog.Line("HOTKEY focus");
+            BringToFrontForCopy();
+            CloseReadyToast();                               // the user has responded to it
+        };
+        if(_hotkey.Register(this)) {
+            PerfLog.Line("HOTKEY registered "+GlobalHotkey.DisplayText);
+        } else {
+            PerfLog.Line($"HOTKEY not registered (Win32 error {_hotkey.LastError})");
+            ImportMessage.Text=$"{GlobalHotkey.DisplayText} could not be registered — another app is probably using it. " +
+                "Click the notification instead.";
+        }
     }
 
     void FocusChatPane() {

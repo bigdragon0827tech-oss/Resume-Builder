@@ -12,7 +12,8 @@ Start Queue
        * a notification on the right side of the screen
        * a short sound
        * a flashing taskbar button if Resume Builder is in the background
-  -> click the notification, press Ctrl+Shift+;      <- your one action per job
+  -> press Ctrl+Shift+' (from any app), then Ctrl+Shift+;   <- your action per job
+     (or click the notification instead of Ctrl+Shift+')
   -> capture -> normalize -> validate -> save -> DOCX/PDF -> next job
 ```
 
@@ -54,3 +55,12 @@ DOCX/PDF generation, queue/retry/pause/stop/skip, the A6.6.12 WebView2 memory li
 2. `dotnet build`  (expect 0 errors, 0 warnings)
 3. `dotnet run`
 4. Start a queue, switch to another app while ChatGPT generates, and wait for the notification.
+
+## Ctrl+Shift+' — come back to Resume Builder from anywhere
+
+Wherever you are working, press **Ctrl+Shift+'** and Resume Builder comes to the front with the cursor
+already in the ChatGPT pane. Then press **Ctrl+Shift+;** to copy the answer. No mouse needed.
+
+It only brings the window forward — it never presses anything in ChatGPT for you. If another program
+already uses Ctrl+Shift+', Resume Builder says so at startup and you can click the notification
+instead. It can be switched off in Settings → General (takes effect after restart).

@@ -162,6 +162,7 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 | `QueueRunner.cs` | `QueueRunner`, `QueueState`, `FailureOutcome` — sequencing state machine, no I/O |
 | `Diagnostics.cs` | `PerfLog` (timing/memory log), `PollPolicy` (shared adaptive poll cadence) |
 | `ReadyToast.cs` | `ReadyToast` (right-side, non-activating "answer ready" notification), `WindowAttention` (taskbar flash) |
+| `GlobalHotkey.cs` | `GlobalHotkey` — system-wide Ctrl+Shift+' that only brings Resume Builder forward |
 | `Models.cs` | `JobBatch`, `JobInput`, `JobTask`, `AppSettings`, `PreparedRequest` |
 
 ## Document generation (A6.6.9)
@@ -310,3 +311,8 @@ Rules that keep it that way:
   "Copy last code block" can pick one up if an answer has none — and an empty schema template would
   pass validation. Captured text that is a verbatim (whitespace-collapsed) slice of the prepared request
   is refused before the pipeline, counts no strike, and the job keeps waiting.
+- **Ctrl+Shift+' (`GlobalHotkey`) only moves focus.** It brings Resume Builder to the front from any app
+  and focuses the ChatGPT pane, so the user's own Ctrl+Shift+; reaches ChatGPT. It must never send a
+  key to ChatGPT, re-send the user's keystroke, or trigger a copy. Registration failure (another app
+  owns the combination, Win32 error 1409) is reported in the status line, never thrown. Verified with a
+  real keypress: with another window in front, the hotkey fired once and brought the window forward.

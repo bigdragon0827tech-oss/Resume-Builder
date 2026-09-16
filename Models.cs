@@ -66,6 +66,8 @@ public sealed class AppSettings {
     public bool ReadySound { get; set; } = true;
     /// <summary>A6.6.13: flash the taskbar button when an answer is ready and the app is in the background.</summary>
     public bool ReadyFlash { get; set; } = true;
+    /// <summary>A6.6.13: Ctrl+Shift+' brings Resume Builder to the front from any app (takes effect at startup).</summary>
+    public bool FocusHotkey { get; set; } = true;
 }
 public sealed class PreparedRequest {
     public string JobId { get; set; } = "";
