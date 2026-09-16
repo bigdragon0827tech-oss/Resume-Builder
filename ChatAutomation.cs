@@ -22,16 +22,29 @@ public sealed class ComposerResult {
 public static class ChatComposer {
     public const string ChatUrl = "https://chatgpt.com/";
 
+    /// <summary>A6.6.12 budget for finding the composer before falling back to a manual paste.</summary>
+    public const int FillBudgetMs = 5000;
+
     /// <summary>
-    /// Builds the injection script. The prepared text is embedded with JsonSerializer so quotes,
-    /// backticks, backslashes and newlines cannot break the script — the same class of escaping bug
-    /// that broke earlier versions when large prompt text was pasted into source by hand.
+    /// Stores the prepared request in the page once, so the retry loop does not re-send ~40 KB on
+    /// every attempt. The text is embedded with JsonSerializer so quotes, backticks, backslashes and
+    /// newlines cannot break the script — the same class of escaping bug that broke earlier versions
+    /// when large prompt text was pasted into source by hand.
     /// </summary>
-    public static string BuildFillScript(string text) {
+    public static string BuildPayloadScript(string text) {
         var literal = JsonSerializer.Serialize(text);
-        return """
+        return "(function () { window.__rbPayload = __TEXT__; return 'stored'; })();"
+            .Replace("__TEXT__", literal);
+    }
+
+    /// <summary>
+    /// The retry script: a few hundred bytes that reads the already-stored payload. This is what the
+    /// poll loop sends repeatedly while the composer is still rendering.
+    /// </summary>
+    public const string FillScript = """
 (function () {
-  var text = __TEXT__;
+  if (typeof window.__rbPayload !== 'string') return 'no-payload';
+  var text = window.__rbPayload;
   var el = document.querySelector('#prompt-textarea')
         || document.querySelector('div[contenteditable="true"]')
         || document.querySelector('form textarea')
@@ -64,40 +77,54 @@ public static class ChatComposer {
     return 'error:' + (e && e.message ? e.message : e);
   }
 })();
-""".Replace("__TEXT__", literal);
-    }
+""";
 
     /// <summary>
     /// Fills the composer, retrying while the page is still loading. Never throws: a failure here is
     /// a convenience that did not happen, not a failed job preparation.
     /// </summary>
-    public static async Task<ComposerResult> FillAsync(CoreWebView2? web, string text, int attempts = 12, int delayMs = 700) {
+    public static async Task<ComposerResult> FillAsync(
+        CoreWebView2? web, string text,
+        int budgetMs = FillBudgetMs,
+        Func<int, CancellationToken, Task>? delay = null,
+        CancellationToken cancellation = default) {
+
         if (web is null)
             return Fail("The ChatGPT browser is not available, so the prompt was not typed in for you.");
         if (string.IsNullOrEmpty(text))
             return Fail("There was nothing to send to the composer.");
 
-        var script = BuildFillScript(text);
+        delay ??= (ms, ct) => Task.Delay(ms, ct);
         string? last = null;
 
-        for (var attempt = 1; attempt <= attempts; attempt++) {
+        // One large round trip; every retry below is a few hundred bytes.
+        await StoreAsync(web, text);
+
+        foreach (var wait in PollPolicy.Delays(budgetMs).Prepend(0)) {
+            if (cancellation.IsCancellationRequested) break;
+            if (wait > 0) await delay(wait, cancellation);
+
             try {
-                var raw = await web.ExecuteScriptAsync(script);
-                last = Unwrap(raw);
+                last = Unwrap(await web.ExecuteScriptAsync(FillScript));
                 if (last == "ok")
                     return new ComposerResult {
                         Success = true,
                         Message = "The prompt is in the ChatGPT box — review it and press Enter to send."
                     };
+                // A navigation between storing and filling clears page globals; put it back.
+                if (last == "no-payload") await StoreAsync(web, text);
             } catch (Exception ex) {
                 last = "error:" + ex.Message;
             }
-            if (attempt < attempts) await Task.Delay(delayMs);
         }
 
         return Fail(last == "no-composer"
             ? "The ChatGPT message box was not found (the page may still be loading or signed out)."
             : "The prompt could not be typed into ChatGPT automatically.");
+    }
+
+    static async Task StoreAsync(CoreWebView2 web, string text) {
+        try { await web.ExecuteScriptAsync(BuildPayloadScript(text)); } catch { /* the retry loop reports it */ }
     }
 
     /// <summary>ExecuteScriptAsync returns a JSON-encoded value; "ok" arrives as "\"ok\"".</summary>
@@ -149,10 +176,13 @@ public interface IChatProbe {
 /// caller reports the one keystroke needed instead.
 /// </summary>
 public static class ChatSender {
-    public const int ReadyAttempts = 35;      // ~14 s at 400 ms
-    public const int ReadyDelayMs = 400;
-    public const int ConfirmAttempts = 20;    // ~10 s at 500 ms
-    public const int ConfirmDelayMs = 500;
+    /// <summary>
+    /// A6.6.12: each phase gets roughly five seconds of adaptive polling (100 ms, growing to 600 ms)
+    /// instead of a fixed 400/500 ms cadence. The happy path reacts in ~100 ms and a broken page is
+    /// reported in about five seconds rather than ten to fourteen.
+    /// </summary>
+    public const int ReadyBudgetMs = 5000;
+    public const int ConfirmBudgetMs = 5000;
 
     public const string PressEnter = " Press Enter in the ChatGPT box to send it.";
 
@@ -165,26 +195,28 @@ public static class ChatSender {
         var lastState = "missing";
 
         try {
-            for (var attempt = 1; attempt <= ReadyAttempts; attempt++) {
+            var ready = false;
+            foreach (var wait in PollPolicy.Delays(ReadyBudgetMs).Prepend(0)) {
                 if (cancellation.IsCancellationRequested) return Cancelled();
+                if (wait > 0) await delay(wait, cancellation);
                 lastState = await probe.CanSendAsync();
-                if (lastState == "ready") break;
-                if (attempt == ReadyAttempts)
-                    return lastState == "missing"
-                        ? Fail(SendOutcome.ControlMissing, "The ChatGPT Send button was not found.")
-                        : Fail(SendOutcome.NotReady, "ChatGPT did not become ready to send.");
-                await delay(ReadyDelayMs, cancellation);
+                if (lastState == "ready") { ready = true; break; }
             }
+
+            if (!ready)
+                return lastState == "missing"
+                    ? Fail(SendOutcome.ControlMissing, "The ChatGPT Send button was not found.")
+                    : Fail(SendOutcome.NotReady, "ChatGPT did not become ready to send.");
 
             if (cancellation.IsCancellationRequested) return Cancelled();
             if (await probe.ClickSendAsync() != "clicked")
                 return Fail(SendOutcome.ControlMissing, "The ChatGPT Send button disappeared before it could be clicked.");
 
-            for (var attempt = 1; attempt <= ConfirmAttempts; attempt++) {
+            foreach (var wait in PollPolicy.Delays(ConfirmBudgetMs).Prepend(0)) {
                 if (cancellation.IsCancellationRequested) return Cancelled();
+                if (wait > 0) await delay(wait, cancellation);
                 if (await probe.SendConfirmedAsync() == "sent")
                     return new SendResult { Outcome = SendOutcome.Sent, Message = "Sent to ChatGPT — click Copy on the answer when it is finished." };
-                await delay(ConfirmDelayMs, cancellation);
             }
 
             return Fail(SendOutcome.Unconfirmed, "The Send click could not be confirmed.");

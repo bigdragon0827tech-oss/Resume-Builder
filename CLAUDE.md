@@ -4,7 +4,7 @@ These rules are permanent. Follow them in every session unless the user explicit
 
 ## The project
 
-- **This directory is the authoritative development project.** Current baseline: **A6.6.11**
+- **This directory is the authoritative development project.** Current baseline: **A6.6.12**
   (.NET 8 / `net8.0-windows`, WPF + WinForms interop, WebView2).
 - The user is **not a developer**. Never hand them source snippets, patches, or instructions to edit
   files themselves. Make every change yourself, in this project.
@@ -157,6 +157,7 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 | `ChatAutomation.cs` | `ChatComposer` — write-only WebView2 composer fill |
 | `DocumentGeneration.cs` | `ResumeDocument`, `DocxWriter`, `PdfWriter`, `ResumeGenerator` — DOCX/PDF from a validated profile |
 | `QueueRunner.cs` | `QueueRunner`, `QueueState`, `FailureOutcome` — sequencing state machine, no I/O |
+| `Diagnostics.cs` | `PerfLog` (timing/memory log), `PollPolicy` (shared adaptive poll cadence) |
 | `Models.cs` | `JobBatch`, `JobInput`, `JobTask`, `AppSettings`, `PreparedRequest` |
 
 ## Document generation (A6.6.9)
@@ -212,3 +213,29 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 - **`PausedForManualAction` distinguishes our pause from the user's.** Only ours auto-resumes when the
   capture finally lands (`TryAutoResume`); an explicit Pause stays paused until the user resumes.
 - Auto-Send applies to both queue runs and manual single-job runs, and is switchable in Settings.
+
+## Performance (A6.6.12)
+
+Measured baselines — treat these as regression guardrails:
+
+- Prepare 1–9 ms, clipboard write (35 KB) 2–22 ms, capture+normalize+validate+save ~1 ms,
+  DOCX 3–83 ms, PDF 650–800 ms. None of these is a latency problem; do not micro-optimise them.
+- **An empty ChatGPT tab costs ~700 MB across 6 WebView2 processes.** That is the memory budget that
+  matters; the managed heap stays at 4–12 MB and is never the problem.
+
+Rules that keep it that way:
+
+- **Every job starts a fresh ChatGPT conversation** (`NavigateFreshChatAsync`). Never go back to
+  appending jobs to one page: before A6.6.12 that accumulated a 35 KB prompt plus a long answer per
+  job in a single renderer and climbed toward 3–4 GB. The WebView2 user-data folder is untouched, so
+  the signed-in session survives navigation.
+- **The prepared payload is sent to the page once** (`BuildPayloadScript` stores `window.__rbPayload`)
+  and the poll loop re-sends only the ~1.5 KB `FillScript`. Never put the payload back in the retry
+  script — that was 41 KB per attempt.
+- **All ChatGPT polling uses `PollPolicy`** — 100 ms growing to 600 ms, under a 5 s budget per phase.
+  Failure detection is ~5 s for fill, send-ready and send-confirmation. Do not reintroduce fixed
+  multi-hundred-millisecond cadences or 10–14 s ceilings.
+- **`PerfLog` writes `diagnostics.log` in the app data folder**: stage timings and memory snapshots
+  before/after each job and at queue start/finish. Keep it cheap (one working-set read per snapshot),
+  keep it non-throwing, and keep it out of the behaviour path.
+- **`GC.Collect` is not a fix.** The managed heap is not where the memory goes.

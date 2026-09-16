@@ -1,55 +1,60 @@
-# Resume Builder A6.6.11
+# Resume Builder A6.6.12
 
-Based on A6.6.10. Normalization (A6.6.6), clipboard (A6.6.7), the AI round trip (A6.6.8), document
-generation (A6.6.9) and the sequential queue (A6.6.10) are unchanged.
+Based on A6.6.11. The AI pipeline, Auto-Send, Auto-Copy behaviour (still manual), queue, routing and
+document generation are all unchanged — this release is performance only.
 
-## Change in A6.6.11 — Auto-Send
+## Change in A6.6.12 — performance
 
-```
-Start Queue
-  -> ResumeBuilder fills the ChatGPT box and clicks Send
-  -> ChatGPT generates
-  -> YOU click ChatGPT's Copy button          <- deliberately still manual
-  -> capture -> normalize -> validate -> save -> DOCX/PDF
-  -> next job fills and sends itself           until the queue is finished
-```
+### 1. A fresh ChatGPT conversation for every job
 
-The only step left in a normal run is clicking Copy.
+Previously the app navigated to ChatGPT only if it was not already there, so **every job appended
+another 35 KB prompt and a long answer to one conversation**. An empty ChatGPT tab already costs
+~700 MB of WebView2 memory; a growing conversation is what climbed toward 3–4 GB. Each job now starts
+a new chat. Your signed-in session is untouched — cookies live in the WebView2 profile folder, not in
+the page. Applies to queue runs and manual single-job runs alike.
 
-### Copy stays manual on purpose
+As a side benefit, no job can see the previous job's conversation any more.
 
-ChatGPT's consumer Terms prohibit automatically or programmatically extracting Output. So this
-release automates the *Send* control and nothing else: it never clicks Copy, never reads an assistant
-message, and has no generation-completion detection. The answer reaches the app only through your own
-Copy click and the existing clipboard pipeline.
+### 2. The big payload is sent to the page once
 
-Auto-Send works by control actuation only — is the Send button present, is it enabled, click it, and
-confirm by seeing our own prompt box empty again. A test asserts the injected scripts cannot read
-response content.
+The prepared request (~40 KB as a script) used to be re-sent on **every** composer retry. It is now
+stored in the page once, and the retry loop sends a **1.5 KB** script that reads it.
 
-### If Auto-Send cannot complete
+### 3. Faster, adaptive polling
 
-The job stays **Processing** (nothing was rejected), the capture stays armed, the queue pauses, and
-the status line names one action: *press Enter in the ChatGPT box*. When you do, the run continues by
-itself — the capture auto-resumes the queue. A pause you requested with the Pause button never
-auto-resumes.
+Fill, send-readiness and send-confirmation now poll at 100 ms, backing off to 600 ms, under a 5-second
+budget each — instead of fixed 700/400/500 ms cadences with 8–14 second ceilings.
 
-### Settings
+| Measured | A6.6.11 | A6.6.12 |
+| --- | --- | --- |
+| Composer not found (worst case) | 7,848 ms | **5,250 ms** |
+| Send button missing (worst case) | 14,079 ms | **5,294 ms** |
+| Send unconfirmed (worst case) | 10,281 ms | **5,235 ms** |
+| Script sent per retry | 41,820 chars | **1,483 chars** |
+| Composer fill, happy path | 723 ms | 679 ms |
 
-**Click ChatGPT's Send button automatically** — on by default, applies to both queue runs and manual
-single-job runs. Turn it off to return to A6.6.10 behavior exactly.
+The happy path is unchanged by design — it is dominated by inserting 35 KB into the editor, not by
+transfer or polling.
+
+### 4. Diagnostics
+
+`diagnostics.log` in `%LOCALAPPDATA%\ResumeBuilder` now records stage timings (preparation, clipboard,
+navigation, fill, auto-send, capture, documents) and memory snapshots (managed / process / WebView2
+processes) before and after each job and at queue start and finish. It is append-only, capped at 1 MB,
+and never affects a run.
+
+Reference measurements on this machine: prepare 1–9 ms, clipboard 2–22 ms, capture 1 ms, DOCX 3–83 ms,
+PDF 650–800 ms, managed heap 4–12 MB.
 
 ## Unchanged
 
-One active job at a time, attribution to the active job id, duplicate/stale-answer refusal, the
-two-strike answer policy, Pause/Stop/Skip, Retry Failed, startup recovery of stale Processing jobs,
-per-job result routing with `candidate-profile.json` as the untouched baseline, DOCX/PDF generation,
-and the manual Settings → Result fallback.
+Everything else: normalize → strict validate → save, per-job routing, DOCX/PDF generation, the queue
+with its attribution and duplicate guards, Auto-Send, manual Copy, and every manual fallback.
 
 ## Test
 
 1. `dotnet clean`
 2. `dotnet build`  (expect 0 errors, 0 warnings)
 3. `dotnet run`
-4. Click **Start Queue** — the prompt should be typed in and sent without touching the keyboard.
-5. When the answer finishes, click ChatGPT's **Copy**; the job completes and the next one sends itself.
+4. Run a 3-job queue and watch `diagnostics.log`: the memory lines should stay roughly flat instead of
+   climbing, and each job should open a new ChatGPT conversation.

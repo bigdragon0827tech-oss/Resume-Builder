@@ -31,6 +31,7 @@ public partial class MainWindow : Window {
     }
 
     async void MainWindow_Loaded(object sender, RoutedEventArgs e) {
+        PerfLog.Snapshot("startup");
         _watcher.Attach(this);
         await InitializeChatGptAsync();
         RefreshInput();
@@ -55,7 +56,7 @@ public partial class MainWindow : Window {
         catch (Exception ex) {
             System.Windows.MessageBox.Show(
                 "ChatGPT browser could not be initialized.\n\n" + ex.Message,
-                "Resume Builder A6.6.11",
+                "Resume Builder A6.6.12",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
@@ -119,9 +120,11 @@ public partial class MainWindow : Window {
     async Task<bool> RunJobAsync(JobTask job) {
         var settings=Storage.LoadSettings();
 
+        PerfLog.Snapshot("before job "+job.JobId);
         PreparedRequest prepared;
         try {
-            prepared=RequestPreparation.Prepare(job,settings);
+            using(PerfLog.Measure("job preparation"))
+                prepared=RequestPreparation.Prepare(job,settings);
         } catch(Exception ex) {
             ImportMessage.Text="Prepare failed: "+ex.Message;
             return false;
@@ -137,7 +140,8 @@ public partial class MainWindow : Window {
         TaskList.ScrollIntoView(job);
 
         // Clipboard: a clipboard problem never marks the preparation as failed.
-        var clip=ClipboardService.SetText(prepared.Text);
+        ClipboardResult clip;
+        using(PerfLog.Measure("clipboard write")) clip=ClipboardService.SetText(prepared.Text);
         ImportMessage.Text=$"Prepared {job.Company} — {job.Title} successfully. "+clip.Message;
 
         // Arm the capture before the answer can possibly arrive.
@@ -153,11 +157,18 @@ public partial class MainWindow : Window {
 
         // Type it into ChatGPT. Convenience only: failure leaves the clipboard fallback.
         if(ChatView.CoreWebView2 is null) return true;
-        if(!(ChatView.Source?.Host?.Contains("chatgpt.com",StringComparison.OrdinalIgnoreCase) ?? false))
-            ChatView.CoreWebView2.Navigate(ChatComposer.ChatUrl);
+
+        // A6.6.12 — every job starts a FRESH conversation. Previously the app only navigated when the
+        // host was not chatgpt.com, so every job appended another 35 KB prompt and a long answer to
+        // one page; an empty ChatGPT tab already costs ~700 MB, so that grew without bound. The
+        // WebView2 user-data folder is untouched, so the signed-in session carries over.
+        using(PerfLog.Measure("navigate fresh chat")) await NavigateFreshChatAsync();
+
         if(!settings.AutoFillComposer) return true;
 
-        var fill=await ChatComposer.FillAsync(ChatView.CoreWebView2,prepared.Text);
+        ComposerResult fill;
+        using(PerfLog.Measure("composer fill"))
+            fill=await ChatComposer.FillAsync(ChatView.CoreWebView2,prepared.Text);
         ImportMessage.Text=$"Prepared {job.Company} — {job.Title}. "+fill.Message;
         if(!fill.Success || !settings.AutoSend) {
             if(!settings.AutoSend) QueueStatus.Text="Auto-Send is off — press Enter in ChatGPT to send the prompt.";
@@ -165,14 +176,37 @@ public partial class MainWindow : Window {
             return true;
         }
 
-        // A6.6.11 — click Send. Copying the answer stays manual by design.
+        // A6.6.12 — click Send. Copying the answer stays manual by design.
         _sendCancellation?.Cancel();
         _sendCancellation=new CancellationTokenSource();
-        var send=await ChatSender.SendAsync(new WebViewChatProbe(ChatView.CoreWebView2),_sendCancellation.Token);
+        SendResult send;
+        using(PerfLog.Measure("auto-send"))
+            send=await ChatSender.SendAsync(new WebViewChatProbe(ChatView.CoreWebView2),_sendCancellation.Token);
 
         if(send.Success) QueueStatus.Text=$"{job.Company} — {job.Title}: {send.Message}";
         else if(send.Outcome!=SendOutcome.Cancelled) PauseForManualAction(send.Message);
         return true;
+    }
+
+    /// <summary>
+    /// Navigates to a brand-new ChatGPT conversation and waits for it to load. Cookies and the
+    /// signed-in session live in the WebView2 user-data folder, so nothing is lost by navigating.
+    /// </summary>
+    async Task NavigateFreshChatAsync() {
+        var web=ChatView.CoreWebView2;
+        if(web is null) return;
+
+        var loaded=new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnCompleted(object? _,CoreWebView2NavigationCompletedEventArgs e)=>loaded.TrySetResult(e.IsSuccess);
+        web.NavigationCompleted+=OnCompleted;
+        try {
+            web.Navigate(ChatComposer.ChatUrl);
+            await Task.WhenAny(loaded.Task,Task.Delay(TimeSpan.FromSeconds(20)));
+        } catch(Exception ex) {
+            PerfLog.Line("WARN navigate fresh chat failed: "+ex.Message);
+        } finally {
+            web.NavigationCompleted-=OnCompleted;
+        }
     }
 
     /// <summary>
@@ -192,11 +226,13 @@ public partial class MainWindow : Window {
         _ = RunJobAsync(job);
     }
 
-    // ---------- A6.6.11 sequential queue ----------
+    // ---------- A6.6.12 sequential queue ----------
 
     async void StartQueue_Click(object sender,RoutedEventArgs e) {
         var count=_queue.Start(_tasks);
         if(count==0) { QueueStatus.Text="Nothing to run — no queued jobs."; RefreshButtons(); return; }
+        PerfLog.Line("QUEUE start, "+count+" job(s)");
+        PerfLog.Snapshot("queue start");
         QueueStatus.Text=$"Queue started — {count} job(s).";
         RefreshButtons();
         await AdvanceQueueAsync();
@@ -254,6 +290,7 @@ public partial class MainWindow : Window {
                 _activeJob=null;
                 _watcher.Disarm();
                 QueueStatus.Text = _queue.State==QueueState.Finished ? "Queue finished." : "Queue stopped.";
+                PerfLog.Snapshot(_queue.State==QueueState.Finished ? "queue finished" : "queue stopped");
                 Storage.SaveTasks(_tasks);
                 UpdateSummary();
                 RefreshButtons();
@@ -286,7 +323,8 @@ public partial class MainWindow : Window {
             return;
         }
 
-        var result=ResultCapture.Accept(text,job.JobId);
+        CapturedResult result;
+        using(PerfLog.Measure("capture+normalize+validate+save")) result=ResultCapture.Accept(text,job.JobId);
 
         if(result.Saved) {
             _watcher.Disarm();
@@ -301,6 +339,7 @@ public partial class MainWindow : Window {
 
             // Documents are generated only after the JSON is saved, and only from that file.
             await GenerateDocumentsAsync(job,result.TargetPath);
+            PerfLog.Snapshot("after job "+job.JobId);
 
             // A manual rescue (the user pressed Enter themselves) resumes the run; an explicit Pause does not.
             if(_queue.TryAutoResume()) QueueStatus.Text="Manual action completed — resuming the queue.";
@@ -343,7 +382,9 @@ public partial class MainWindow : Window {
         var settings=Storage.LoadSettings();
         DocumentStatus.Text=$"Generating documents for {job.Company} — {job.Title}…";
         try {
-            var generation=await ResumeGenerator.GenerateAsync(
+            GenerationResult generation;
+            using(PerfLog.Measure("documents "+job.JobId))
+            generation=await ResumeGenerator.GenerateAsync(
                 job.Company,job.Title,profilePath,settings,
                 new System.Windows.Interop.WindowInteropHelper(this).Handle,_webEnvironment);
 
