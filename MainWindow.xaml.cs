@@ -13,6 +13,7 @@ public partial class MainWindow : Window {
     SettingsWindow? _settings;
     JobTask? _activeJob;
     CoreWebView2Environment? _webEnvironment;
+    System.Threading.CancellationTokenSource? _sendCancellation;
 
     public MainWindow() {
         InitializeComponent();
@@ -54,7 +55,7 @@ public partial class MainWindow : Window {
         catch (Exception ex) {
             System.Windows.MessageBox.Show(
                 "ChatGPT browser could not be initialized.\n\n" + ex.Message,
-                "Resume Builder A6.6.10",
+                "Resume Builder A6.6.11",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
@@ -151,15 +152,37 @@ public partial class MainWindow : Window {
         }
 
         // Type it into ChatGPT. Convenience only: failure leaves the clipboard fallback.
-        if(ChatView.CoreWebView2 is not null) {
-            if(!(ChatView.Source?.Host?.Contains("chatgpt.com",StringComparison.OrdinalIgnoreCase) ?? false))
-                ChatView.CoreWebView2.Navigate(ChatComposer.ChatUrl);
-            if(settings.AutoFillComposer) {
-                var fill=await ChatComposer.FillAsync(ChatView.CoreWebView2,prepared.Text);
-                ImportMessage.Text=$"Prepared {job.Company} — {job.Title}. "+fill.Message;
-            }
+        if(ChatView.CoreWebView2 is null) return true;
+        if(!(ChatView.Source?.Host?.Contains("chatgpt.com",StringComparison.OrdinalIgnoreCase) ?? false))
+            ChatView.CoreWebView2.Navigate(ChatComposer.ChatUrl);
+        if(!settings.AutoFillComposer) return true;
+
+        var fill=await ChatComposer.FillAsync(ChatView.CoreWebView2,prepared.Text);
+        ImportMessage.Text=$"Prepared {job.Company} — {job.Title}. "+fill.Message;
+        if(!fill.Success || !settings.AutoSend) {
+            if(!settings.AutoSend) QueueStatus.Text="Auto-Send is off — press Enter in ChatGPT to send the prompt.";
+            else PauseForManualAction("The prompt could not be typed in automatically.");
+            return true;
         }
+
+        // A6.6.11 — click Send. Copying the answer stays manual by design.
+        _sendCancellation?.Cancel();
+        _sendCancellation=new CancellationTokenSource();
+        var send=await ChatSender.SendAsync(new WebViewChatProbe(ChatView.CoreWebView2),_sendCancellation.Token);
+
+        if(send.Success) QueueStatus.Text=$"{job.Company} — {job.Title}: {send.Message}";
+        else if(send.Outcome!=SendOutcome.Cancelled) PauseForManualAction(send.Message);
         return true;
+    }
+
+    /// <summary>
+    /// An automation step could not complete. Nothing was rejected, so the job stays Processing and
+    /// the capture stays armed; the run simply waits for the one manual action named in the message.
+    /// </summary>
+    void PauseForManualAction(string instruction) {
+        _queue.PauseForManualAction();
+        QueueStatus.Text="Manual action needed — "+instruction;
+        RefreshButtons();
     }
 
     void ProcessSelected_Click(object sender,RoutedEventArgs e) {
@@ -169,7 +192,7 @@ public partial class MainWindow : Window {
         _ = RunJobAsync(job);
     }
 
-    // ---------- A6.6.10 sequential queue ----------
+    // ---------- A6.6.11 sequential queue ----------
 
     async void StartQueue_Click(object sender,RoutedEventArgs e) {
         var count=_queue.Start(_tasks);
@@ -194,6 +217,7 @@ public partial class MainWindow : Window {
 
     void StopQueue_Click(object sender,RoutedEventArgs e) {
         var inFlight=_queue.Stop();
+        _sendCancellation?.Cancel();
         _watcher.Disarm();
         // The in-flight job never finished, so it goes back in the queue rather than being stranded.
         if(inFlight is not null) {
@@ -277,6 +301,9 @@ public partial class MainWindow : Window {
 
             // Documents are generated only after the JSON is saved, and only from that file.
             await GenerateDocumentsAsync(job,result.TargetPath);
+
+            // A manual rescue (the user pressed Enter themselves) resumes the run; an explicit Pause does not.
+            if(_queue.TryAutoResume()) QueueStatus.Text="Manual action completed — resuming the queue.";
 
             if(_queue.IsRunning) await AdvanceQueueAsync();
             return;

@@ -4,7 +4,7 @@ These rules are permanent. Follow them in every session unless the user explicit
 
 ## The project
 
-- **This directory is the authoritative development project.** Current baseline: **A6.6.10**
+- **This directory is the authoritative development project.** Current baseline: **A6.6.11**
   (.NET 8 / `net8.0-windows`, WPF + WinForms interop, WebView2).
 - The user is **not a developer**. Never hand them source snippets, patches, or instructions to edit
   files themselves. Make every change yourself, in this project.
@@ -107,7 +107,8 @@ restore it when finished.
   prepared request into the composer and stops there. A third-party DOM changes without notice, and a
   drifted selector on the read path would feed a truncated or wrong answer into the profile. The answer
   comes back through the clipboard (`ClipboardWatcher` + `ResultCapture`), which depends on no page
-  structure. Do not add response scraping, and do not auto-click Send — sending stays a human keystroke.
+  structure. Do not add response scraping. (A6.6.11 automates the Send *control* only — see the
+  Auto-Send section below — and still never reads or copies a reply.)
 - **The clipboard watcher stays scoped.** Armed only between sending a request and capturing its answer,
   reads only through `ClipboardService`, ignores what this app copied itself, and discards anything that
   is not a recognisable profile without storing it anywhere.
@@ -193,3 +194,21 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
   so a crash or a close cannot strand a job forever.
 - Manual single-job processing, Retry Failed and A6.6.9 document generation must keep working unchanged;
   the queue reuses the same `RunJobAsync` path rather than duplicating it.
+
+## Auto-Send, and why Copy stays manual (A6.6.11)
+
+- **Never programmatically extract ChatGPT Output.** The consumer Terms prohibit automated extraction
+  of Output, so the app does not click Copy, does not read assistant turns, and has no completion
+  detection. The answer reaches the app only when the *user* clicks ChatGPT's own Copy button and
+  `ClipboardWatcher` picks it up. Do not add Auto-Copy, response scraping, or any DOM read of a reply.
+- **Auto-Send actuates a control; it never reads output.** `ChatSender` + `WebViewChatProbe` check the
+  Send button's state, click it, and confirm by seeing *our own* composer empty. Every probe returns a
+  status token from a fixed set; a test asserts the scripts contain no `innerText`, `innerHTML`,
+  `data-message-author-role`, `conversation-turn` or `markdown`, and that every `return` is a token.
+- **`ChatSender` has no WebView2 reference** — orchestration is testable with a fake `IChatProbe`.
+- **An automation failure is never a job failure.** Auto-Send problems leave the job Processing with the
+  capture still armed, pause the queue via `PauseForManualAction`, and name the one action: press Enter.
+  The two-strike Failed policy stays reserved for genuinely bad answers.
+- **`PausedForManualAction` distinguishes our pause from the user's.** Only ours auto-resumes when the
+  capture finally lands (`TryAutoResume`); an explicit Pause stays paused until the user resumes.
+- Auto-Send applies to both queue runs and manual single-job runs, and is switchable in Settings.

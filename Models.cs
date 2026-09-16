@@ -58,6 +58,8 @@ public sealed class AppSettings {
     public bool AutoFillComposer { get; set; } = true;
     /// <summary>A6.6.8: capture the AI answer from the clipboard while a request is pending.</summary>
     public bool AutoCaptureResult { get; set; } = true;
+    /// <summary>A6.6.11: click ChatGPT Send automatically. Copying the answer stays manual.</summary>
+    public bool AutoSend { get; set; } = true;
 }
 public sealed class PreparedRequest {
     public string JobId { get; set; } = "";

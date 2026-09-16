@@ -45,6 +45,7 @@ public sealed class QueueRunner {
         Position = 0;
         ActiveJobId = null;
         _strikes = 0;
+        PausedForManualAction = false;
         State = _snapshot.Count == 0 ? QueueState.Finished : QueueState.Running;
         return _snapshot.Count;
     }
@@ -75,8 +76,38 @@ public sealed class QueueRunner {
         _strikes = 0;
     }
 
-    public void Pause() { if (State == QueueState.Running) State = QueueState.Paused; }
-    public void Resume() { if (State == QueueState.Paused) State = QueueState.Running; }
+    /// <summary>True when the queue paused itself because a step needs the user, not because they asked.</summary>
+    public bool PausedForManualAction { get; private set; }
+
+    public void Pause() {
+        if (State != QueueState.Running) return;
+        State = QueueState.Paused;
+        PausedForManualAction = false;      // an explicit pause must never auto-resume
+    }
+
+    public void Resume() {
+        if (State != QueueState.Paused) return;
+        State = QueueState.Running;
+        PausedForManualAction = false;
+    }
+
+    /// <summary>
+    /// A6.6.11: Auto-Send could not complete, so the run waits for one manual keystroke instead of
+    /// advancing. The job stays active — nothing was rejected.
+    /// </summary>
+    public void PauseForManualAction() {
+        if (State != QueueState.Running) return;
+        State = QueueState.Paused;
+        PausedForManualAction = true;
+    }
+
+    /// <summary>Resumes only a pause the queue caused itself. A user pause stays paused.</summary>
+    public bool TryAutoResume() {
+        if (State != QueueState.Paused || !PausedForManualAction) return false;
+        State = QueueState.Running;
+        PausedForManualAction = false;
+        return true;
+    }
 
     /// <summary>Stops the run and returns the job that was in flight so the caller can re-queue it.</summary>
     public string? Stop() {
@@ -87,6 +118,7 @@ public sealed class QueueRunner {
         _index = -1;
         Position = 0;
         _strikes = 0;
+        PausedForManualAction = false;
         return inFlight;
     }
 

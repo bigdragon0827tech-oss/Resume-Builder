@@ -19,8 +19,9 @@
    <StackPanel Orientation="Horizontal"><CheckBox x:Name="DocxBox" Content="DOCX" Margin="0,0,20,0"/><CheckBox x:Name="PdfBox" Content="PDF"/></StackPanel>
    <TextBlock Text="AI Round-Trip Automation" FontWeight="Bold" Margin="0,16,0,4"/>
    <CheckBox x:Name="AutoFillBox" Content="Type the prepared request into the ChatGPT box automatically (you still press Enter)" Margin="0,2,0,0"/>
+   <CheckBox x:Name="AutoSendBox" Content="Click ChatGPT's Send button automatically after the prompt is typed in" Margin="0,6,0,0"/>
    <CheckBox x:Name="AutoCaptureBox" Content="Capture the AI answer from the clipboard while a request is waiting" Margin="0,6,0,0"/>
-   <TextBlock TextWrapping="Wrap" Foreground="#666" Margin="0,4,0,0" Text="Capture is armed only between sending a request and receiving its answer. Text that is not a candidate profile is ignored and never stored. Tailored results are saved to results\&lt;jobId&gt;.json; candidate-profile.json stays the baseline."/>
+   <TextBlock TextWrapping="Wrap" Foreground="#666" Margin="0,4,0,0" Text="Copying the answer stays manual on purpose: you click ChatGPT's own Copy button and the result is captured from the clipboard. Capture is armed only between sending a request and receiving its answer. Text that is not a candidate profile is ignored and never stored. Tailored results are saved to results\&lt;jobId&gt;.json; candidate-profile.json stays the baseline."/>
    <Button Content="Save" Width="100" Height="34" HorizontalAlignment="Right" Margin="0,18,0,0" Click="Save_Click"/>
   </StackPanel></ScrollViewer></TabItem>
   <TabItem Header="Job Details"><Grid Margin="12"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
