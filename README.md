@@ -12,7 +12,7 @@ Start Queue
        * a notification on the right side of the screen
        * a short sound
        * a flashing taskbar button if Resume Builder is in the background
-  -> click the notification, press Ctrl+Shift+C      <- your one action per job
+  -> click the notification, press Ctrl+Shift+;      <- your one action per job
   -> capture -> normalize -> validate -> save -> DOCX/PDF -> next job
 ```
 
@@ -29,10 +29,11 @@ The copy is done by ChatGPT's own feature, in response to your own keypress.
   mid-answer does not trigger a false notification.
 - **It never steals focus.** The notification appears without taking focus from whatever you are
   doing. Clicking it brings Resume Builder to the front and puts the cursor in the ChatGPT pane, so
-  Ctrl+Shift+C goes straight to ChatGPT. You can also just click ChatGPT's Copy button.
+  Ctrl+Shift+; goes straight to ChatGPT, which copies the answer's json code block. You can also click
+  the Copy button on that code block.
 - The notification disappears as soon as an answer is captured, or when you Stop, Skip, or the queue
   finishes. If no finished answer is seen within 20 minutes, the status line tells you to check.
-- Verified on this machine with real keystrokes: Ctrl+Shift+C reaches the ChatGPT page with the app's
+- Verified on this machine with real keystrokes: Ctrl+Shift+; reaches the ChatGPT page with the app's
   browser settings.
 
 ### Settings → General → When the answer is ready

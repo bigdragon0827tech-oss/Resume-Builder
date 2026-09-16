@@ -322,7 +322,8 @@ public interface ICompletionProbe {
 /// still rejects a truncated answer — but the debounce keeps that rare.
 /// </summary>
 public static class ChatCompletionWatcher {
-    public const string ShortcutText = "Ctrl+Shift+C";
+    /// <summary>ChatGPT's own "Copy last code block" shortcut; the answer is requested as one json code block.</summary>
+    public const string ShortcutText = "Ctrl+Shift+;";
 
     /// <summary>How often the state is polled while an answer is generating.</summary>
     public const int PollMs = 1000;

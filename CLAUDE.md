@@ -292,7 +292,8 @@ Rules that keep it that way:
   `data-message-author-role`, `conversation-turn`, `markdown`, `copy`, `click(`, `dispatchEvent`,
   `clipboard`, and that it only returns `generating` / `idle` / `unknown`.
 - **The copy stays a human action by ChatGPT's own feature.** The app tells the user to press
-  Ctrl+Shift+C; the keystroke goes from Windows to the page. Never send it with `SendInput`,
+  Ctrl+Shift+; (ChatGPT's "Copy last code block"; there is no "copy last response" shortcut); the
+  keystroke goes from Windows to the page. Never send it with `SendInput`,
   `SendKeys`, CDP `Input.dispatchKeyEvent` or a scripted event — that would be programmatic extraction
   under another name.
 - Idle must hold for 3 consecutive 1-second polls after generation was seen, so reasoning-model pauses
@@ -302,6 +303,10 @@ Rules that keep it that way:
   used when the app is in the background; the ChatGPT pane is focused only when the app is already
   active. Clicking the toast is the user action that brings the window forward and focuses the pane.
 - Verified on this machine with real keystrokes: with `AreDevToolsEnabled = false` (the app's setting),
-  Ctrl+Shift+C reaches the page whether browser accelerator keys are enabled or not, provided the
+  Ctrl+Shift+; reaches the page whether browser accelerator keys are enabled or not, provided the
   window is foreground. Do not change accelerator settings for this feature.
 - The watch is dismissed on capture, Stop, Skip, queue finish, browser recycle and window close.
+- **`PromptEchoGuard` refuses copies of our own prompt.** The master prompt contains code blocks, so
+  "Copy last code block" can pick one up if an answer has none — and an empty schema template would
+  pass validation. Captured text that is a verbatim (whitespace-collapsed) slice of the prepared request
+  is refused before the pipeline, counts no strike, and the job keeps waiting.

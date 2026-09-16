@@ -16,6 +16,7 @@ public partial class MainWindow : Window {
     Microsoft.Web.WebView2.Wpf.WebView2? _chatView;
     ChatHost? _chat;
     System.Threading.CancellationTokenSource? _sendCancellation;
+    string? _activePreparedText;
 
     public MainWindow() {
         InitializeComponent();
@@ -236,6 +237,7 @@ public partial class MainWindow : Window {
 
         job.Status="Processing";
         _activeJob=job;
+        _activePreparedText=prepared.Text;      // used to refuse copies of our own prompt
         Storage.SaveTasks(_tasks);
         UpdateSummary();
         RefreshButtons();
@@ -325,12 +327,12 @@ public partial class MainWindow : Window {
             ShowAnswerReady(job,settings);
         } else if(outcome==CompletionOutcome.TimedOut) {
             QueueStatus.Text=$"{job.Company} — {job.Title}: no finished answer was detected after " +
-                $"{ChatCompletionWatcher.MaxWaitMs/60000} minutes. Check ChatGPT, then press {ChatCompletionWatcher.ShortcutText} or click Copy.";
+                $"{ChatCompletionWatcher.MaxWaitMs/60000} minutes. Check ChatGPT, then press {ChatCompletionWatcher.ShortcutText} or click Copy on the answer's code block.";
         }
     }
 
     void ShowAnswerReady(JobTask job,AppSettings settings) {
-        var instruction=$"Press {ChatCompletionWatcher.ShortcutText} in ChatGPT (or click its Copy button).";
+        var instruction=$"Press {ChatCompletionWatcher.ShortcutText} to copy the answer's code block (or click that code block's Copy button).";
         QueueStatus.Text=$"✓ Answer ready — {job.Company} — {job.Title}. {instruction}";
 
         if(settings.ReadySound) System.Media.SystemSounds.Asterisk.Play();
@@ -341,7 +343,7 @@ public partial class MainWindow : Window {
         if(!settings.ReadyToast) return;
         CloseReadyToast();
         var toast=new ReadyToast("✓ Answer ready",$"{job.Company} — {job.Title}",
-            $"Click here, then press {ChatCompletionWatcher.ShortcutText} (or click Copy in ChatGPT).");
+            $"Click here, then press {ChatCompletionWatcher.ShortcutText} (or click Copy on the answer's code block).");
         toast.Clicked+=() => { BringToFrontForCopy(); toast.Close(); };
         toast.Closed+=(_,_) => { if(ReferenceEquals(_readyToast,toast)) _readyToast=null; };
         _readyToast=toast;
@@ -509,6 +511,15 @@ public partial class MainWindow : Window {
         // A stale Copy of an answer already captured must never be written against another job.
         if(_queue.IsDuplicate(text)) {
             CaptureStatus.Text="That is an answer already captured for an earlier job — copy the new response.";
+            return;
+        }
+
+        // "Copy last code block" can pick up a code block from our own prompt if an answer has none.
+        // That is not ChatGPT's answer: refuse it, count no strike, and keep waiting.
+        if(PromptEchoGuard.IsEchoOfPrompt(text,_activePreparedText)) {
+            CaptureStatus.Text="That copied text is part of your own prompt, not ChatGPT's answer. " +
+                $"Make sure the answer contains a json code block, then press {ChatCompletionWatcher.ShortcutText} again.";
+            PerfLog.Line("REFUSED prompt echo for "+job.JobId);
             return;
         }
 
