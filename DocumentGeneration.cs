@@ -4,7 +4,6 @@ using System.Text.Json;
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
-using Microsoft.Web.WebView2.Core;
 
 namespace ResumeBuilder;
 
@@ -211,9 +210,8 @@ public static class ResumeGenerator {
     /// Generates the enabled documents from an already-validated profile file. Never throws, never
     /// writes the profile, and overwrites the previous Company + Role output for the same job.
     /// </summary>
-    public static async Task<GenerationResult> GenerateAsync(
-        string company, string role, string profilePath, AppSettings settings,
-        IntPtr ownerHwnd, CoreWebView2Environment? environment) {
+    public static GenerationResult Generate(
+        string company, string role, string profilePath, AppSettings settings) {
 
         var result = new GenerationResult { DocxRequested = settings.Docx, PdfRequested = settings.Pdf };
         if (result.Disabled) return result;
@@ -251,7 +249,7 @@ public static class ResumeGenerator {
         if (settings.Pdf) {
             var target = Path.Combine(settings.ResumeRootFolder, baseName + ".pdf");
             try {
-                await PdfWriter.WriteAsync(document, target, ownerHwnd, environment);
+                WriteAtomically(target, temp => PdfWriter.Write(document, temp));
                 result.PdfPath = target;
             } catch (Exception ex) {
                 result.PdfError = Explain(ex);
@@ -385,104 +383,3 @@ public static class DocxWriter {
     }
 }
 
-/// <summary>PDF through the WebView2 that is already referenced — no Office, no extra dependency.</summary>
-public static class PdfWriter {
-    public static string BuildHtml(ResumeDocument resume) {
-        var sb = new StringBuilder();
-        sb.Append("<!doctype html><html><head><meta charset=\"utf-8\"><style>")
-          .Append("@page{margin:14mm}body{font-family:Calibri,'Segoe UI',Arial,sans-serif;font-size:10.5pt;color:#000;margin:0}")
-          .Append("h1{font-size:16pt;margin:0 0 2pt}h2{font-size:12pt;margin:0 0 2pt}")
-          .Append(".contact{font-size:9pt;margin:0 0 10pt}")
-          .Append("h3{font-size:11pt;margin:10pt 0 4pt;border-bottom:1px solid #000;padding-bottom:2pt}")
-          .Append(".role{font-weight:bold;margin:0}.meta{font-size:9pt;font-style:italic;margin:0 0 3pt}")
-          .Append("ul{margin:0 0 8pt 16pt;padding:0}li{margin:0 0 2pt}p{margin:0 0 6pt}")
-          .Append("</style></head><body>");
-
-        if (resume.Name.Length > 0) sb.Append("<h1>").Append(Esc(resume.Name)).Append("</h1>");
-        if (resume.Title.Length > 0) sb.Append("<h2>").Append(Esc(resume.Title)).Append("</h2>");
-        if (resume.Contact.Length > 0) sb.Append("<p class=\"contact\">").Append(Esc(resume.Contact)).Append("</p>");
-
-        if (resume.Summary.Length > 0)
-            sb.Append("<h3>PROFESSIONAL SUMMARY</h3><p>").Append(Esc(resume.Summary)).Append("</p>");
-
-        if (resume.Skills.Count > 0) {
-            sb.Append("<h3>SKILLS</h3>");
-            foreach (var s in resume.Skills) {
-                sb.Append("<p>");
-                if (s.Category.Length > 0) sb.Append("<b>").Append(Esc(s.Category)).Append(":</b> ");
-                sb.Append(Esc(s.Skills)).Append("</p>");
-            }
-        }
-
-        if (resume.Experience.Count > 0) {
-            sb.Append("<h3>PROFESSIONAL EXPERIENCE</h3>");
-            foreach (var e in resume.Experience) {
-                sb.Append("<p class=\"role\">").Append(Esc(ResumeDocument.Join(e.Title, e.Company))).Append("</p>");
-                var meta = ResumeDocument.Join(e.Dates, e.Location);
-                if (meta.Length > 0) sb.Append("<p class=\"meta\">").Append(Esc(meta)).Append("</p>");
-                if (e.Lines.Count > 0) {
-                    sb.Append("<ul>");
-                    foreach (var line in e.Lines) sb.Append("<li>").Append(Esc(line)).Append("</li>");
-                    sb.Append("</ul>");
-                }
-            }
-        }
-
-        if (resume.Certifications.Count > 0) {
-            sb.Append("<h3>CERTIFICATIONS</h3><ul>");
-            foreach (var c in resume.Certifications) sb.Append("<li>").Append(Esc(c)).Append("</li>");
-            sb.Append("</ul>");
-        }
-
-        if (resume.Education.Count > 0) {
-            sb.Append("<h3>EDUCATION</h3>");
-            foreach (var ed in resume.Education) {
-                var degree = ed.Major.Length > 0 && !ed.Degree.Contains(ed.Major, StringComparison.OrdinalIgnoreCase)
-                    ? ResumeDocument.Join(ed.Degree, ed.Major) : ed.Degree;
-                sb.Append("<p class=\"role\">").Append(Esc(ResumeDocument.Join(degree, ed.School))).Append("</p>");
-                if (ed.Dates.Length > 0) sb.Append("<p class=\"meta\">").Append(Esc(ed.Dates)).Append("</p>");
-            }
-        }
-
-        return sb.Append("</body></html>").ToString();
-    }
-
-    static string Esc(string text) => text
-        .Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
-
-    public static async Task WriteAsync(ResumeDocument resume, string target, IntPtr ownerHwnd, CoreWebView2Environment? environment) {
-        if (ownerHwnd == IntPtr.Zero) throw new InvalidOperationException("no window is available to render the PDF.");
-        environment ??= await CoreWebView2Environment.CreateAsync();
-
-        var html = Path.Combine(Path.GetTempPath(), "resumebuilder-" + Guid.NewGuid().ToString("N") + ".html");
-        await File.WriteAllTextAsync(html, BuildHtml(resume), Encoding.UTF8);
-
-        CoreWebView2Controller? controller = null;
-        try {
-            controller = await environment.CreateCoreWebView2ControllerAsync(ownerHwnd);
-            controller.IsVisible = false;
-            controller.Bounds = new System.Drawing.Rectangle(0, 0, 1024, 1400);
-
-            var web = controller.CoreWebView2;
-            var loaded = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            void OnCompleted(object? _, CoreWebView2NavigationCompletedEventArgs e) => loaded.TrySetResult(e.IsSuccess);
-            web.NavigationCompleted += OnCompleted;
-            web.Navigate(new Uri(html).AbsoluteUri);
-
-            var finished = await Task.WhenAny(loaded.Task, Task.Delay(TimeSpan.FromSeconds(30)));
-            web.NavigationCompleted -= OnCompleted;
-            if (finished != loaded.Task) throw new TimeoutException("the resume page did not finish rendering.");
-            if (!loaded.Task.Result) throw new InvalidOperationException("the resume page failed to render.");
-
-            var temp = target + ".tmp";
-            if (File.Exists(temp)) File.Delete(temp);
-            if (!await web.PrintToPdfAsync(temp, null))
-                throw new InvalidOperationException("the PDF printer returned a failure.");
-            File.Move(temp, target, overwrite: true);
-        } finally {
-            try { controller?.Close(); } catch { /* best effort */ }
-            try { if (File.Exists(html)) File.Delete(html); } catch { /* best effort */ }
-            try { if (File.Exists(target + ".tmp")) File.Delete(target + ".tmp"); } catch { /* best effort */ }
-        }
-    }
-}

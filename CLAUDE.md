@@ -155,7 +155,9 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 | `Clipboard.cs` | `ClipboardService` (the single clipboard implementation) and `ClipboardWatcher` (armed capture) |
 | `ResultCapture.cs` | `ResultCapture` (capture gate + routing), `ProfileResultStore` (per-job result files) |
 | `ChatAutomation.cs` | `ChatComposer` — write-only WebView2 composer fill |
-| `DocumentGeneration.cs` | `ResumeDocument`, `DocxWriter`, `PdfWriter`, `ResumeGenerator` — DOCX/PDF from a validated profile |
+| `DocumentGeneration.cs` | `ResumeDocument`, `DocxWriter`, `ResumeGenerator` — DOCX from a validated profile |
+| `PdfGeneration.cs` | `PdfWriter` (PDFsharp/MigraDoc), `ResumeFontResolver` — PDF without a browser |
+| `ChatHost.cs` | `ChatHost` — creates and destroys the ChatGPT WebView2 between jobs |
 | `QueueRunner.cs` | `QueueRunner`, `QueueState`, `FailureOutcome` — sequencing state machine, no I/O |
 | `Diagnostics.cs` | `PerfLog` (timing/memory log), `PollPolicy` (shared adaptive poll cadence) |
 | `Models.cs` | `JobBatch`, `JobInput`, `JobTask`, `AppSettings`, `PreparedRequest` |
@@ -239,3 +241,22 @@ Rules that keep it that way:
   before/after each job and at queue start/finish. Keep it cheap (one working-set read per snapshot),
   keep it non-throwing, and keep it out of the behaviour path.
 - **`GC.Collect` is not a fix.** The managed heap is not where the memory goes.
+
+## Memory lifetime (A6.6.12)
+
+- **The ChatGPT WebView2 is destroyed after every completed job** and rebuilt lazily at the start of
+  the next one (`ChatHost` + `MainWindow.CreateChatViewAsync`/`DisposeChatViewAsync`). It is also
+  released when the queue finishes or stops and when the window closes. Never recycle while a
+  response is pending — only after the capture is saved and the documents are written.
+- **The user-data folder is shared and never touched by recycling**, so the signed-in session
+  survives. Recreating the view must always pass the same `%LOCALAPPDATA%\ResumeBuilder\WebView2`.
+- **`ChatHost` holds no WPF or WebView2 references** — create and dispose are injected, so the
+  lifecycle is unit-tested with counters and no browser. Keep it that way.
+- Disposal drops the field first, unparents the control, then disposes it. A failed teardown must
+  still clear `IsAlive` so the next job can build a new browser.
+- **PDF generation uses PDFsharp/MigraDoc (MIT), never a browser.** `PdfWriter.BuildDocument` returns
+  the MigraDoc model and `PdfWriter.ExtractText` walks it, which is how DOCX/PDF content parity is
+  asserted. Do not reintroduce WebView2 `PrintToPdfAsync`, and do not add a second PDF engine.
+  Fonts come from `ResumeFontResolver` (installed Windows fonts, with fallbacks).
+- Diagnostics label set to keep comparable across releases: `queue start`, `before job`, `after job`,
+  `after ChatGPT WebView2 recycle`, `queue finished`/`queue stopped`, `after queue WebView2 disposal`.

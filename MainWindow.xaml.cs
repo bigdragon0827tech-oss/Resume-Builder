@@ -13,10 +13,13 @@ public partial class MainWindow : Window {
     SettingsWindow? _settings;
     JobTask? _activeJob;
     CoreWebView2Environment? _webEnvironment;
+    Microsoft.Web.WebView2.Wpf.WebView2? _chatView;
+    ChatHost? _chat;
     System.Threading.CancellationTokenSource? _sendCancellation;
 
     public MainWindow() {
         InitializeComponent();
+        _chat = new ChatHost(CreateChatViewAsync, DisposeChatViewAsync);
 
         // A job left Processing by a crash or a close would never be re-run; put it back in the queue.
         var recovered = QueueRunner.RecoverStaleProcessing(_tasks);
@@ -24,7 +27,7 @@ public partial class MainWindow : Window {
 
         TaskList.ItemsSource = _tasks;
         Loaded += MainWindow_Loaded;
-        Closed += (_, _) => _watcher.Dispose();
+        Closed += (_, _) => { _watcher.Dispose(); _ = DisposeChatViewAsync(); };
         _watcher.TextCaptured += OnClipboardTextCaptured;
         UpdateSummary();
         if (recovered > 0) QueueStatus.Text = $"Recovered {recovered} job(s) left in progress by the previous session.";
@@ -33,33 +36,70 @@ public partial class MainWindow : Window {
     async void MainWindow_Loaded(object sender, RoutedEventArgs e) {
         PerfLog.Snapshot("startup");
         _watcher.Attach(this);
-        await InitializeChatGptAsync();
+        await EnsureChatAsync();          // show ChatGPT so the user can sign in
         RefreshInput();
     }
 
-    async Task InitializeChatGptAsync() {
-        try {
-            var profileDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "ResumeBuilder", "WebView2");
-            Directory.CreateDirectory(profileDir);
+    // ---------- A6.6.12 ChatGPT WebView2 lifetime ----------
 
-            var environment = await CoreWebView2Environment.CreateAsync(
-                browserExecutableFolder: null,
-                userDataFolder: profileDir);
+    /// <summary>The live browser, or null while it is recycled away.</summary>
+    CoreWebView2? Chat => _chatView?.CoreWebView2;
 
-            _webEnvironment = environment;
-            await ChatView.EnsureCoreWebView2Async(environment);
-            ChatView.CoreWebView2.Settings.AreDevToolsEnabled = false;
-            ChatView.Source = new Uri("https://chatgpt.com/");
-        }
+    async Task EnsureChatAsync() {
+        if (_chat is null) return;
+        try { await _chat.EnsureAsync(); }
         catch (Exception ex) {
             System.Windows.MessageBox.Show(
                 "ChatGPT browser could not be initialized.\n\n" + ex.Message,
-                "Resume Builder A6.6.12",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
+                "Resume Builder A6.6.12", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    /// <summary>Builds a new WebView2 on the shared user-data folder, so the sign-in carries over.</summary>
+    async Task CreateChatViewAsync() {
+        var profileDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ResumeBuilder", "WebView2");
+        Directory.CreateDirectory(profileDir);
+
+        _webEnvironment ??= await CoreWebView2Environment.CreateAsync(
+            browserExecutableFolder: null, userDataFolder: profileDir);
+
+        var view = new Microsoft.Web.WebView2.Wpf.WebView2();
+        ChatHostPanel.Child = view;
+        await view.EnsureCoreWebView2Async(_webEnvironment);
+        view.CoreWebView2.Settings.AreDevToolsEnabled = false;
+        view.Source = new Uri(ChatComposer.ChatUrl);
+        _chatView = view;
+    }
+
+    /// <summary>
+    /// Destroys the browser completely: detach, unparent, dispose. Every reference is dropped so
+    /// nothing keeps the old renderer processes alive.
+    /// </summary>
+    Task DisposeChatViewAsync() {
+        var view = _chatView;
+        _chatView = null;                       // drop the reference first
+        _sendCancellation?.Cancel();            // nothing may still be polling the old browser
+        if (view is null) return Task.CompletedTask;
+
+        try { ChatHostPanel.Child = null; } catch { }
+        try { view.Dispose(); } catch { }       // closes the controller and its browser processes
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Called once a job's result is safely saved — never while a response is pending.</summary>
+    async Task RecycleChatAsync() {
+        if (_chat is null) return;
+        using (PerfLog.Measure("chat recycle")) await _chat.RecycleAsync();
+        PerfLog.Snapshot("after ChatGPT WebView2 recycle");
+    }
+
+    /// <summary>Called when the queue finishes or stops and nothing is pending.</summary>
+    async Task ReleaseChatAsync() {
+        if (_chat is null || !_chat.IsAlive) return;
+        using (PerfLog.Measure("chat dispose")) await _chat.ReleaseAsync();
+        PerfLog.Snapshot("after queue WebView2 disposal");
     }
 
     void Settings_Click(object sender,RoutedEventArgs e) {
@@ -156,7 +196,8 @@ public partial class MainWindow : Window {
         }
 
         // Type it into ChatGPT. Convenience only: failure leaves the clipboard fallback.
-        if(ChatView.CoreWebView2 is null) return true;
+        await EnsureChatAsync();                // lazily rebuilt after the previous job recycled it
+        if(Chat is null) return true;
 
         // A6.6.12 — every job starts a FRESH conversation. Previously the app only navigated when the
         // host was not chatgpt.com, so every job appended another 35 KB prompt and a long answer to
@@ -168,7 +209,7 @@ public partial class MainWindow : Window {
 
         ComposerResult fill;
         using(PerfLog.Measure("composer fill"))
-            fill=await ChatComposer.FillAsync(ChatView.CoreWebView2,prepared.Text);
+            fill=await ChatComposer.FillAsync(Chat,prepared.Text);
         ImportMessage.Text=$"Prepared {job.Company} — {job.Title}. "+fill.Message;
         if(!fill.Success || !settings.AutoSend) {
             if(!settings.AutoSend) QueueStatus.Text="Auto-Send is off — press Enter in ChatGPT to send the prompt.";
@@ -181,7 +222,7 @@ public partial class MainWindow : Window {
         _sendCancellation=new CancellationTokenSource();
         SendResult send;
         using(PerfLog.Measure("auto-send"))
-            send=await ChatSender.SendAsync(new WebViewChatProbe(ChatView.CoreWebView2),_sendCancellation.Token);
+            send=await ChatSender.SendAsync(new WebViewChatProbe(Chat),_sendCancellation.Token);
 
         if(send.Success) QueueStatus.Text=$"{job.Company} — {job.Title}: {send.Message}";
         else if(send.Outcome!=SendOutcome.Cancelled) PauseForManualAction(send.Message);
@@ -193,7 +234,7 @@ public partial class MainWindow : Window {
     /// signed-in session live in the WebView2 user-data folder, so nothing is lost by navigating.
     /// </summary>
     async Task NavigateFreshChatAsync() {
-        var web=ChatView.CoreWebView2;
+        var web=Chat;
         if(web is null) return;
 
         var loaded=new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -265,6 +306,7 @@ public partial class MainWindow : Window {
         UpdateSummary();
         RefreshButtons();
         QueueStatus.Text="Queue stopped."+(inFlight is null ? "" : " The job in progress was put back in the queue.");
+        _ = ReleaseChatAsync();
     }
 
     async void SkipJob_Click(object sender,RoutedEventArgs e) {
@@ -294,6 +336,8 @@ public partial class MainWindow : Window {
                 Storage.SaveTasks(_tasks);
                 UpdateSummary();
                 RefreshButtons();
+                // Nothing is pending: give the browser back entirely. It is rebuilt on the next job.
+                await ReleaseChatAsync();
                 return;
             }
 
@@ -341,6 +385,10 @@ public partial class MainWindow : Window {
             await GenerateDocumentsAsync(job,result.TargetPath);
             PerfLog.Snapshot("after job "+job.JobId);
 
+            // A6.6.12 — the answer is captured, validated, saved and rendered, so nothing needs the
+            // browser any more. Destroy it; the next job builds a fresh one.
+            await RecycleChatAsync();
+
             // A manual rescue (the user pressed Enter themselves) resumes the run; an explicit Pause does not.
             if(_queue.TryAutoResume()) QueueStatus.Text="Manual action completed — resuming the queue.";
 
@@ -383,10 +431,9 @@ public partial class MainWindow : Window {
         DocumentStatus.Text=$"Generating documents for {job.Company} — {job.Title}…";
         try {
             GenerationResult generation;
+            // PDFsharp/MigraDoc renders off the UI thread; no browser is involved any more.
             using(PerfLog.Measure("documents "+job.JobId))
-            generation=await ResumeGenerator.GenerateAsync(
-                job.Company,job.Title,profilePath,settings,
-                new System.Windows.Interop.WindowInteropHelper(this).Handle,_webEnvironment);
+            generation=await Task.Run(() => ResumeGenerator.Generate(job.Company,job.Title,profilePath,settings));
 
             DocumentStatus.Text=generation.Describe();
             if(generation.AnyFailure) ProfileResultStore.SaveDocGenLog(job.JobId,generation.Describe());

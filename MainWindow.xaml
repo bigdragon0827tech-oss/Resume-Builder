@@ -44,7 +44,8 @@
    <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch" Background="#DDD"/>
    <Grid Grid.Column="2"><Grid.RowDefinitions><RowDefinition Height="42"/><RowDefinition/></Grid.RowDefinitions>
     <Border Background="#F7F7F7" BorderBrush="#DDD" BorderThickness="0,0,0,1"><TextBlock Text="ChatGPT" FontWeight="Bold" FontSize="16" Margin="14,0" VerticalAlignment="Center"/></Border>
-    <wv2:WebView2 x:Name="ChatView" Grid.Row="1"/>
+    <!-- A6.6.12: the WebView2 is created and destroyed in code so it can be recycled between jobs. -->
+    <Border x:Name="ChatHostPanel" Grid.Row="1" Background="#FAFAFA"/>
    </Grid>
   </Grid>
  </Grid>
