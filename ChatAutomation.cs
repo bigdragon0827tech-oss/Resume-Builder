@@ -298,3 +298,109 @@ public sealed class WebViewChatProbe : IChatProbe {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// A6.6.13 — "answer ready" notification.
+//
+// This watches CONTROL STATE ONLY: is ChatGPT's stop-generating button present, and is the composer
+// idle. It never reads an assistant message, never clicks Copy, and never synthesizes a keystroke.
+// Its only job is to tell the user the answer looks finished, so that THEY can press ChatGPT's own
+// copy shortcut. The copy itself stays a human action performed by ChatGPT's own feature.
+// ---------------------------------------------------------------------------
+
+public enum CompletionOutcome { Ready, TimedOut, Cancelled }
+
+/// <summary>Generation-state probe. Implemented over WebView2 in the app and faked in tests.</summary>
+public interface ICompletionProbe {
+    Task<string> GenerationStateAsync();   // "generating" | "idle" | "unknown"
+}
+
+/// <summary>
+/// Decides when an answer looks finished, with no WebView2 reference so it can be tested directly.
+/// A reasoning model can pause mid-answer, so "idle" must hold for several consecutive polls before
+/// the answer is reported ready. A false early cue only costs a premature keypress — the validator
+/// still rejects a truncated answer — but the debounce keeps that rare.
+/// </summary>
+public static class ChatCompletionWatcher {
+    public const string ShortcutText = "Ctrl+Shift+C";
+
+    /// <summary>How often the state is polled while an answer is generating.</summary>
+    public const int PollMs = 1000;
+    /// <summary>Consecutive idle polls required before the answer is treated as finished.</summary>
+    public const int StablePolls = 3;
+    /// <summary>How long to wait to see generation start before assuming it already finished.</summary>
+    public const int StartBudgetMs = 30_000;
+    /// <summary>Upper bound on waiting for one answer; long resumes can take several minutes.</summary>
+    public const int MaxWaitMs = 20 * 60 * 1000;
+
+    public static async Task<CompletionOutcome> WaitForAnswerAsync(
+        ICompletionProbe probe,
+        CancellationToken cancellation = default,
+        Func<int, CancellationToken, Task>? delay = null) {
+
+        delay ??= (ms, ct) => Task.Delay(ms, ct);
+        var waited = 0;
+        var sawGenerating = false;
+        var idleStreak = 0;
+
+        try {
+            while (true) {
+                if (cancellation.IsCancellationRequested) return CompletionOutcome.Cancelled;
+
+                string state;
+                try { state = await probe.GenerationStateAsync(); }
+                catch { state = "unknown"; }
+
+                if (state == "generating") {
+                    sawGenerating = true;
+                    idleStreak = 0;
+                } else if (state == "idle") {
+                    idleStreak++;
+                    // Normal case: generation was seen, and it has now been idle long enough.
+                    if (sawGenerating && idleStreak >= StablePolls) return CompletionOutcome.Ready;
+                    // Generation was never observed within the start budget: it either finished
+                    // before the first poll or never began. Either way, tell the user to look.
+                    if (!sawGenerating && waited >= StartBudgetMs && idleStreak >= StablePolls) return CompletionOutcome.Ready;
+                } else {
+                    idleStreak = 0;   // an unreadable page proves nothing
+                }
+
+                if (waited >= MaxWaitMs) return CompletionOutcome.TimedOut;
+                await delay(PollMs, cancellation);
+                waited += PollMs;
+            }
+        } catch (OperationCanceledException) {
+            return CompletionOutcome.Cancelled;
+        }
+    }
+}
+
+/// <summary>WebView2 side of the completion probe: returns a status token, reads no output.</summary>
+public sealed class WebViewCompletionProbe : ICompletionProbe {
+    readonly CoreWebView2 _web;
+    public WebViewCompletionProbe(CoreWebView2 web) => _web = web;
+
+    /// <summary>Checks for the stop control and for our own composer. Nothing else is touched.</summary>
+    public const string GenerationStateScript = """
+(function () {
+  var stopping = document.querySelector('button[data-testid="stop-button"]')
+              || document.querySelector('button[aria-label*="Stop"]');
+  if (stopping) return 'generating';
+  var composer = document.querySelector('#prompt-textarea')
+              || document.querySelector('div[contenteditable="true"]')
+              || document.querySelector('textarea');
+  return composer ? 'idle' : 'unknown';
+})();
+""";
+
+    public async Task<string> GenerationStateAsync() {
+        try {
+            var raw = await _web.ExecuteScriptAsync(GenerationStateScript);
+            if (string.IsNullOrWhiteSpace(raw) || raw == "null") return "unknown";
+            using var doc = JsonDocument.Parse(raw);
+            return doc.RootElement.ValueKind == JsonValueKind.String ? doc.RootElement.GetString() ?? "unknown" : "unknown";
+        } catch {
+            return "unknown";
+        }
+    }
+}

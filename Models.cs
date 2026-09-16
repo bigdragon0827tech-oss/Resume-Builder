@@ -60,6 +60,12 @@ public sealed class AppSettings {
     public bool AutoCaptureResult { get; set; } = true;
     /// <summary>A6.6.11: click ChatGPT Send automatically. Copying the answer stays manual.</summary>
     public bool AutoSend { get; set; } = true;
+    /// <summary>A6.6.13: show the right-side "answer ready" notification.</summary>
+    public bool ReadyToast { get; set; } = true;
+    /// <summary>A6.6.13: play a short sound when an answer is ready.</summary>
+    public bool ReadySound { get; set; } = true;
+    /// <summary>A6.6.13: flash the taskbar button when an answer is ready and the app is in the background.</summary>
+    public bool ReadyFlash { get; set; } = true;
 }
 public sealed class PreparedRequest {
     public string JobId { get; set; } = "";

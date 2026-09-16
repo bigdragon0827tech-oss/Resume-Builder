@@ -21,6 +21,11 @@
    <CheckBox x:Name="AutoFillBox" Content="Type the prepared request into the ChatGPT box automatically (you still press Enter)" Margin="0,2,0,0"/>
    <CheckBox x:Name="AutoSendBox" Content="Click ChatGPT's Send button automatically after the prompt is typed in" Margin="0,6,0,0"/>
    <CheckBox x:Name="AutoCaptureBox" Content="Capture the AI answer from the clipboard while a request is waiting" Margin="0,6,0,0"/>
+   <TextBlock Text="When the answer is ready" FontWeight="SemiBold" Margin="0,10,0,2"/>
+   <CheckBox x:Name="ReadyToastBox" Content="Show a notification on the right side of the screen" Margin="0,2,0,0"/>
+   <CheckBox x:Name="ReadySoundBox" Content="Play a sound" Margin="0,6,0,0"/>
+   <CheckBox x:Name="ReadyFlashBox" Content="Flash the taskbar button when Resume Builder is in the background" Margin="0,6,0,0"/>
+   <TextBlock TextWrapping="Wrap" Foreground="#666" Margin="0,4,0,0" Text="Resume Builder only watches whether ChatGPT is still generating. You copy the answer yourself: click the notification, then press Ctrl+Shift+C (or click Copy in ChatGPT)."/>
    <TextBlock TextWrapping="Wrap" Foreground="#666" Margin="0,4,0,0" Text="Copying the answer stays manual on purpose: you click ChatGPT's own Copy button and the result is captured from the clipboard. Capture is armed only between sending a request and receiving its answer. Text that is not a candidate profile is ignored and never stored. Tailored results are saved to results\&lt;jobId&gt;.json; candidate-profile.json stays the baseline."/>
    <Button Content="Save" Width="100" Height="34" HorizontalAlignment="Right" Margin="0,18,0,0" Click="Save_Click"/>
   </StackPanel></ScrollViewer></TabItem>

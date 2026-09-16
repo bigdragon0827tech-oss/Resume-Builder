@@ -27,7 +27,7 @@ public partial class MainWindow : Window {
 
         TaskList.ItemsSource = _tasks;
         Loaded += MainWindow_Loaded;
-        Closed += (_, _) => { _watcher.Dispose(); _ = DisposeChatViewAsync(); };
+        Closed += (_, _) => { DismissAnswerReady(); _watcher.Dispose(); _ = DisposeChatViewAsync(); };
         _watcher.TextCaptured += OnClipboardTextCaptured;
         UpdateSummary();
         if (recovered > 0) QueueStatus.Text = $"Recovered {recovered} job(s) left in progress by the previous session.";
@@ -51,7 +51,7 @@ public partial class MainWindow : Window {
         catch (Exception ex) {
             System.Windows.MessageBox.Show(
                 "ChatGPT browser could not be initialized.\n\n" + ex.Message,
-                "Resume Builder A6.6.12", MessageBoxButton.OK, MessageBoxImage.Error);
+                "Resume Builder A6.6.13", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -90,6 +90,7 @@ public partial class MainWindow : Window {
         var view = _chatView;
         _chatView = null;                       // drop the reference first
         _sendCancellation?.Cancel();            // nothing may still be polling the old browser
+        _readyCancellation?.Cancel();
         if (view is null) return true;
 
         var pid = _chat?.BrowserProcessId ?? 0;
@@ -287,9 +288,87 @@ public partial class MainWindow : Window {
         using(PerfLog.Measure("auto-send"))
             send=await ChatSender.SendAsync(new WebViewChatProbe(Chat),_sendCancellation.Token);
 
-        if(send.Success) QueueStatus.Text=$"{job.Company} — {job.Title}: {send.Message}";
+        if(send.Success) {
+            QueueStatus.Text=$"{job.Company} — {job.Title}: {send.Message}";
+            _ = WatchForAnswerAsync(job,settings);     // A6.6.13: tell the user when it is ready
+        }
         else if(send.Outcome!=SendOutcome.Cancelled) PauseForManualAction(send.Message);
         return true;
+    }
+
+    // ---------- A6.6.13 "answer ready" notification ----------
+
+    System.Threading.CancellationTokenSource? _readyCancellation;
+    ReadyToast? _readyToast;
+
+    /// <summary>
+    /// Watches ChatGPT's control state until the answer looks finished, then notifies the user.
+    /// It never reads the answer and never copies it: the user presses ChatGPT's own shortcut.
+    /// </summary>
+    async Task WatchForAnswerAsync(JobTask job,AppSettings settings) {
+        _readyCancellation?.Cancel();
+        var cancellation=new System.Threading.CancellationTokenSource();
+        _readyCancellation=cancellation;
+
+        var web=Chat;
+        if(web is null) return;
+
+        CompletionOutcome outcome;
+        using(PerfLog.Measure("await answer "+job.JobId))
+            outcome=await ChatCompletionWatcher.WaitForAnswerAsync(new WebViewCompletionProbe(web),cancellation.Token);
+
+        // The job may have been captured, stopped, skipped or recycled while we were waiting.
+        if(cancellation.IsCancellationRequested || _activeJob!=job) return;
+
+        if(outcome==CompletionOutcome.Ready) {
+            PerfLog.Line("READY "+job.JobId);
+            ShowAnswerReady(job,settings);
+        } else if(outcome==CompletionOutcome.TimedOut) {
+            QueueStatus.Text=$"{job.Company} — {job.Title}: no finished answer was detected after " +
+                $"{ChatCompletionWatcher.MaxWaitMs/60000} minutes. Check ChatGPT, then press {ChatCompletionWatcher.ShortcutText} or click Copy.";
+        }
+    }
+
+    void ShowAnswerReady(JobTask job,AppSettings settings) {
+        var instruction=$"Press {ChatCompletionWatcher.ShortcutText} in ChatGPT (or click its Copy button).";
+        QueueStatus.Text=$"✓ Answer ready — {job.Company} — {job.Title}. {instruction}";
+
+        if(settings.ReadySound) System.Media.SystemSounds.Asterisk.Play();
+
+        if(IsActive) FocusChatPane();                          // no focus stealing: only when already in front
+        else if(settings.ReadyFlash) WindowAttention.FlashUntilForeground(this);
+
+        if(!settings.ReadyToast) return;
+        CloseReadyToast();
+        var toast=new ReadyToast("✓ Answer ready",$"{job.Company} — {job.Title}",
+            $"Click here, then press {ChatCompletionWatcher.ShortcutText} (or click Copy in ChatGPT).");
+        toast.Clicked+=() => { BringToFrontForCopy(); toast.Close(); };
+        toast.Closed+=(_,_) => { if(ReferenceEquals(_readyToast,toast)) _readyToast=null; };
+        _readyToast=toast;
+        toast.Show();
+    }
+
+    /// <summary>The user clicked the notification: bring ResumeBuilder forward so the shortcut reaches ChatGPT.</summary>
+    void BringToFrontForCopy() {
+        if(WindowState==WindowState.Minimized) WindowState=WindowState.Normal;
+        Activate();
+        FocusChatPane();
+    }
+
+    void FocusChatPane() {
+        try { _chatView?.Focus(); } catch { /* focus is a convenience */ }
+    }
+
+    void CloseReadyToast() {
+        var toast=_readyToast;
+        _readyToast=null;
+        try { toast?.Close(); } catch { }
+    }
+
+    /// <summary>Ends any pending "answer ready" watch and removes the notification.</summary>
+    void DismissAnswerReady() {
+        _readyCancellation?.Cancel();
+        CloseReadyToast();
     }
 
     /// <summary>
@@ -357,6 +436,7 @@ public partial class MainWindow : Window {
 
     void StopQueue_Click(object sender,RoutedEventArgs e) {
         var inFlight=_queue.Stop();
+        DismissAnswerReady();
         _sendCancellation?.Cancel();
         _watcher.Disarm();
         // The in-flight job never finished, so it goes back in the queue rather than being stranded.
@@ -375,6 +455,7 @@ public partial class MainWindow : Window {
     async void SkipJob_Click(object sender,RoutedEventArgs e) {
         var skipped=_queue.SkipActive();
         if(skipped is null) return;
+        DismissAnswerReady();
         var job=_tasks.FirstOrDefault(t=>t.JobId.Equals(skipped,StringComparison.OrdinalIgnoreCase));
         if(job is not null) job.Status="Failed";
         _watcher.Disarm();
@@ -393,6 +474,7 @@ public partial class MainWindow : Window {
             var next=_queue.Next();
             if(next is null) {
                 _activeJob=null;
+                DismissAnswerReady();
                 _watcher.Disarm();
                 QueueStatus.Text = _queue.State==QueueState.Finished ? "Queue finished." : "Queue stopped.";
                 PerfLog.Snapshot(_queue.State==QueueState.Finished ? "queue finished" : "queue stopped");
@@ -429,6 +511,9 @@ public partial class MainWindow : Window {
             CaptureStatus.Text="That is an answer already captured for an earlier job — copy the new response.";
             return;
         }
+
+        // The user has copied an answer for this job, so the "ready" prompt has done its job.
+        DismissAnswerReady();
 
         CapturedResult result;
         using(PerfLog.Measure("capture+normalize+validate+save")) result=ResultCapture.Accept(text,job.JobId);

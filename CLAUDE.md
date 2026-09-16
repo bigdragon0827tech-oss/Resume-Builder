@@ -4,7 +4,7 @@ These rules are permanent. Follow them in every session unless the user explicit
 
 ## The project
 
-- **This directory is the authoritative development project.** Current baseline: **A6.6.12**
+- **This directory is the authoritative development project.** Current baseline: **A6.6.13**
   (.NET 8 / `net8.0-windows`, WPF + WinForms interop, WebView2).
 - The user is **not a developer**. Never hand them source snippets, patches, or instructions to edit
   files themselves. Make every change yourself, in this project.
@@ -73,9 +73,7 @@ needs UI interaction, say so plainly and name the *single* manual test to perfor
 
 Test harnesses are console projects that `<Compile Include="...">` the real source files (never copies).
 One-off harnesses live outside the project and are deleted afterwards; re-runnable ones live in
-`tests` and are excluded from the application build by `<Compile Remove="tests**" />`.
-The old rule, kept for one-off harnesses:
-(never copies of them), built outside this directory so they never ship. Delete them afterwards.
+`tests\` and are excluded from the application build by `<Compile Remove="tests\**" />`.
 
 ### Real user data — handle carefully
 
@@ -163,6 +161,7 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 | `ChatHost.cs` | `ChatHost` — creates and destroys the ChatGPT WebView2 between jobs |
 | `QueueRunner.cs` | `QueueRunner`, `QueueState`, `FailureOutcome` — sequencing state machine, no I/O |
 | `Diagnostics.cs` | `PerfLog` (timing/memory log), `PollPolicy` (shared adaptive poll cadence) |
+| `ReadyToast.cs` | `ReadyToast` (right-side, non-activating "answer ready" notification), `WindowAttention` (taskbar flash) |
 | `Models.cs` | `JobBatch`, `JobInput`, `JobTask`, `AppSettings`, `PreparedRequest` |
 
 ## Document generation (A6.6.9)
@@ -204,9 +203,10 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 ## Auto-Send, and why Copy stays manual (A6.6.11)
 
 - **Never programmatically extract ChatGPT Output.** The consumer Terms prohibit automated extraction
-  of Output, so the app does not click Copy, does not read assistant turns, and has no completion
-  detection. The answer reaches the app only when the *user* clicks ChatGPT's own Copy button and
-  `ClipboardWatcher` picks it up. Do not add Auto-Copy, response scraping, or any DOM read of a reply.
+  of Output, so the app does not click Copy and does not read assistant turns. (A6.6.13 adds
+  completion detection from control state, for notification only - see below.) The answer reaches the
+  app only when the *user* copies it with ChatGPT's own Copy button or shortcut and `ClipboardWatcher`
+  picks it up. Do not add Auto-Copy, response scraping, or any DOM read of a reply.
 - **Auto-Send actuates a control; it never reads output.** `ChatSender` + `WebViewChatProbe` check the
   Send button's state, click it, and confirm by seeing *our own* composer empty. Every probe returns a
   status token from a fixed set; a test asserts the scripts contain no `innerText`, `innerHTML`,
@@ -282,3 +282,26 @@ Rules that keep it that way:
   judged by pid **and** process start time. Asserting "distinct pids" produces false failures.
 - `SampleJobs` generates the Development-tab batches. Nothing is written anywhere until the user
   clicks a Development action, ids are unique per run, and the data is explicitly synthetic.
+
+## "Answer ready" notification (A6.6.13)
+
+- **Completion detection is for notification only.** `ChatCompletionWatcher` + `WebViewCompletionProbe`
+  look at control state (is the stop-generating button present, is the composer idle) and return a
+  token. They never read an answer, never click Copy, and never dispatch or synthesize input. A test
+  asserts the probe script contains none of `innerText`, `innerHTML`, `textContent`,
+  `data-message-author-role`, `conversation-turn`, `markdown`, `copy`, `click(`, `dispatchEvent`,
+  `clipboard`, and that it only returns `generating` / `idle` / `unknown`.
+- **The copy stays a human action by ChatGPT's own feature.** The app tells the user to press
+  Ctrl+Shift+C; the keystroke goes from Windows to the page. Never send it with `SendInput`,
+  `SendKeys`, CDP `Input.dispatchKeyEvent` or a scripted event — that would be programmatic extraction
+  under another name.
+- Idle must hold for 3 consecutive 1-second polls after generation was seen, so reasoning-model pauses
+  do not fire early. If generation is never seen, notify only after the 30 s start budget. Give up
+  after 20 minutes with a status message. Always cancellable.
+- **No focus stealing.** The toast is shown non-activated with `WS_EX_NOACTIVATE`; the taskbar flash is
+  used when the app is in the background; the ChatGPT pane is focused only when the app is already
+  active. Clicking the toast is the user action that brings the window forward and focuses the pane.
+- Verified on this machine with real keystrokes: with `AreDevToolsEnabled = false` (the app's setting),
+  Ctrl+Shift+C reaches the page whether browser accelerator keys are enabled or not, provided the
+  window is foreground. Do not change accelerator settings for this feature.
+- The watch is dismissed on capture, Stop, Skip, queue finish, browser recycle and window close.
