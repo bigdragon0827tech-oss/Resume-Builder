@@ -64,3 +64,11 @@ already in the ChatGPT pane. Then press **Ctrl+Shift+;** to copy the answer. No 
 It only brings the window forward — it never presses anything in ChatGPT for you. If another program
 already uses Ctrl+Shift+', Resume Builder says so at startup and you can click the notification
 instead. It can be switched off in Settings → General (takes effect after restart).
+
+## If a Copy is never picked up
+
+Once ChatGPT has clearly finished an answer, Resume Builder waits 30 seconds for your Copy. If nothing
+usable arrives, that job is marked **Failed — no answer captured in time** (CaptureTimeout), ChatGPT is
+reset and the queue moves on to the next job, so a missed Copy can no longer stall the run. The job is
+not sent again automatically; use **Retry Failed** to run it later. An answer copied too late is never
+used for the next job.

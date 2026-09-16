@@ -308,7 +308,17 @@ public sealed class WebViewChatProbe : IChatProbe {
 // copy shortcut. The copy itself stays a human action performed by ChatGPT's own feature.
 // ---------------------------------------------------------------------------
 
-public enum CompletionOutcome { Ready, TimedOut, Cancelled }
+public enum CompletionOutcome {
+    /// <summary>Generation was seen and has finished. Only this starts the A6.6.13 capture watchdog.</summary>
+    Ready,
+    TimedOut,
+    Cancelled,
+    /// <summary>
+    /// Generation was never observed within the start budget: it finished before the first poll, never
+    /// began, or the page's controls changed. The user is still notified, but nothing is failed on it.
+    /// </summary>
+    ReadyUnconfirmed
+}
 
 /// <summary>Generation-state probe. Implemented over WebView2 in the app and faked in tests.</summary>
 public interface ICompletionProbe {
@@ -361,7 +371,7 @@ public static class ChatCompletionWatcher {
                     if (sawGenerating && idleStreak >= StablePolls) return CompletionOutcome.Ready;
                     // Generation was never observed within the start budget: it either finished
                     // before the first poll or never began. Either way, tell the user to look.
-                    if (!sawGenerating && waited >= StartBudgetMs && idleStreak >= StablePolls) return CompletionOutcome.Ready;
+                    if (!sawGenerating && waited >= StartBudgetMs && idleStreak >= StablePolls) return CompletionOutcome.ReadyUnconfirmed;
                 } else {
                     idleStreak = 0;   // an unreadable page proves nothing
                 }

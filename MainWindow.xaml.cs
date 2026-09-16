@@ -11,6 +11,9 @@ public partial class MainWindow : Window {
     readonly ClipboardWatcher _watcher = new();
     readonly QueueRunner _queue = new();
     readonly GlobalHotkey _hotkey = new();
+    readonly CaptureWatchdog _captureWatchdog = new();
+    /// <summary>The job whose answer ChatGPT confirmably finished and whose Copy is still awaited.</summary>
+    string? _readyJobId;
     SettingsWindow? _settings;
     JobTask? _activeJob;
     CoreWebView2Environment? _webEnvironment;
@@ -29,7 +32,7 @@ public partial class MainWindow : Window {
 
         TaskList.ItemsSource = _tasks;
         Loaded += MainWindow_Loaded;
-        Closed += (_, _) => { DismissAnswerReady(); _hotkey.Dispose(); _watcher.Dispose(); _ = DisposeChatViewAsync(); };
+        Closed += (_, _) => { DismissAnswerReady("app closed"); _hotkey.Dispose(); _watcher.Dispose(); _ = DisposeChatViewAsync(); };
         _watcher.TextCaptured += OnClipboardTextCaptured;
         UpdateSummary();
         if (recovered > 0) QueueStatus.Text = $"Recovered {recovered} job(s) left in progress by the previous session.";
@@ -237,6 +240,11 @@ public partial class MainWindow : Window {
             return false;
         }
 
+        // A6.6.13 — a watchdog belongs to exactly one job; a new active job retires any other.
+        CancelCaptureWatchdog(string.Equals(_captureWatchdog.JobId,job.JobId,StringComparison.OrdinalIgnoreCase)
+            ? "job restarted" : "active job changed");
+        _readyJobId=null;
+
         job.Status="Processing";
         _activeJob=job;
         _activePreparedText=prepared.Text;      // used to refuse copies of our own prompt
@@ -309,7 +317,7 @@ public partial class MainWindow : Window {
     /// Watches ChatGPT's control state until the answer looks finished, then notifies the user.
     /// It never reads the answer and never copies it: the user presses ChatGPT's own shortcut.
     /// </summary>
-    async Task WatchForAnswerAsync(JobTask job,AppSettings settings) {
+    async Task WatchForAnswerAsync(JobTask job,AppSettings settings,bool afterRejection=false) {
         _readyCancellation?.Cancel();
         var cancellation=new System.Threading.CancellationTokenSource();
         _readyCancellation=cancellation;
@@ -318,8 +326,13 @@ public partial class MainWindow : Window {
         if(web is null) return;
 
         CompletionOutcome outcome;
-        using(PerfLog.Measure("await answer "+job.JobId))
-            outcome=await ChatCompletionWatcher.WaitForAnswerAsync(new WebViewCompletionProbe(web),cancellation.Token);
+        var waited=System.Diagnostics.Stopwatch.StartNew();
+        using(PerfLog.Measure("await answer "+job.JobId)) {
+            do outcome=await ChatCompletionWatcher.WaitForAnswerAsync(new WebViewCompletionProbe(web),cancellation.Token);
+            // After a rejected answer the user still has to ask for a correction: keep watching until it is generated.
+            while(afterRejection && outcome==CompletionOutcome.ReadyUnconfirmed && !cancellation.IsCancellationRequested &&
+                  _activeJob==job && waited.ElapsedMilliseconds<ChatCompletionWatcher.MaxWaitMs);
+        }
 
         // The job may have been captured, stopped, skipped or recycled while we were waiting.
         if(cancellation.IsCancellationRequested || _activeJob!=job) return;
@@ -327,6 +340,12 @@ public partial class MainWindow : Window {
         if(outcome==CompletionOutcome.Ready) {
             PerfLog.Line("READY "+job.JobId);
             ShowAnswerReady(job,settings);
+            // A6.6.13 — generation was seen to finish, so the Copy is due now: wait for it, but not forever.
+            if(_watcher.IsArmed) _ = RunCaptureWatchdogAsync(job);
+        } else if(outcome==CompletionOutcome.ReadyUnconfirmed) {
+            // Generation was never observed, so "finished" is a guess: notify, but never fail a job on it.
+            PerfLog.Line($"READY {job.JobId} (generation not observed; no capture watchdog)");
+            if(!afterRejection) ShowAnswerReady(job,settings);
         } else if(outcome==CompletionOutcome.TimedOut) {
             QueueStatus.Text=$"{job.Company} — {job.Title}: no finished answer was detected after " +
                 $"{ChatCompletionWatcher.MaxWaitMs/60000} minutes. Check ChatGPT, then press {ChatCompletionWatcher.ShortcutText} or click Copy on the answer's code block.";
@@ -392,10 +411,70 @@ public partial class MainWindow : Window {
         try { toast?.Close(); } catch { }
     }
 
-    /// <summary>Ends any pending "answer ready" watch and removes the notification.</summary>
-    void DismissAnswerReady() {
+    /// <summary>Ends any pending "answer ready" watch and capture watchdog, and removes the notification.</summary>
+    void DismissAnswerReady(string reason) {
         _readyCancellation?.Cancel();
+        CancelCaptureWatchdog(reason);
         CloseReadyToast();
+    }
+
+    // ---------- A6.6.13 post-generation capture watchdog ----------
+
+    void CancelCaptureWatchdog(string reason) {
+        var cancelled=_captureWatchdog.Cancel();
+        if(cancelled is not null) PerfLog.Line($"CAPTURE watchdog cancelled {cancelled} ({reason})");
+    }
+
+    /// <summary>
+    /// Started only when ChatGPT has confirmably finished. If no valid capture arrives in time the job is
+    /// failed as CaptureTimeout and the queue moves on; the job is never re-sent automatically.
+    /// </summary>
+    async Task RunCaptureWatchdogAsync(JobTask job) {
+        var seconds=(int)_captureWatchdog.Timeout.TotalSeconds;
+        _readyJobId=job.JobId;
+        PerfLog.Line($"CAPTURE watchdog started {job.JobId} {seconds}s");
+
+        if(await _captureWatchdog.RunAsync(job.JobId)!=WatchdogResult.TimedOut) return;
+
+        // Only the job that is still active and still waiting can time out.
+        if(_activeJob!=job || job.Status!="Processing" ||
+           !string.Equals(_queue.ActiveJobId,job.JobId,StringComparison.OrdinalIgnoreCase)) {
+            PerfLog.Line($"CAPTURE watchdog expired for {job.JobId}, which is no longer active — ignored");
+            return;
+        }
+        await FailOnCaptureTimeoutAsync(job,seconds);
+    }
+
+    async Task FailOnCaptureTimeoutAsync(JobTask job,int seconds) {
+        PerfLog.Line($"CAPTURE TIMEOUT {job.JobId} after {seconds}s");
+        PerfLog.Line(CaptureWatchdog.TimeoutMessage);
+
+        // Nothing more is accepted for this job.
+        _watcher.Disarm();
+        _readyJobId=null;
+        DismissAnswerReady("capture timed out");
+
+        // Whatever profile-like text is on the clipboard now is most likely this job's answer. Remember it,
+        // so a late event carrying it can never be attributed to the next job.
+        var onClipboard=ClipboardService.TryGetText();
+        var quarantine=ResultCapture.ShouldCapture(onClipboard) ? onClipboard : null;
+        if(quarantine is not null) PerfLog.Line($"CAPTURE clipboard answer quarantined for timed-out job {job.JobId}");
+        _queue.OnCaptureTimedOut(quarantine);
+
+        job.Status="Failed";
+        job.FailureReason=CaptureWatchdog.FailureReason;
+        _activeJob=null;
+        _activePreparedText=null;
+        Storage.SaveTasks(_tasks);
+        UpdateSummary();
+        RefreshButtons();
+        CaptureStatus.Text=$"{job.Company} — {job.Title}: {CaptureWatchdog.TimeoutMessage} " +
+            "The job is marked Failed (CaptureTimeout); Retry Failed re-queues it.";
+        PerfLog.Snapshot("after job "+job.JobId);
+
+        // Recycle exactly as after a completed job, then move on. The job is not re-sent.
+        await RecycleChatAsync();
+        if(_queue.IsRunning) await AdvanceQueueAsync();
     }
 
     /// <summary>
@@ -454,8 +533,13 @@ public partial class MainWindow : Window {
             QueueStatus.Text="Queue resumed.";
             RefreshButtons();
             if(_queue.ActiveJobId is null) _ = AdvanceQueueAsync();
+            // An answer that was already finished before the pause gets a fresh bounded wait.
+            else if(_activeJob is { Status: "Processing" } job && _watcher.IsArmed &&
+                    string.Equals(_readyJobId,job.JobId,StringComparison.OrdinalIgnoreCase))
+                _ = RunCaptureWatchdogAsync(job);
         } else {
             _queue.Pause();
+            CancelCaptureWatchdog("queue paused");       // nothing fails while the user has paused
             QueueStatus.Text="Queue paused — the current job finishes, then the run stops advancing.";
             RefreshButtons();
         }
@@ -463,7 +547,7 @@ public partial class MainWindow : Window {
 
     void StopQueue_Click(object sender,RoutedEventArgs e) {
         var inFlight=_queue.Stop();
-        DismissAnswerReady();
+        DismissAnswerReady("queue stopped");
         _sendCancellation?.Cancel();
         _watcher.Disarm();
         // The in-flight job never finished, so it goes back in the queue rather than being stranded.
@@ -482,7 +566,7 @@ public partial class MainWindow : Window {
     async void SkipJob_Click(object sender,RoutedEventArgs e) {
         var skipped=_queue.SkipActive();
         if(skipped is null) return;
-        DismissAnswerReady();
+        DismissAnswerReady("job skipped");
         var job=_tasks.FirstOrDefault(t=>t.JobId.Equals(skipped,StringComparison.OrdinalIgnoreCase));
         if(job is not null) job.Status="Failed";
         _watcher.Disarm();
@@ -501,7 +585,7 @@ public partial class MainWindow : Window {
             var next=_queue.Next();
             if(next is null) {
                 _activeJob=null;
-                DismissAnswerReady();
+                DismissAnswerReady("queue finished");
                 _watcher.Disarm();
                 QueueStatus.Text = _queue.State==QueueState.Finished ? "Queue finished." : "Queue stopped.";
                 PerfLog.Snapshot(_queue.State==QueueState.Finished ? "queue finished" : "queue stopped");
@@ -533,23 +617,32 @@ public partial class MainWindow : Window {
         var job=_activeJob;
         if(job is null) return;                          // no active job: nothing to attribute it to
 
-        // A stale Copy of an answer already captured must never be written against another job.
-        if(_queue.IsDuplicate(text)) {
-            CaptureStatus.Text="That is an answer already captured for an earlier job — copy the new response.";
-            return;
+        switch(_queue.Classify(text,_activePreparedText)) {
+            case CaptureDecision.NoActiveJob:
+                return;
+            case CaptureDecision.Duplicate:
+                // A stale Copy of an answer already captured must never be written against another job.
+                CaptureStatus.Text="That is an answer already captured for an earlier job — copy the new response.";
+                return;
+            case CaptureDecision.LateResponse:
+                // A6.6.13 — the answer of a job whose capture timed out never belongs to the job active now.
+                CaptureStatus.Text="That answer belongs to an earlier job that timed out, so it was not used — copy the new response.";
+                PerfLog.Line("REFUSED late response from a timed-out job while "+job.JobId+" is active");
+                return;
+            case CaptureDecision.PromptEcho:
+                // "Copy last code block" can pick up a code block from our own prompt if an answer has none.
+                // That is not ChatGPT's answer: refuse it, count no strike, and keep waiting.
+                CaptureStatus.Text="That copied text is part of your own prompt, not ChatGPT's answer. " +
+                    $"Make sure the answer contains a json code block, then press {ChatCompletionWatcher.ShortcutText} again.";
+                PerfLog.Line("REFUSED prompt echo for "+job.JobId);
+                return;
         }
+        if(!string.Equals(_queue.ActiveJobId,job.JobId,StringComparison.OrdinalIgnoreCase)) return;
 
-        // "Copy last code block" can pick up a code block from our own prompt if an answer has none.
-        // That is not ChatGPT's answer: refuse it, count no strike, and keep waiting.
-        if(PromptEchoGuard.IsEchoOfPrompt(text,_activePreparedText)) {
-            CaptureStatus.Text="That copied text is part of your own prompt, not ChatGPT's answer. " +
-                $"Make sure the answer contains a json code block, then press {ChatCompletionWatcher.ShortcutText} again.";
-            PerfLog.Line("REFUSED prompt echo for "+job.JobId);
-            return;
-        }
-
-        // The user has copied an answer for this job, so the "ready" prompt has done its job.
-        DismissAnswerReady();
+        // The user has copied an answer for this job: the watchdog and the "ready" prompt are done.
+        PerfLog.Line("CAPTURE received "+job.JobId);
+        _readyJobId=null;
+        DismissAnswerReady("capture received");
 
         CapturedResult result;
         using(PerfLog.Measure("capture+normalize+validate+save")) result=ResultCapture.Accept(text,job.JobId);
@@ -584,6 +677,8 @@ public partial class MainWindow : Window {
         if(_queue.OnCaptureFailed()==FailureOutcome.RetryCopy) {
             CaptureStatus.Text=result.Message+Environment.NewLine+
                 "The job is still in progress — ask the AI to return the corrected JSON and click Copy again.";
+            // Watch for the corrected answer, so its Copy is bounded by the watchdog too.
+            _ = WatchForAnswerAsync(job,Storage.LoadSettings(),afterRejection:true);
             return;
         }
 

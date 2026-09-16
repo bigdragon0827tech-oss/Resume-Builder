@@ -34,6 +34,21 @@ public sealed class JobTask : System.ComponentModel.INotifyPropertyChanged {
             _status = value;
             PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(Status)));
             PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(StatusDisplay)));
+            if (value != "Failed") FailureReason = null;       // a re-queued or completed job has no failure
+        }
+    }
+
+    public const string CaptureTimeoutReason = "CaptureTimeout";
+
+    string? _failureReason;
+    /// <summary>A6.6.13: why a Failed job failed, when the app knows (for example "CaptureTimeout").</summary>
+    public string? FailureReason {
+        get => _failureReason;
+        set {
+            if (_failureReason == value) return;
+            _failureReason = value;
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(FailureReason)));
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(StatusDisplay)));
         }
     }
 
@@ -41,7 +56,7 @@ public sealed class JobTask : System.ComponentModel.INotifyPropertyChanged {
 
     public string StatusDisplay => Status switch {
         "Completed" => "✓ Completed", "Processing" => "● Processing",
-        "Failed" => "✕ Failed", "Ignored" => "↷ Ignored — Existing Job",
+        "Failed" => FailureReason == CaptureTimeoutReason ? "✕ Failed — no answer captured in time" : "✕ Failed", "Ignored" => "↷ Ignored — Existing Job",
         _ => "○ Queued"
     };
 }

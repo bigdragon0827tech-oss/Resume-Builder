@@ -162,6 +162,7 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 | `QueueRunner.cs` | `QueueRunner`, `QueueState`, `FailureOutcome` — sequencing state machine, no I/O |
 | `Diagnostics.cs` | `PerfLog` (timing/memory log), `PollPolicy` (shared adaptive poll cadence) |
 | `ReadyToast.cs` | `ReadyToast` (right-side, non-activating "answer ready" notification), `WindowAttention` (taskbar flash) |
+| `CaptureWatchdog.cs` | `CaptureWatchdog` — 30 s bounded wait for the Copy after a confirmed READY (no I/O, injectable delay) |
 | `GlobalHotkey.cs` | `GlobalHotkey` — system-wide Ctrl+Shift+' that only brings Resume Builder forward |
 | `Models.cs` | `JobBatch`, `JobInput`, `JobTask`, `AppSettings`, `PreparedRequest` |
 
@@ -316,3 +317,26 @@ Rules that keep it that way:
   key to ChatGPT, re-send the user's keystroke, or trigger a copy. Registration failure (another app
   owns the combination, Win32 error 1409) is reported in the status line, never thrown. Verified with a
   real keypress: with another window in front, the hotkey fired once and brought the window forward.
+
+## Capture watchdog (A6.6.13)
+
+- **The Copy is awaited for 30 s, never forever.** `CaptureWatchdog` starts only on a *confirmed*
+  `CompletionOutcome.Ready` (generation seen, then idle) while the capture is armed. `ReadyUnconfirmed`
+  (generation never observed — could be a drifted selector while ChatGPT is still writing) notifies but
+  never starts it, so a page change can never fail every job.
+- On timeout: disarm, mark the job `Failed` with `FailureReason = "CaptureTimeout"`, log
+  `CAPTURE TIMEOUT <jobId> after 30s` plus the exact message, recycle the WebView2 as after a completed
+  job, and advance. **The job is never re-sent automatically**; Retry Failed re-queues it and clears the reason.
+- Cancelled (logged as `CAPTURE watchdog cancelled <jobId> (<reason>)`) on capture received, Stop, Skip,
+  Pause, queue finish, second-strike failure, a new active job, and app close. Resume restarts a fresh
+  30 s wait for a job whose answer was already READY. After a first-strike rejection the completion
+  watch restarts, so the corrected answer's Copy is bounded too.
+- The watchdog holds no I/O: `MainWindow` performs every effect, and a timer from an earlier job can only
+  ever report `Cancelled` (generation counter), so it cannot fail the job active now.
+- **Late responses are never attributed to the next job.** Two independent guards:
+  `QueueRunner.OnCaptureTimedOut` remembers the profile-like text on the clipboard at timeout and
+  `Classify` refuses it as `LateResponse`; and `ClipboardWatcher` ignores any update whose clipboard
+  sequence number has not moved since arming (`ChangedSinceArm`), so a delayed WM_CLIPBOARDUPDATE can
+  never read an older copy for the job armed now. Verified with the real clipboard.
+- Diagnostics: `READY <jobId>`, `CAPTURE watchdog started <jobId> 30s`, `CAPTURE received <jobId>`,
+  `CAPTURE TIMEOUT <jobId> after 30s`.

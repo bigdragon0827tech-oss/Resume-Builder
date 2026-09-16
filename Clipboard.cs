@@ -263,12 +263,14 @@ public sealed class ClipboardWatcher : IDisposable {
 
     [DllImport("user32.dll", SetLastError = true)] static extern bool AddClipboardFormatListener(IntPtr hwnd);
     [DllImport("user32.dll", SetLastError = true)] static extern bool RemoveClipboardFormatListener(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern uint GetClipboardSequenceNumber();
 
     HwndSource? _source;
     IntPtr _handle = IntPtr.Zero;
     bool _listening;
     string? _ignore;
     string? _lastSeen;
+    uint _armedSequence;
 
     /// <summary>Raised on the UI thread with clipboard text that arrived while armed.</summary>
     public event Action<string>? TextCaptured;
@@ -297,6 +299,7 @@ public sealed class ClipboardWatcher : IDisposable {
     public void Arm(string? ignoreText) {
         _ignore = ignoreText;
         _lastSeen = ignoreText;
+        _armedSequence = SafeSequenceNumber();
         IsArmed = true;
     }
 
@@ -304,6 +307,19 @@ public sealed class ClipboardWatcher : IDisposable {
         IsArmed = false;
         _ignore = null;
         _lastSeen = null;
+        _armedSequence = 0;
+    }
+
+    /// <summary>
+    /// A6.6.13 attribution safety: clipboard content whose sequence number has not moved since arming
+    /// predates this job, so a late WM_CLIPBOARDUPDATE for an earlier job's Copy is never read back and
+    /// handed to the job armed now. A zero sequence means "unknown" and does not block.
+    /// </summary>
+    public static bool ChangedSinceArm(uint armedSequence, uint currentSequence) =>
+        armedSequence == 0 || currentSequence == 0 || currentSequence != armedSequence;
+
+    static uint SafeSequenceNumber() {
+        try { return GetClipboardSequenceNumber(); } catch { return 0; }
     }
 
     /// <summary>Decision logic, kept pure so it can be tested without a window or a message pump.</summary>
@@ -322,6 +338,7 @@ public sealed class ClipboardWatcher : IDisposable {
     IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) {
         if (msg != WM_CLIPBOARDUPDATE || !IsArmed) return IntPtr.Zero;
         try {
+            if (!ChangedSinceArm(_armedSequence, SafeSequenceNumber())) return IntPtr.Zero;
             var text = ClipboardService.TryGetText();
             if (ShouldCapture(IsArmed, text, _ignore, _lastSeen)) {
                 _lastSeen = text;
