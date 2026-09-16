@@ -1,22 +1,28 @@
 namespace ResumeBuilder;
 
 /// <summary>
-/// Owns the lifetime of the ChatGPT WebView2 so it can be destroyed between jobs.
+/// The single owner of the ChatGPT WebView2 lifetime.
 ///
-/// A6.6.12 measured an empty ChatGPT tab at ~700 MB across six WebView2 processes. Keeping that
-/// alive for the whole session is the single largest cost in the application, and nothing needs it
-/// between jobs: the answer has already been captured, validated, saved and turned into documents.
-/// So the browser is destroyed after every completed job and recreated lazily when the next job
-/// starts. The user-data folder is shared and untouched, so the signed-in session survives.
+/// A6.6.12 measured an empty ChatGPT tab at ~700 MB across six WebView2 processes, so the browser is
+/// destroyed after every completed job and rebuilt lazily for the next one. The subtlety that makes
+/// this safe for long runs: <c>Dispose()</c> returns before the browser process has actually exited,
+/// so creating the next browser immediately would overlap two full browser trees. This class treats
+/// a release as finished only when the dispose delegate reports that the browser process is gone,
+/// and <see cref="EnsureAsync"/> waits for any release still in flight before creating anything.
 ///
-/// The create and dispose steps are injected, which keeps the orchestration testable without a
-/// browser and keeps this class free of WPF and WebView2 references.
+/// Create and dispose are injected, so the orchestration is unit-tested with no browser, no WPF and
+/// no WebView2 reference in this file.
 /// </summary>
 public sealed class ChatHost {
-    readonly Func<Task> _create;
-    readonly Func<Task> _dispose;
+    /// <summary>Creates the browser and returns its process id.</summary>
+    readonly Func<Task<int>> _create;
 
-    public ChatHost(Func<Task> create, Func<Task> dispose) {
+    /// <summary>Destroys the browser and returns true only once its process has exited.</summary>
+    readonly Func<Task<bool>> _dispose;
+
+    Task? _pendingRelease;
+
+    public ChatHost(Func<Task<int>> create, Func<Task<bool>> dispose) {
         _create = create;
         _dispose = dispose;
     }
@@ -26,29 +32,67 @@ public sealed class ChatHost {
     public int Creations { get; private set; }
     public int Disposals { get; private set; }
 
-    /// <summary>Creates the browser if it is not alive. Safe to call before every job.</summary>
+    /// <summary>Process id of the live browser, or of the last one created.</summary>
+    public int BrowserProcessId { get; private set; }
+
+    /// <summary>True when the last shutdown could not be confirmed within the timeout.</summary>
+    public bool LastShutdownTimedOut { get; private set; }
+    public int TimeoutCount { get; private set; }
+
+    /// <summary>True between a release starting and the browser process actually exiting.</summary>
+    public bool IsReleasing => _pendingRelease is not null;
+
+    /// <summary>
+    /// Creates the browser if none is alive. If a previous release is still in flight, this waits for
+    /// that browser process to exit first — two browser trees must never overlap.
+    /// </summary>
     public async Task EnsureAsync() {
+        var pending = _pendingRelease;
+        if (pending is not null) await pending;
+
         if (IsAlive) return;
-        await _create();          // a throw leaves IsAlive false, so the next call retries cleanly
+        BrowserProcessId = await _create();   // a throw leaves IsAlive false, so the next call retries
         IsAlive = true;
         Creations++;
     }
 
     /// <summary>
-    /// Destroys the browser. Idempotent, and never throws — a teardown problem must not fail a job
-    /// whose result is already saved.
+    /// Destroys the browser and waits for its process to exit. Idempotent, and never throws — a
+    /// teardown problem must not fail a job whose result is already saved. A caller that arrives
+    /// while a release is in flight waits for that release instead of starting another.
     /// </summary>
     public async Task ReleaseAsync() {
-        if (!IsAlive) return;
-        IsAlive = false;          // cleared first: a failed teardown must not leave a stale "alive"
+        if (!IsAlive) {
+            var inFlight = _pendingRelease;
+            if (inFlight is not null) await inFlight;
+            return;
+        }
+
+        IsAlive = false;      // cleared first: a failed teardown must not leave a stale "alive"
         Disposals++;
-        try { await _dispose(); }
-        catch { /* the reference is already dropped; the next EnsureAsync builds a new one */ }
+
+        var release = RunReleaseAsync();
+        _pendingRelease = release;
+        try { await release; }
+        finally { _pendingRelease = null; }
+    }
+
+    async Task RunReleaseAsync() {
+        try {
+            var exited = await _dispose();
+            LastShutdownTimedOut = !exited;
+            if (!exited) TimeoutCount++;
+        } catch {
+            // The reference is already dropped; report it as unconfirmed rather than as success.
+            LastShutdownTimedOut = true;
+            TimeoutCount++;
+        }
     }
 
     /// <summary>
-    /// Hard recycle after a completed job: destroy now, rebuild lazily at the next job. Callers must
-    /// only invoke this once the response is captured — never while one is pending.
+    /// Hard recycle after a completed job: destroy now, wait for the process to go, rebuild lazily at
+    /// the next job. Callers must only invoke this once the response is captured — never while one is
+    /// pending.
     /// </summary>
     public Task RecycleAsync() => ReleaseAsync();
 }

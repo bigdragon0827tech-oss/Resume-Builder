@@ -252,6 +252,13 @@ Rules that keep it that way:
   survives. Recreating the view must always pass the same `%LOCALAPPDATA%\ResumeBuilder\WebView2`.
 - **`ChatHost` holds no WPF or WebView2 references** — create and dispose are injected, so the
   lifecycle is unit-tested with counters and no browser. Keep it that way.
+- **A release is only finished when the browser PROCESS has exited.** `Dispose()` returns long before
+  that, so `DisposeChatViewAsync` waits on two independent signals - the environment's
+  `BrowserProcessExited` event and the OS process handle - under a 10 s bounded timeout. Never treat
+  `Dispose()` returning as success, and never use a sleep as the wait.
+- **`ChatHost.EnsureAsync` waits for any release still in flight**, so two browser trees can never
+  overlap. On timeout the code logs it clearly, drops the cached environment so the next job starts
+  fresh, and reports the recycle as unconfirmed - it must never claim success.
 - Disposal drops the field first, unparents the control, then disposes it. A failed teardown must
   still clear `IsAlive` so the next job can build a new browser.
 - **PDF generation uses PDFsharp/MigraDoc (MIT), never a browser.** `PdfWriter.BuildDocument` returns

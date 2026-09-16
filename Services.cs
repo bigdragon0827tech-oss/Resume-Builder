@@ -7,6 +7,8 @@ public static class Storage {
     public static string DataDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ResumeBuilder");
     public static string SettingsPath => Path.Combine(DataDir, "settings.json");
     public static string TasksPath => Path.Combine(DataDir, "tasks.json");
+    /// <summary>The WebView2 profile: shared by every recycled browser so the ChatGPT login survives.</summary>
+    public static string WebViewUserDataFolder => Path.Combine(DataDir, "WebView2");
 
     public static AppSettings LoadSettings() {
         try { return File.Exists(SettingsPath) ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(SettingsPath), Opt) ?? new() : new(); }

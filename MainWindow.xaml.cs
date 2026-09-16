@@ -55,15 +55,15 @@ public partial class MainWindow : Window {
         }
     }
 
+    /// <summary>How long to wait for a browser process to actually exit before reporting a timeout.</summary>
+    static readonly TimeSpan BrowserExitTimeout = TimeSpan.FromSeconds(10);
+
     /// <summary>Builds a new WebView2 on the shared user-data folder, so the sign-in carries over.</summary>
-    async Task CreateChatViewAsync() {
-        var profileDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "ResumeBuilder", "WebView2");
-        Directory.CreateDirectory(profileDir);
+    async Task<int> CreateChatViewAsync() {
+        Directory.CreateDirectory(Storage.WebViewUserDataFolder);
 
         _webEnvironment ??= await CoreWebView2Environment.CreateAsync(
-            browserExecutableFolder: null, userDataFolder: profileDir);
+            browserExecutableFolder: null, userDataFolder: Storage.WebViewUserDataFolder);
 
         var view = new Microsoft.Web.WebView2.Wpf.WebView2();
         ChatHostPanel.Child = view;
@@ -71,21 +71,81 @@ public partial class MainWindow : Window {
         view.CoreWebView2.Settings.AreDevToolsEnabled = false;
         view.Source = new Uri(ChatComposer.ChatUrl);
         _chatView = view;
+
+        var pid = (int)view.CoreWebView2.BrowserProcessId;
+        PerfLog.Line($"BROWSER created            pid={pid}");
+        return pid;
     }
 
     /// <summary>
-    /// Destroys the browser completely: detach, unparent, dispose. Every reference is dropped so
-    /// nothing keeps the old renderer processes alive.
+    /// Destroys the browser and waits for its process to actually exit.
+    ///
+    /// Dispose() only asks for teardown — it returns long before the process group is gone. Over a
+    /// long run that let the next job's browser start while the previous tree was still alive. So the
+    /// exit is awaited on two independent signals: the environment's BrowserProcessExited event and
+    /// the OS process handle. Neither is a sleep; the bounded timeout is only a safety net.
+    /// Returns true only when the process is confirmed gone.
     /// </summary>
-    Task DisposeChatViewAsync() {
+    async Task<bool> DisposeChatViewAsync() {
         var view = _chatView;
         _chatView = null;                       // drop the reference first
         _sendCancellation?.Cancel();            // nothing may still be polling the old browser
-        if (view is null) return Task.CompletedTask;
+        if (view is null) return true;
+
+        var pid = _chat?.BrowserProcessId ?? 0;
+        PerfLog.Line($"BROWSER dispose requested  pid={pid}");
+
+        var exited = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnBrowserExited(object? _, CoreWebView2BrowserProcessExitedEventArgs e) {
+            if (pid == 0 || e.BrowserProcessId == pid) {
+                PerfLog.Line($"BROWSER exit event         pid={e.BrowserProcessId} kind={e.BrowserProcessExitKind}");
+                exited.TrySetResult(true);
+            }
+        }
+
+        var environment = _webEnvironment;
+        if (environment is not null) environment.BrowserProcessExited += OnBrowserExited;
 
         try { ChatHostPanel.Child = null; } catch { }
-        try { view.Dispose(); } catch { }       // closes the controller and its browser processes
-        return Task.CompletedTask;
+        try { view.Dispose(); } catch { }       // asks the controller and browser to shut down
+
+        var confirmed = await WaitForBrowserExitAsync(exited.Task, pid);
+
+        if (environment is not null) environment.BrowserProcessExited -= OnBrowserExited;
+
+        if (confirmed) {
+            PerfLog.Line($"BROWSER recycle completed  pid={pid}");
+        } else {
+            // Never claim success. Drop the environment so the next job starts from a clean one.
+            PerfLog.Line($"BROWSER recycle TIMED OUT  pid={pid} after {BrowserExitTimeout.TotalSeconds:F0}s — " +
+                         "the old browser may still be running; the next job will build a fresh environment.");
+            _webEnvironment = null;
+        }
+
+        PerfLog.Snapshot(confirmed ? "after actual browser exit" : "after unconfirmed browser exit");
+        return confirmed;
+    }
+
+    /// <summary>Waits on the exit event and on the process handle together, bounded by a timeout.</summary>
+    async Task<bool> WaitForBrowserExitAsync(Task<bool> exitEvent, int pid) {
+        using var cancellation = new System.Threading.CancellationTokenSource(BrowserExitTimeout);
+
+        var handleWait = Task.CompletedTask;
+        try {
+            using var process = System.Diagnostics.Process.GetProcessById(pid);
+            handleWait = process.WaitForExitAsync(cancellation.Token);
+        } catch (ArgumentException) {
+            return true;                        // already gone before we could open a handle
+        } catch (Exception) {
+            handleWait = Task.Delay(System.Threading.Timeout.Infinite, cancellation.Token);
+        }
+
+        var finished = await Task.WhenAny(exitEvent, handleWait);
+        if (finished == exitEvent) return true;
+
+        try { await handleWait; return true; }  // the handle signalled the exit
+        catch (OperationCanceledException) { return false; }
+        catch (Exception) { return false; }
     }
 
     /// <summary>Called once a job's result is safely saved — never while a response is pending.</summary>
@@ -93,6 +153,9 @@ public partial class MainWindow : Window {
         if (_chat is null) return;
         using (PerfLog.Measure("chat recycle")) await _chat.RecycleAsync();
         PerfLog.Snapshot("after ChatGPT WebView2 recycle");
+        if (_chat.LastShutdownTimedOut)
+            DocumentStatus.Text += (DocumentStatus.Text.Length > 0 ? "  " : "") +
+                "Note: the previous ChatGPT browser did not confirm shutdown; see diagnostics.log.";
     }
 
     /// <summary>Called when the queue finishes or stops and nothing is pending.</summary>
