@@ -71,7 +71,10 @@ Run the relevant regression checks before asking for manual testing. Do not regr
 **Do not claim a UI feature is verified just because the project builds.** When something genuinely
 needs UI interaction, say so plainly and name the *single* manual test to perform next.
 
-Test harnesses are throwaway console projects that `<Compile Include="...">` the real source files
+Test harnesses are console projects that `<Compile Include="...">` the real source files (never copies).
+One-off harnesses live outside the project and are deleted afterwards; re-runnable ones live in
+`tests` and are excluded from the application build by `<Compile Remove="tests**" />`.
+The old rule, kept for one-off harnesses:
 (never copies of them), built outside this directory so they never ship. Delete them afterwards.
 
 ### Real user data — handle carefully
@@ -267,3 +270,15 @@ Rules that keep it that way:
   Fonts come from `ResumeFontResolver` (installed Windows fonts, with fallbacks).
 - Diagnostics label set to keep comparable across releases: `queue start`, `before job`, `after job`,
   `after ChatGPT WebView2 recycle`, `queue finished`/`queue stopped`, `after queue WebView2 disposal`.
+
+## Long-run stability (A6.6.12)
+
+- `tests\WebViewStress` drives the **production `ChatHost`** through 50 create/dispose cycles with no
+  resume prompts, using a temporary user-data folder so the real ChatGPT login is never touched.
+  Re-run it after any change to the browser lifetime. Measured baseline on this machine: 50 creates,
+  50 confirmed exits, 0 timeouts, 0 orphans, WebView2 memory after exit flat at 262 MB across all
+  cycles (spread 0 MB), managed heap 1 -> 5 MB, exit confirmed in ~200-950 ms.
+- **A repeated browser pid is not a leak.** Windows reuses process ids after exit, so liveness must be
+  judged by pid **and** process start time. Asserting "distinct pids" produces false failures.
+- `SampleJobs` generates the Development-tab batches. Nothing is written anywhere until the user
+  clicks a Development action, ids are unique per run, and the data is explicitly synthetic.

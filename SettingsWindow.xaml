@@ -45,7 +45,11 @@
   <TabItem Header="Development"><StackPanel Margin="16">
 <TextBlock Text="Sample Input" FontWeight="Bold" FontSize="16"/>
 <TextBlock Margin="0,8,0,12" Text="Creates a valid JobBatch v1 JSON in Incoming and uses the normal A3 importer." TextWrapping="Wrap"/>
+<StackPanel Orientation="Horizontal">
 <Button Content="Load Sample Jobs" Width="160" Height="34" HorizontalAlignment="Left" Click="LoadSampleJobs_Click"/>
+<Button Content="Load 50 Sample Jobs" Width="170" Height="34" Margin="10,0,0,0" HorizontalAlignment="Left" Click="LoadStressJobs_Click"/>
+</StackPanel>
+<TextBlock Margin="0,8,0,0" TextWrapping="Wrap" Foreground="#666" Text="&quot;Load 50 Sample Jobs&quot; writes 50 synthetic jobs (invented companies and descriptions) to the Incoming folder for queue stress testing. Nothing is written until you click it."/>
 <TextBlock Margin="0,18,0,4" Text="Test Data" FontWeight="Bold"/>
 <TextBlock Text="Google — Senior Software Engineer&#10;Stripe — Backend Engineer&#10;Amazon — Software Engineer II"/>
 <Button Content="Clear Test Queue" Width="160" Height="34" HorizontalAlignment="Left" Margin="0,18,0,0" Click="ClearTestQueue_Click"/>

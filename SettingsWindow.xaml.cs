@@ -22,20 +22,25 @@ public partial class SettingsWindow : Window {
         Storage.SaveSettings(_s); System.Windows.MessageBox.Show("Settings saved.");
     }
 
-    void LoadSampleJobs_Click(object s, RoutedEventArgs e) {
+    void LoadSampleJobs_Click(object s, RoutedEventArgs e) =>
+        WriteBatch(SampleJobs.CreateSampleBatch(), "sample-jobs", "Sample JobBatch v1 created in Incoming.");
+
+    /// <summary>50 synthetic jobs for queue stress testing. Nothing is written until this is clicked.</summary>
+    void LoadStressJobs_Click(object s, RoutedEventArgs e) =>
+        WriteBatch(SampleJobs.CreateStressBatch(50), "stress-jobs",
+            "50 synthetic jobs created in Incoming. They use invented companies and job descriptions.");
+
+    void WriteBatch(JobBatch batch, string filePrefix, string message) {
         var settings=Storage.LoadSettings();
         if(string.IsNullOrWhiteSpace(settings.IncomingFolder)||!Directory.Exists(settings.IncomingFolder)){System.Windows.MessageBox.Show("Configure an existing Incoming folder first.");return;}
-        var batch=new JobBatch{SchemaVersion="1.0",Source="sample",Jobs=new(){
-            new(){JobId="SAMPLE-001",Company="Google",Title="Senior Software Engineer",Location="Mountain View, CA",Jd="Sample JD for a senior software engineer role."},
-            new(){JobId="SAMPLE-002",Company="Stripe",Title="Backend Engineer",Location="Remote",Jd="Sample JD for a backend engineer role."},
-            new(){JobId="SAMPLE-003",Company="Amazon",Title="Software Engineer II",Location="Seattle, WA",Jd="Sample JD for a software engineer role."}}};
-        var file=Path.Combine(settings.IncomingFolder,$"sample-jobs-{DateTime.Now:yyyyMMdd-HHmmssfff}.json");
+        var file=Path.Combine(settings.IncomingFolder,$"{filePrefix}-{DateTime.Now:yyyyMMdd-HHmmssfff}.json");
         File.WriteAllText(file,System.Text.Json.JsonSerializer.Serialize(batch,new System.Text.Json.JsonSerializerOptions{WriteIndented=true}));
-        System.Windows.MessageBox.Show("Sample JobBatch v1 created in Incoming. Click Refresh Input on the main screen.");
+        System.Windows.MessageBox.Show(message+Environment.NewLine+Environment.NewLine+"Click Refresh Input on the main screen to import them.");
     }
+
     void ClearTestQueue_Click(object s, RoutedEventArgs e) {
-        var tasks=Storage.LoadTasks(); var n=tasks.RemoveAll(t=>t.JobId.StartsWith("SAMPLE-",StringComparison.OrdinalIgnoreCase)); Storage.SaveTasks(tasks);
-        System.Windows.MessageBox.Show($"Removed {n} sample task(s). Restart A to refresh the visible queue.");
+        var tasks=Storage.LoadTasks(); var n=tasks.RemoveAll(t=>SampleJobs.IsTestJobId(t.JobId)); Storage.SaveTasks(tasks);
+        System.Windows.MessageBox.Show($"Removed {n} sample/stress task(s). Restart A to refresh the visible queue.");
     }
 
 
