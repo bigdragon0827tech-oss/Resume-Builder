@@ -22,6 +22,10 @@ public partial class MainWindow : Window {
     /// </summary>
     public IReadOnlyList<JobTask> Tasks => _tasks;
 
+    /// <summary>What TaskList shows: an Active or History filter over <see cref="_tasks"/> (TaskViews).</summary>
+    readonly System.Windows.Data.ListCollectionView _taskView;
+    bool _showHistory;
+
     readonly ClipboardWatcher _watcher = new();
     readonly QueueRunner _queue = new();
     readonly GlobalHotkey _hotkey = new();
@@ -126,11 +130,18 @@ public partial class MainWindow : Window {
         var recovered = QueueRunner.RecoverStaleProcessing(_tasks);
         if (recovered > 0) Storage.SaveTasks(_tasks);
 
-        TaskList.ItemsSource = _tasks;
+        _taskView = TaskViews.CreateView(_tasks, () => _showHistory);
+        TaskList.ItemsSource = _taskView;
+        foreach (var t in _tasks) WatchTask(t);
+        _tasks.CollectionChanged += (_, e) => {
+            if (e.NewItems is not null) foreach (JobTask t in e.NewItems) WatchTask(t);
+            UpdateViewSwitch();
+        };
         Loaded += MainWindow_Loaded;
         Closed += (_, _) => { DismissAnswerReady("app closed"); _hotkey.Dispose(); _watcher.Dispose(); _ = DisposeChatViewAsync(); };
         _watcher.TextCaptured += OnClipboardTextCaptured;
         UpdateSummary();
+        UpdateViewSwitch();
         if (recovered > 0) QueueStatus.Text = $"Recovered {recovered} job(s) left in progress by the previous session.";
     }
 
@@ -200,9 +211,18 @@ public partial class MainWindow : Window {
             RefreshButtons();
             ImportMessage.Text=$"Imported from the job browser: {outcome.Company} — {outcome.Title}";
             // The Applications dashboard, if open, shows the new job straight away.
-            if(_settings is { IsLoaded: true }) _settings.RefreshTracking();
+            RefreshDashboardIfOpen();
         }
         return outcome;
+    }
+
+    /// <summary>
+    /// Rebuilds the Applications dashboard's cards, chart, pipeline and board after this window
+    /// changed tracking data. Rows already update themselves through JobTask's change notification;
+    /// the aggregates only through RefreshTracking. Nothing runs when Settings is not open.
+    /// </summary>
+    void RefreshDashboardIfOpen() {
+        if(_settings is { IsLoaded: true }) _settings.RefreshTracking();
     }
 
     /// <summary>How long to wait for a browser process to actually exit before reporting a timeout.</summary>
@@ -333,11 +353,48 @@ public partial class MainWindow : Window {
         foreach(var t in list) _tasks.Add(t);
         UpdateSummary();
         RefreshButtons();
+        if(r.JobsQueued>0) RefreshDashboardIfOpen();
         ImportMessage.Text = r.Errors.Count>0
             ? string.Join(Environment.NewLine,r.Errors)
             : r.FilesImported==0
                 ? "No new input files."
                 : $"Imported: {r.FilesImported} file(s) • New: {r.JobsQueued} • Existing: {r.JobsExisting}";
+    }
+
+    // ---------- Active / History view (display only; _tasks is never split) ----------
+
+    /// <summary>Idempotent, because RefreshInput clears and re-adds the same task objects.</summary>
+    void WatchTask(JobTask task) {
+        task.PropertyChanged -= Task_PropertyChanged;
+        task.PropertyChanged += Task_PropertyChanged;
+    }
+
+    void Task_PropertyChanged(object? sender,System.ComponentModel.PropertyChangedEventArgs e) {
+        if (e.PropertyName != nameof(JobTask.Status) || sender is not JobTask task) return;
+        // A task that starts running must never be hidden: leave History if that is where it was.
+        if (_showHistory && task.Status == "Processing") ShowTaskView(history:false);
+        UpdateViewSwitch();
+    }
+
+    void ActiveView_Click(object sender,RoutedEventArgs e)=>ShowTaskView(history:false);
+    void HistoryView_Click(object sender,RoutedEventArgs e)=>ShowTaskView(history:true);
+
+    void ShowTaskView(bool history) {
+        if (_showHistory == history) return;
+        var selected = TaskList.SelectedItem;
+        _showHistory = history;
+        _taskView.Refresh();
+        // Refresh drops the selection; keep it when the selected task is still on show.
+        if (selected is JobTask t && TaskViews.Belongs(t, history)) TaskList.SelectedItem = t;
+        UpdateViewSwitch();
+        RefreshButtons();
+    }
+
+    void UpdateViewSwitch() {
+        ActiveViewButton.Content = $"Active ({TaskViews.ActiveCount(_tasks)})";
+        HistoryViewButton.Content = $"History ({TaskViews.HistoryCount(_tasks)})";
+        ActiveViewButton.FontWeight = _showHistory ? FontWeights.Normal : FontWeights.SemiBold;
+        HistoryViewButton.FontWeight = _showHistory ? FontWeights.SemiBold : FontWeights.Normal;
     }
 
     void UpdateSummary()=>SummaryText.Text=$"{_tasks.Count} task(s) • {_tasks.Count(x=>x.Status=="Queued")} queued • {_tasks.Count(x=>x.Status=="Completed")} completed";
@@ -954,8 +1011,10 @@ public partial class MainWindow : Window {
             // Tracking: a document exists, so the application is Ready to send. This is the only
             // status change Resume Builder makes on its own — everything after it is the user's.
             if(generation.DocxGenerated || generation.PdfGenerated)
-                if(JobTracker.MarkResumeReady(job,generation.DocxPath ?? generation.PdfPath))
+                if(JobTracker.MarkResumeReady(job,generation.DocxPath ?? generation.PdfPath)) {
                     JobTracker.SaveTrackingData(_tasks);
+                    RefreshDashboardIfOpen();
+                }
 
             // Style system: style corrections are recorded next to the job, so a styling surprise can be
             // explained afterwards without re-running anything.

@@ -182,6 +182,7 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 | `ReadyToast.cs` | `ReadyToast` (right-side, non-activating "answer ready" notification), `WindowAttention` (taskbar flash) |
 | `CaptureWatchdog.cs` | `CaptureWatchdog` — 30 s bounded wait for the Copy after a confirmed READY (no I/O, injectable delay) |
 | `GlobalHotkey.cs` | `GlobalHotkey` — system-wide Ctrl+Shift+' that only brings Resume Builder forward |
+| `TaskViews.cs` | `TaskViews` — the Active / History display filter over the one task collection |
 | `Models.cs` | `JobBatch`, `JobInput`, `JobTask`, `AppSettings`, `PreparedRequest` |
 
 ## Document generation (A6.6.9)
@@ -202,6 +203,23 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 - Documents are written to a temp file and moved into place, so a crash cannot leave a truncated file.
 - The `Docx` / `Pdf` checkboxes are authoritative; both off means "disabled", which is reported as a
   skip, not a failure.
+
+## Task queue Active / History view
+
+- **Display only.** `MainWindow._tasks` stays the one task collection; `tasks.json`, `JobTask`, the
+  queue, the importer and the Settings dashboard (which reads `MainWindow.Tasks`, the full list) are
+  untouched. Never delete a Completed task to tidy the list — results, Resume buttons and the dashboard
+  depend on it.
+- `TaskList` keeps its single ListBox; its `ItemsSource` is `TaskViews.CreateView` — a live-filtering
+  `ListCollectionView` over `_tasks`. **Active** = every status except Completed (Queued, Processing,
+  Failed — Failed stays so Retry is reachable). **History** = Completed only. Do not add a second list:
+  Prepare & Send and Generate Documents depend on `TaskList.SelectedItem`.
+- Live filtering applies on the dispatcher, so a job that completes leaves Active on its own. A test
+  that checks this without a running app must pump the dispatcher first.
+- **A Processing task is never hidden**: `Task_PropertyChanged` switches to Active when a task becomes
+  Processing while History is shown (re-running a completed job via Prepare & Send).
+- The switch sits under "TASK QUEUE" as `Active (n) | History (n)`; the shown view is SemiBold. Default
+  is Active. Switching keeps the selection when the selected task is still on show.
 
 ## Job application tracking
 
@@ -234,6 +252,14 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 - **The dashboard is the Settings "Applications" tab.** Summary cards (today / last 30 days / total),
   a WPF-native bar chart, the five-stage pipeline, conversion rates, search + status + date filters,
   and a List/Board pair over the same filtered set.
+- **How the dashboard stays in sync.** Every view shares the same `JobTask` objects, and their
+  `INotifyPropertyChanged` (`Status`, and `NotifyTrackingChanged` after a JobTracker edit) updates rows
+  live. The aggregates — cards, chart, pipeline, board columns, filter membership — are rebuilt only by
+  `SettingsWindow.RefreshTracking`. When `MainWindow` changes tracking data it calls
+  `RefreshDashboardIfOpen()` once, after the save: Job Browser import, `MarkResumeReady`, and a Refresh
+  Input that queued new jobs. It does nothing when Settings is closed. Do not add events or a second
+  task store for this; queue `Status` changes need no dashboard refresh, since the dashboard never
+  shows them.
 - **Its look is defined by named styles in `SettingsWindow.xaml`** — `DashboardCardStyle`,
   `SectionHeaderStyle`, `StatusBadgeStyle`, `FilterControlStyle`, `BoardCardStyle`,
   `SegmentToggleStyle` — plus `Status<Name>Bg`/`Status<Name>Fg` brushes for the five statuses. The
