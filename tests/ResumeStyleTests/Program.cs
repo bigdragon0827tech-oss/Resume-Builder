@@ -158,6 +158,13 @@ static class Program {
             Test("the extractor cannot reach tasks or storage", ExtractorStaysOutOfStorage);
 
             Console.WriteLine();
+            Console.WriteLine("Job browser: application link capture");
+            Test("tasks.json written before ApplyUrl existed still loads", ApplyUrlOldTasksLoad);
+            Test("ApplyUrl and ApplyUrlCapturedAt survive save and reload", ApplyUrlSurvivesReload);
+            Test("only an outside http(s) application address is captured", ApplyUrlCaptureRule);
+            Test("the address is recorded on the matching Jobright job only", ApplyUrlMatchesJob);
+
+            Console.WriteLine();
             Console.WriteLine("Sample output");
             Test("a sample resume is generated from the documented contract", GenerateSample);
         } finally {
@@ -1712,6 +1719,133 @@ static class Program {
             Check(!script.Contains(forbidden, StringComparison.OrdinalIgnoreCase), "the read script must not touch " + forbidden);
         Check(script.Contains("application/ld+json") && script.Contains("__NEXT_DATA__") && script.Contains("canonical"),
               "it reads JSON-LD, the page data and the canonical link");
+    }
+
+    // ---------- application link capture ----------
+
+    const string ApplyJobPage = "https://jobright.ai/jobs/info/6a5f372bd5c3a14fb34ec73a";
+    const string ApplyOtherJobPage = "https://jobright.ai/jobs/info/69d0abea366bb95ba5520be8";
+
+    /// <summary>Runs a check against the real Storage path, restoring the user's tasks.json afterwards.</summary>
+    static void WithLiveTasksFile(Action body) {
+        var live = Storage.TasksPath;
+        var backup = File.Exists(live) ? File.ReadAllBytes(live) : null;
+        try { body(); }
+        finally {
+            if (backup is byte[] content) File.WriteAllBytes(live, content);
+            else if (File.Exists(live)) File.Delete(live);
+        }
+    }
+
+    static void ApplyUrlOldTasksLoad() => WithLiveTasksFile(() => {
+        // The shape tasks.json had just before ApplyUrl existed, read through the real loader.
+        Directory.CreateDirectory(Storage.DataDir);
+        File.WriteAllText(Storage.TasksPath, $$"""
+        [
+          { "JobId": "RB-OLD-1", "Source": "jobright-browser", "Company": "Oracle", "Title": "ML Engineer",
+            "Jd": "...", "Link": "{{ApplyJobPage}}", "CompanyUrl": "https://www.oracle.com/",
+            "Status": "Completed", "ApplicationStatus": "Ready" },
+          { "JobId": "RB-OLD-2", "Company": "Stripe", "Title": "Backend Engineer", "Jd": "...", "Status": "Queued" }
+        ]
+        """);
+
+        var tasks = Storage.LoadTasks();
+        Equal(2, tasks.Count, "every older task loads");
+        foreach (var task in tasks) {
+            Equal("", task.ApplyUrl, task.JobId + " has no application link");
+            Check(task.ApplyUrlCapturedAt is null, task.JobId + " has no capture time");
+        }
+        Equal("Completed", tasks[0].Status, "queue status untouched");
+        Equal(ApplicationStatus.Ready, tasks[0].ApplicationStatus, "application status untouched");
+        Equal(ApplyJobPage, tasks[0].Link, "job link untouched");
+    });
+
+    static void ApplyUrlSurvivesReload() => WithLiveTasksFile(() => {
+        var at = new DateTime(2026, 9, 18, 14, 30, 0);
+        var captured = Job("RB-APPLY-1", "Oracle", "ML Engineer", ApplyJobPage);
+        captured.ApplyUrl = "https://careers.oracle.com/jobs/12345";
+        captured.ApplyUrlCapturedAt = at;
+
+        Storage.SaveTasks(new[] { captured, Job("RB-APPLY-2") });
+        var reloaded = Storage.LoadTasks();
+
+        Equal(2, reloaded.Count, "task count");
+        Equal("https://careers.oracle.com/jobs/12345", reloaded[0].ApplyUrl, "ApplyUrl survived");
+        Equal(at, reloaded[0].ApplyUrlCapturedAt, "ApplyUrlCapturedAt survived");
+        Equal(ApplyJobPage, reloaded[0].Link, "Link keeps its meaning");
+        Equal("", reloaded[1].ApplyUrl, "an uncaptured task stays empty");
+        Check(reloaded[1].ApplyUrlCapturedAt is null, "an uncaptured task has no time");
+    });
+
+    static void ApplyUrlCaptureRule() {
+        foreach (var good in new[] {
+                     "https://boards.greenhouse.io/acme/jobs/123",
+                     "https://acme.wd5.myworkdayjobs.com/en-US/Careers/job/Remote/ML-Engineer_R1",
+                     "https://jobs.lever.co/acme/abc-def",
+                     "https://www.linkedin.com/jobs/view/4012345678",
+                     "http://careers.example.com/apply?id=7" })
+            Check(ApplyCapture.IsApplicationUrl(good), "captured: " + good);
+
+        foreach (var bad in new[] {
+                     null, "", "not a url", "/jobs/apply", "about:blank", "javascript:void(0)",
+                     "mailto:jobs@acme.com", "file:///C:/secret.txt",
+                     "https://jobright.ai/jobs/info/6a5f372bd5c3a14fb34ec73a",
+                     "https://www.jobright.ai/redirect?to=x", "https://api.jobright.ai/apply",
+                     "https://www.linkedin.com/in/someone/", "https://www.linkedin.com/company/1028",
+                     "https://x.com/Oracle", "https://www.crunchbase.com/organization/oracle",
+                     "https://www.glassdoor.com/Overview/Working-at-Oracle-EI_IE1737.11,17.htm" })
+            Check(!ApplyCapture.IsApplicationUrl(bad), "not captured: " + (bad ?? "null"));
+
+        // A look-alike host is not jobright.ai.
+        Check(ApplyCapture.IsApplicationUrl("https://notjobright.ai/apply"), "a look-alike host is outside jobright.ai");
+    }
+
+    static void ApplyUrlMatchesJob() {
+        var now = new DateTime(2026, 9, 18, 15, 0, 0);
+        var oracle = Job("RB-MATCH-1", "Oracle", "ML Engineer", ApplyJobPage);
+        var other = Job("RB-MATCH-2", "Acme", "Engineer", ApplyOtherJobPage);
+        var incoming = Job("RB-MATCH-3", "Local", "Engineer", "https://example.com/job/3");
+        var tasks = new List<JobTask> { incoming, other, oracle };
+        var before = tasks.ToList();
+
+        // The job page address may carry tracking; the Jobright job id is what matches.
+        Equal(ApplyCaptureResult.Recorded,
+              ApplyCapture.Record(tasks, ApplyJobPage + "?utm_source=1101", "https://boards.greenhouse.io/oracle/jobs/1?gh_src=abc&utm_medium=x", now),
+              "recorded on the viewed job");
+        Equal("https://boards.greenhouse.io/oracle/jobs/1?gh_src=abc", oracle.ApplyUrl, "stored normalized, tracking dropped");
+        Equal(now, oracle.ApplyUrlCapturedAt, "capture time stamped");
+        Equal("", other.ApplyUrl, "another job is untouched");
+        Equal("", incoming.ApplyUrl, "a non-Jobright job is untouched");
+
+        // Same address again: nothing changes, not even the time.
+        Equal(ApplyCaptureResult.Unchanged,
+              ApplyCapture.Record(tasks, ApplyJobPage, "https://boards.greenhouse.io/oracle/jobs/1?gh_src=abc", now.AddHours(1)),
+              "the same address is not a change");
+        Equal(now, oracle.ApplyUrlCapturedAt, "the time is kept");
+
+        // Not a single job page: the job is unknown.
+        Equal(ApplyCaptureResult.NotJobPage,
+              ApplyCapture.Record(tasks, "https://jobright.ai/jobs/recommend", "https://jobs.lever.co/x/1", now), "results page");
+        Equal(ApplyCaptureResult.NotJobPage,
+              ApplyCapture.Record(tasks, null, "https://jobs.lever.co/x/1", now), "no page");
+
+        // A non-application destination records nothing.
+        Equal(ApplyCaptureResult.NotApplicationUrl,
+              ApplyCapture.Record(tasks, ApplyOtherJobPage, "https://www.linkedin.com/in/someone/", now), "a profile link");
+        Equal("", other.ApplyUrl, "still untouched");
+
+        // A job that is not imported: nothing is created.
+        Equal(ApplyCaptureResult.UnknownJob,
+              ApplyCapture.Record(tasks, "https://jobright.ai/jobs/info/aaaaaaaaaaaaaaaaaaaaaaaa", "https://jobs.lever.co/x/1", now),
+              "an unknown job");
+        Equal(3, tasks.Count, "no task was added");
+        Check(tasks.SequenceEqual(before), "the task list is unchanged");
+
+        // A later, different address replaces the old one.
+        Equal(ApplyCaptureResult.Recorded,
+              ApplyCapture.Record(tasks, ApplyJobPage, "https://careers.oracle.com/jobs/9", now.AddDays(1)), "a new address");
+        Equal("https://careers.oracle.com/jobs/9", oracle.ApplyUrl, "replaced");
+        Equal(now.AddDays(1), oracle.ApplyUrlCapturedAt, "restamped");
     }
 
     // ---------- the importer ----------

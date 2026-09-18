@@ -182,6 +182,7 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 | `ReadyToast.cs` | `ReadyToast` (right-side, non-activating "answer ready" notification), `WindowAttention` (taskbar flash) |
 | `CaptureWatchdog.cs` | `CaptureWatchdog` — 30 s bounded wait for the Copy after a confirmed READY (no I/O, injectable delay) |
 | `GlobalHotkey.cs` | `GlobalHotkey` — system-wide Ctrl+Shift+' that only brings Resume Builder forward |
+| `ApplyCapture.cs` | `ApplyCapture`, `ApplyCaptureResult` — decides whether a user's Apply destination is recorded, and on which task |
 | `TaskViews.cs` | `TaskViews` — the Active / History display filter over the one task collection |
 | `Models.cs` | `JobBatch`, `JobInput`, `JobTask`, `AppSettings`, `PreparedRequest` |
 
@@ -352,6 +353,27 @@ the user clicks them, and every job still goes through `JobrightPageExtractor` a
   the `JobExists` delegate (`MainWindow` compares with `JobUrls.Normalize`), so existing jobs cost no
   page load. New ones are opened one at a time and imported through the normal `ImportJob` path, which
   still refuses duplicates on its own.
+
+### Application link capture (ATS platform, phase 1)
+
+- **Jobright's page data holds no application address** (verified on a live job page: 53 `jobResult`
+  keys, only flags such as `isCompanySiteLink`; APPLY NOW is a plain button). The address exists only
+  once the USER clicks Apply, so it is captured then — never by clicking, fetching or reading the page.
+- `JobBrowserWindow` observes `NavigationStarting` (same-page) and `NewWindowRequested` (new window,
+  `Handled` never set) and calls `ReportApplyDestination` only when a single job page heads off
+  jobright.ai. It hands (job page, destination) to the `RecordApplyUrl` delegate; `MainWindow`
+  runs `ApplyCapture.Record` on `_tasks` and saves through `Storage.SaveTasks` when it returns Recorded.
+- **Rules (`ApplyCapture`)**: http/https only; never jobright.ai or a subdomain; never a known
+  non-application link Jobright shows (LinkedIn `/in/`, `/company/`, `/school/`, X/Twitter,
+  Crunchbase, Glassdoor, Facebook, Instagram, YouTube — LinkedIn `/jobs/` IS captured); only on a
+  single job page; the task is matched by **Jobright job id** (`JobIdFromUrl` of page vs `Link`);
+  an unknown job records nothing and creates nothing. Stored via `JobUrls.Normalize`. The same
+  address again is Unchanged (time kept); a different one replaces it and restamps.
+- `JobTask.ApplyUrl` ("" = none) and `ApplyUrlCapturedAt` (null = none) are additive; older
+  `tasks.json` loads with them empty. Informational only — never a duplicate key; `Link` keeps its
+  meaning. No ATS detection or platform filter yet.
+- Diagnostics: `JOBBROWSER apply seen <scheme+host+path> via <navigation|new-window> -> <result>`.
+- Tests: `ResumeStyleTests` "Job browser: application link capture" (4 checks).
 
 ### Design direction — agreed, NOT yet built
 

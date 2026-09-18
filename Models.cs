@@ -24,6 +24,17 @@ public sealed class JobTask : System.ComponentModel.INotifyPropertyChanged {
 
     /// <summary>The company's own website, when the input had one. Optional; never a duplicate key.</summary>
     public string CompanyUrl { get; set; } = "";
+
+    /// <summary>
+    /// The real application address (the ATS page), recorded when the user clicked Apply in the job
+    /// browser (<see cref="ApplyCapture"/>). Empty until then, and for every task saved before it
+    /// existed. Informational only — never a duplicate key, and <see cref="Link"/> keeps its meaning.
+    /// </summary>
+    public string ApplyUrl { get; set; } = "";
+
+    /// <summary>When <see cref="ApplyUrl"/> was recorded; null when it never was.</summary>
+    public DateTime? ApplyUrlCapturedAt { get; set; }
+
     public string About { get; set; } = "";
 
     string _status = "Queued";

@@ -190,7 +190,8 @@ public partial class MainWindow : Window {
             ImportJob=ImportFromBrowser,
             JobExists = url => _tasks.Any(t =>
                 JobUrls.Normalize(t.Link) ==
-                JobUrls.Normalize(url))
+                JobUrls.Normalize(url)),
+            RecordApplyUrl = RecordApplyUrlFromBrowser
         };
         _jobBrowser.Closed+=(_,_) => _jobBrowser=null;
         _jobBrowser.Show();
@@ -214,6 +215,16 @@ public partial class MainWindow : Window {
             RefreshDashboardIfOpen();
         }
         return outcome;
+    }
+
+    /// <summary>
+    /// The user clicked Apply on a job page in the job browser. ApplyCapture decides whether this is
+    /// an application address for a task already in the queue; only then is the live list saved.
+    /// </summary>
+    ApplyCaptureResult RecordApplyUrlFromBrowser(string jobPageUrl,string applyUrl) {
+        var result=ApplyCapture.Record(_tasks,jobPageUrl,applyUrl,DateTime.Now);
+        if(result==ApplyCaptureResult.Recorded) Storage.SaveTasks(_tasks);
+        return result;
     }
 
     /// <summary>

@@ -50,6 +50,13 @@ public partial class JobBrowserWindow : Window {
     public Func<JobImportData, JobImportOutcome>? ImportJob { get; set; }
     
     public Func<string, bool>? JobExists { get; set; }
+
+    /// <summary>
+    /// Where an application address goes when the user clicks Apply: (job page address, destination).
+    /// MainWindow supplies it, applies <see cref="ApplyCapture"/> to its live tasks and saves, so this
+    /// window still never touches storage.
+    /// </summary>
+    public Func<string, string, ApplyCaptureResult>? RecordApplyUrl { get; set; }
     /// <summary>
     /// The tests open about:blank on a throwaway profile, so no third-party request is made and the
     /// real signed-in profile is never touched while the plumbing is verified.
@@ -94,7 +101,15 @@ public partial class JobBrowserWindow : Window {
             // read only by the extractor, only when Import is clicked.
             view.CoreWebView2.HistoryChanged += (_, _) => UpdateNavigationButtons();
             view.CoreWebView2.SourceChanged += (_, _) => OnAddressChanged();
-            view.CoreWebView2.NavigationStarting += (_, _) => { _navigating = true; UpdateImportButton(); };
+            view.CoreWebView2.NavigationStarting += (_, e) => {
+                // Same-page Apply: the user's click takes this page off a job page to the application site.
+                // Observed only; the navigation itself is never changed.
+                ReportApplyDestination(view.Source?.ToString(), e.Uri, "navigation");
+                _navigating = true; UpdateImportButton();
+            };
+            // New-window Apply. Handled is never set, so the window opens exactly as it did before.
+            view.CoreWebView2.NewWindowRequested += (_, e) =>
+                ReportApplyDestination(view.Source?.ToString(), e.Uri, "new-window");
             view.NavigationCompleted += (_, _) => { _navigating = false; UpdateNavigationButtons(); UpdateImportButton(); };
 
             _extractor = new JobrightPageExtractor(
@@ -201,6 +216,35 @@ public partial class JobBrowserWindow : Window {
         AutoImportButton.ToolTip = _foundJobUrls.Count > 0
             ? $"Import {_foundJobUrls.Count} new jobs one by one."
             : "Click Find Jobs first.";
+    }
+
+    /// <summary>
+    /// Called when the page starts leaving (same page) or asks for a new window. Only a single Jobright
+    /// job page heading OFF jobright.ai is considered; jobright-to-jobright navigation (browsing, Auto
+    /// Import) returns at once. It reads nothing from the page and never blocks the navigation.
+    /// </summary>
+    void ReportApplyDestination(string? jobPageUrl, string? destination, string via) {
+        try {
+            if (!JobrightPageExtractor.IsJobPage(jobPageUrl)) return;
+            if (!Uri.TryCreate(destination, UriKind.Absolute, out var dest) ||
+                dest.Host.Equals("jobright.ai", StringComparison.OrdinalIgnoreCase) ||
+                dest.Host.EndsWith(".jobright.ai", StringComparison.OrdinalIgnoreCase)) return;
+
+            var result = RecordApplyUrl?.Invoke(jobPageUrl!, destination!) ?? ApplyCaptureResult.UnknownJob;
+            PerfLog.Line($"JOBBROWSER apply seen {JobBrowser.SafeForLog(destination)} via {via} -> {result}");
+
+            switch (result) {
+                case ApplyCaptureResult.Recorded:
+                    StatusText.Text = "Application link recorded for this job.";
+                    break;
+                case ApplyCaptureResult.UnknownJob:
+                    StatusText.Text = "This job is not in Resume Builder yet; import it to record its application link.";
+                    break;
+            }
+        } catch (Exception ex) {
+            // Recording is a convenience: a failure here must never disturb browsing.
+            PerfLog.Line("JOBBROWSER apply capture failed " + ex.GetType().Name);
+        }
     }
 
     async void Import_Click(object sender, RoutedEventArgs e) => await ImportCurrentJobAsync();
