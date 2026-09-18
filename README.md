@@ -1,60 +1,78 @@
-# Resume Builder A6.6.12
+# Resume Builder v1.0
 
-Based on A6.6.11. The AI pipeline, Auto-Send, Auto-Copy behaviour (still manual), queue, routing and
-document generation are all unchanged — this release is performance only.
+Version 1.0 (assembly version 1.0.0) is Resume Builder's first numbered release. It carries forward
+everything built in the A6.x development line. The notes below describe milestones from that line and
+are kept as history.
 
-## Change in A6.6.12 — performance
+## History: A6.6.13 — "answer ready" + one keypress
 
-### 1. A fresh ChatGPT conversation for every job
+A6.6.13 was based on A6.6.12 and added the "answer ready" notification.
 
-Previously the app navigated to ChatGPT only if it was not already there, so **every job appended
-another 35 KB prompt and a long answer to one conversation**. An empty ChatGPT tab already costs
-~700 MB of WebView2 memory; a growing conversation is what climbed toward 3–4 GB. Each job now starts
-a new chat. Your signed-in session is untouched — cookies live in the WebView2 profile folder, not in
-the page. Applies to queue runs and manual single-job runs alike.
+```
+Start Queue
+  -> ResumeBuilder fills ChatGPT and clicks Send
+  -> ChatGPT generates
+  -> ResumeBuilder notices generation has finished and tells you:
+       * a notification on the right side of the screen
+       * a short sound
+       * a flashing taskbar button if Resume Builder is in the background
+  -> press Ctrl+Shift+' (from any app), then Ctrl+Shift+;   <- your action per job
+     (or click the notification instead of Ctrl+Shift+')
+  -> capture -> normalize -> validate -> save -> DOCX/PDF -> next job
+```
 
-As a side benefit, no job can see the previous job's conversation any more.
+### Why this stays within ChatGPT's terms
 
-### 2. The big payload is sent to the page once
+ChatGPT's consumer Terms prohibit automatically or programmatically extracting Output. Resume Builder
+therefore only watches whether ChatGPT is still generating — whether its stop button is showing and
+its message box is idle. It never reads the answer, never clicks Copy, and never sends keystrokes.
+The copy is done by ChatGPT's own feature, in response to your own keypress.
 
-The prepared request (~40 KB as a script) used to be re-sent on **every** composer retry. It is now
-stored in the page once, and the retry loop sends a **1.5 KB** script that reads it.
+### How it behaves
 
-### 3. Faster, adaptive polling
+- The answer is treated as finished only after ChatGPT has stayed idle for three seconds, so a pause
+  mid-answer does not trigger a false notification.
+- **It never steals focus.** The notification appears without taking focus from whatever you are
+  doing. Clicking it brings Resume Builder to the front and puts the cursor in the ChatGPT pane, so
+  Ctrl+Shift+; goes straight to ChatGPT, which copies the answer's json code block. You can also click
+  the Copy button on that code block.
+- The notification disappears as soon as an answer is captured, or when you Stop, Skip, or the queue
+  finishes. If no finished answer is seen within 20 minutes, the status line tells you to check.
+- Verified on this machine with real keystrokes: Ctrl+Shift+; reaches the ChatGPT page with the app's
+  browser settings.
 
-Fill, send-readiness and send-confirmation now poll at 100 ms, backing off to 600 ms, under a 5-second
-budget each — instead of fixed 700/400/500 ms cadences with 8–14 second ceilings.
+### Settings → General → When the answer is ready
 
-| Measured | A6.6.11 | A6.6.12 |
-| --- | --- | --- |
-| Composer not found (worst case) | 7,848 ms | **5,250 ms** |
-| Send button missing (worst case) | 14,079 ms | **5,294 ms** |
-| Send unconfirmed (worst case) | 10,281 ms | **5,235 ms** |
-| Script sent per retry | 41,820 chars | **1,483 chars** |
-| Composer fill, happy path | 723 ms | 679 ms |
-
-The happy path is unchanged by design — it is dominated by inserting 35 KB into the editor, not by
-transfer or polling.
-
-### 4. Diagnostics
-
-`diagnostics.log` in `%LOCALAPPDATA%\ResumeBuilder` now records stage timings (preparation, clipboard,
-navigation, fill, auto-send, capture, documents) and memory snapshots (managed / process / WebView2
-processes) before and after each job and at queue start and finish. It is append-only, capped at 1 MB,
-and never affects a run.
-
-Reference measurements on this machine: prepare 1–9 ms, clipboard 2–22 ms, capture 1 ms, DOCX 3–83 ms,
-PDF 650–800 ms, managed heap 4–12 MB.
+- Show a notification on the right side of the screen (on)
+- Play a sound (on)
+- Flash the taskbar button when Resume Builder is in the background (on)
 
 ## Unchanged
 
-Everything else: normalize → strict validate → save, per-job routing, DOCX/PDF generation, the queue
-with its attribution and duplicate guards, Auto-Send, manual Copy, and every manual fallback.
+Auto-Send, the clipboard capture pipeline, normalize → strict validate → save, per-job routing,
+DOCX/PDF generation, queue/retry/pause/stop/skip, the A6.6.12 WebView2 memory lifecycle, and the
+50-cycle stress test.
 
 ## Test
 
 1. `dotnet clean`
 2. `dotnet build`  (expect 0 errors, 0 warnings)
 3. `dotnet run`
-4. Run a 3-job queue and watch `diagnostics.log`: the memory lines should stay roughly flat instead of
-   climbing, and each job should open a new ChatGPT conversation.
+4. Start a queue, switch to another app while ChatGPT generates, and wait for the notification.
+
+## Ctrl+Shift+' — come back to Resume Builder from anywhere
+
+Wherever you are working, press **Ctrl+Shift+'** and Resume Builder comes to the front with the cursor
+already in the ChatGPT pane. Then press **Ctrl+Shift+;** to copy the answer. No mouse needed.
+
+It only brings the window forward — it never presses anything in ChatGPT for you. If another program
+already uses Ctrl+Shift+', Resume Builder says so at startup and you can click the notification
+instead. It can be switched off in Settings → General (takes effect after restart).
+
+## If a Copy is never picked up
+
+Once ChatGPT has clearly finished an answer, Resume Builder waits 30 seconds for your Copy. If nothing
+usable arrives, that job is marked **Failed — no answer captured in time** (CaptureTimeout), ChatGPT is
+reset and the queue moves on to the next job, so a missed Copy can no longer stall the run. The job is
+not sent again automatically; use **Retry Failed** to run it later. An answer copied too late is never
+used for the next job.

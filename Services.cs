@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 namespace ResumeBuilder;
 
 public static class Storage {
@@ -7,6 +8,8 @@ public static class Storage {
     public static string DataDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ResumeBuilder");
     public static string SettingsPath => Path.Combine(DataDir, "settings.json");
     public static string TasksPath => Path.Combine(DataDir, "tasks.json");
+    /// <summary>The WebView2 profile: shared by every recycled browser so the ChatGPT login survives.</summary>
+    public static string WebViewUserDataFolder => Path.Combine(DataDir, "WebView2");
 
     public static AppSettings LoadSettings() {
         try { return File.Exists(SettingsPath) ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(SettingsPath), Opt) ?? new() : new(); }
@@ -31,8 +34,68 @@ public sealed class ImportResult {
     public List<string> Errors { get; } = new();
 }
 
+/// <summary>
+/// The one place a job URL is made comparable. Duplicate detection never compares raw strings.
+/// </summary>
+public static class JobUrls {
+    /// <summary>
+    /// Query parameters that only record how the visitor arrived. Verified on Jobright, whose job
+    /// addresses are /jobs/info/&lt;id&gt; and whose only query parameter seen is utm_source. Anything
+    /// not on this list is kept, because on another site a parameter can be what names the job.
+    /// </summary>
+    static readonly string[] TrackingParameters = {
+        "gclid", "gbraid", "wbraid", "fbclid", "msclkid", "yclid", "igshid",
+        "mc_cid", "mc_eid", "_hsenc", "_hsmi", "li_fat_id"
+    };
+
+    static bool IsTracking(string key) =>
+        key.StartsWith("utm_", StringComparison.OrdinalIgnoreCase)
+        || TrackingParameters.Contains(key, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>True for an absolute http or https address.</summary>
+    public static bool IsWebUrl(string? url) =>
+        !string.IsNullOrWhiteSpace(url)
+        && Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri)
+        && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+
+    /// <summary>
+    /// A job URL in one comparable form, or null when it is not a web address: trimmed, scheme and
+    /// host lower-cased, default port dropped, fragment dropped, trailing slash dropped (except for
+    /// the root), tracking parameters dropped and the rest sorted so their order does not matter.
+    /// The path keeps its case — on the web it can be significant.
+    /// </summary>
+    public static string? Normalize(string? url) {
+        if (!IsWebUrl(url)) return null;
+        var uri = new Uri(url!.Trim());
+
+        var path = uri.AbsolutePath;
+        if (path.Length > 1) path = path.TrimEnd('/');
+        if (path.Length == 0) path = "/";
+
+        var query = uri.Query.TrimStart('?')
+            .Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Where(pair => !IsTracking(pair.Split('=', 2)[0]))
+            .OrderBy(pair => pair, StringComparer.Ordinal)
+            .ToList();
+
+        var authority = uri.IsDefaultPort ? uri.Host : uri.Host + ":" + uri.Port;
+        return uri.Scheme.ToLowerInvariant() + "://" + authority.ToLowerInvariant() + path
+               + (query.Count == 0 ? "" : "?" + string.Join("&", query));
+    }
+}
+
+/// <summary>
+/// Turns ONE job into ONE task. Incoming JSON files and the built-in job browser both come through
+/// <see cref="ImportOne"/>, so validation and duplicate handling cannot drift apart. There is no
+/// batch path: a file holding more than one job is refused, never partly imported.
+/// </summary>
 public static class JobImporter {
-    static readonly JsonSerializerOptions Opt = new() { PropertyNameCaseInsensitive = true };
+    public const string IncomingSource = "incoming-json";
+    public const string BrowserSource = "jobright-browser";
+    public const string OneJobOnly = "Only one job per input file is supported.";
+
+    static readonly JsonSerializerOptions ReadOptions = new() { PropertyNameCaseInsensitive = true };
+    static readonly JsonDocumentOptions ParseOptions = new() { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip };
 
     public static ImportResult Import(AppSettings settings, List<JobTask> tasks) {
         var result = new ImportResult();
@@ -46,22 +109,14 @@ public static class JobImporter {
 
         foreach (var file in Directory.GetFiles(settings.IncomingFolder, "*.json")) {
             try {
-                var batch = JsonSerializer.Deserialize<JobBatch>(File.ReadAllText(file), Opt)
-                            ?? throw new InvalidDataException("File does not contain a job batch.");
-                ValidateBatch(batch); // all-or-nothing before persistence
-                var additions = batch.Jobs.Select(j => new JobTask {
-                    JobId=j.JobId.Trim(), Source=string.IsNullOrWhiteSpace(batch.Source) ? "unknown" : batch.Source.Trim(),
-                    Company=j.Company.Trim(), Title=j.Title.Trim(), Location=j.Location?.Trim() ?? "",
-                    Jd=j.Jd.Trim(), Link=j.Link?.Trim() ?? "", About=j.About?.Trim() ?? "", Status="Queued"
-                }).ToList();
+                var outcome = ImportOne(ReadSingleJob(File.ReadAllText(file)), IncomingSource, tasks);
+                switch (outcome.Kind) {
+                    case JobImportKind.Imported: result.JobsQueued++; break;
+                    case JobImportKind.Duplicate: result.JobsExisting++; break;
+                    // A refused file stays in Incoming, so it can be fixed and picked up again.
+                    default: throw new InvalidDataException(outcome.Reason);
+                }
 
-                // Already present in A's queue is not re-added. "Ignored Existing Job" is reserved for successful jobs later.
-                foreach (var a in additions)
-                    if (!tasks.Any(t => t.JobId.Equals(a.JobId, StringComparison.OrdinalIgnoreCase))) {
-                        tasks.Add(a); result.JobsQueued++;
-                    } else result.JobsExisting++;
-
-                Storage.SaveTasks(tasks);
                 var dest = UniqueDestination(settings.ImportedFolder, Path.GetFileName(file));
                 File.Move(file, dest);
                 result.FilesImported++;
@@ -72,19 +127,94 @@ public static class JobImporter {
         return result;
     }
 
-    static void ValidateBatch(JobBatch b) {
-        if (b.SchemaVersion != "1.0") throw new InvalidDataException("schemaVersion must be 1.0.");
-        if (b.Jobs is null || b.Jobs.Count == 0) throw new InvalidDataException("jobs must contain at least one job.");
-        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        for (int i=0;i<b.Jobs.Count;i++) {
-            var j=b.Jobs[i];
-            if (string.IsNullOrWhiteSpace(j.JobId)) throw new InvalidDataException($"jobs[{i}].jobId is required.");
-            if (!ids.Add(j.JobId.Trim())) throw new InvalidDataException($"Duplicate jobId '{j.JobId}' inside batch.");
-            if (string.IsNullOrWhiteSpace(j.Company)) throw new InvalidDataException($"jobs[{i}].company is required.");
-            if (string.IsNullOrWhiteSpace(j.Title)) throw new InvalidDataException($"jobs[{i}].title is required.");
-            if (string.IsNullOrWhiteSpace(j.Jd)) throw new InvalidDataException($"jobs[{i}].jd is required.");
+    /// <summary>
+    /// Reads one Incoming file as exactly one job. An array, or an object carrying a "jobs" list (the
+    /// retired batch format), is refused outright rather than having its first job quietly imported.
+    /// </summary>
+    public static JobImportData ReadSingleJob(string json) {
+        JsonNode? node;
+        try { node = JsonNode.Parse(json, null, ParseOptions); }
+        catch (JsonException) { throw new InvalidDataException("The file is not valid JSON."); }
+
+        switch (node) {
+            case JsonArray:
+                throw new InvalidDataException(OneJobOnly);
+            case JsonObject o when o.Any(p => p.Key.Equals("jobs", StringComparison.OrdinalIgnoreCase)):
+                throw new InvalidDataException(OneJobOnly +
+                    " This file uses the old batch format; write one { company, title, jobUrl, companyUrl, description } object per file.");
+            case JsonObject o:
+                return o.Deserialize<JobImportData>(ReadOptions) ?? throw new InvalidDataException("The file does not contain a job.");
+            default:
+                throw new InvalidDataException("The file must contain one job object.");
         }
     }
+
+    /// <summary>
+    /// Validate, normalize the job URL, refuse a duplicate, otherwise create one task with a fresh
+    /// internal id and save. The task starts Queued and, by JobTask's own default, application-Viewed.
+    /// Nothing is written for an invalid job or a duplicate.
+    /// </summary>
+    public static JobImportOutcome ImportOne(JobImportData data, string source, List<JobTask> tasks) {
+        var company = (data.Company ?? "").Trim();
+        var title = (data.Title ?? "").Trim();
+        var description = (data.Description ?? "").Trim();
+
+        string? Refuse() =>
+            company.Length == 0 ? "Company is required."
+            : title.Length == 0 ? "Job title is required."
+            : string.IsNullOrWhiteSpace(data.JobUrl) ? "Job URL is required."
+            : !JobUrls.IsWebUrl(data.JobUrl) ? "Job URL is not a valid web address."
+            : description.Length == 0 ? "Job description is required."
+            : null;
+
+        if (Refuse() is string reason)
+            return new JobImportOutcome { Kind = JobImportKind.Invalid, Title = title, Company = company, Reason = reason };
+
+        var jobUrl = JobUrls.Normalize(data.JobUrl)!;
+
+        // One job URL, one task — however the address was written.
+        var existing = tasks.FirstOrDefault(t => JobUrls.Normalize(t.Link) == jobUrl);
+        if (existing is not null)
+            return new JobImportOutcome {
+                Kind = JobImportKind.Duplicate, JobId = existing.JobId, Title = existing.Title,
+                Company = existing.Company, ApplicationStatus = existing.ApplicationStatus
+            };
+
+        var task = new JobTask {
+            JobId = NewInternalId(tasks),
+            Source = source,
+            Company = company,
+            Title = title,
+            Location = "",                   // not part of the input; never invented
+            Jd = description,
+            Link = jobUrl,
+            // Optional: kept only when it is a real web address, so a bad value cannot fail the job.
+            CompanyUrl = JobUrls.IsWebUrl(data.CompanyUrl) ? data.CompanyUrl!.Trim() : "",
+            About = "",
+            Status = "Queued"
+        };
+
+        tasks.Add(task);
+        Storage.SaveTasks(tasks);
+
+        return new JobImportOutcome {
+            Kind = JobImportKind.Imported, JobId = task.JobId, Title = task.Title,
+            Company = task.Company, ApplicationStatus = task.ApplicationStatus
+        };
+    }
+
+    /// <summary>
+    /// A new internal task id: "RB-yyyyMMdd-HHmmss-xxxxxxxx". The time makes it readable in a folder
+    /// listing, the random part makes it collision-safe, and it is checked against the queue anyway.
+    /// </summary>
+    public static string NewInternalId(IEnumerable<JobTask> tasks) {
+        var taken = new HashSet<string>(tasks.Select(t => t.JobId), StringComparer.OrdinalIgnoreCase);
+        string id;
+        do { id = $"RB-{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}"[..27]; }
+        while (taken.Contains(id));
+        return id;
+    }
+
     static string UniqueDestination(string folder,string name) {
         var p=Path.Combine(folder,name); if(!File.Exists(p)) return p;
         var stem=Path.GetFileNameWithoutExtension(name); var ext=Path.GetExtension(name); int n=2;
@@ -155,7 +285,7 @@ public static class BaselineProfileImporter {
     public static void CreateBaselineFromDocx(string docxPath) {
         if(!File.Exists(docxPath)) throw new FileNotFoundException("Original Resume file was not found.",docxPath);
         if(Path.GetExtension(docxPath).ToLowerInvariant()!=".docx")
-            throw new InvalidOperationException("A6.3 baseline import currently supports DOCX. Select your original .docx resume.");
+            throw new InvalidOperationException("Baseline import currently supports DOCX. Select your original .docx resume.");
 
         var text=ExtractDocxText(docxPath);
         if(string.IsNullOrWhiteSpace(text)) throw new InvalidDataException("No readable text was found in the DOCX.");
@@ -335,7 +465,10 @@ public static class CandidateProfileStore {
                 if(item.ValueKind!=System.Text.Json.JsonValueKind.Object) { errors.Add($"experience[{i}] must be an object"); i++; continue; }
                 foreach(var f in new[]{"title","company","startDate","endDate","location","descriptionLines"}) if(!item.TryGetProperty(f,out _)) errors.Add($"experience[{i}].{f} is missing");
                 foreach(var f in new[]{"dates","start_date","end_date","bullets","employment_type","work_arrangement","work_mode"}) if(item.TryGetProperty(f,out _)) errors.Add($"experience[{i}].{f} is not allowed");
-                if(item.TryGetProperty("descriptionLines",out var dl) && dl.ValueKind!=System.Text.Json.JsonValueKind.Array) errors.Add($"experience[{i}].descriptionLines must be an array");
+                if(item.TryGetProperty("descriptionLines",out var dl)) {
+                    if(dl.ValueKind!=System.Text.Json.JsonValueKind.Array) errors.Add($"experience[{i}].descriptionLines must be an array");
+                    else ValidateDescriptionLines(dl,i,errors);
+                }
                 i++;
             }
         }
@@ -349,6 +482,70 @@ public static class CandidateProfileStore {
             }
         }
 
+        // Style system: the optional style block, checked against the same limits the normalizer clamps to.
+        if(profile.TryGetProperty("style",out var style)) {
+            if(style.ValueKind!=System.Text.Json.JsonValueKind.Object) errors.Add("style must be an object");
+            else errors.AddRange(StyleValidator.Validate(System.Text.Json.Nodes.JsonNode.Parse(style.GetRawText())));
+        }
+
         if(errors.Count>0) throw new InvalidDataException("Profile schema errors:\n\n• "+string.Join("\n• ",errors.Take(30))+(errors.Count>30?$"\n• ...and {errors.Count-30} more":""));
+    }
+
+    /// <summary>
+    /// Style system: a description line is either plain text or a segmented line carrying inline emphasis.
+    /// Markdown is never accepted in resume text — emphasis is structural, so it cannot be mistaken
+    /// for content.
+    /// </summary>
+    static void ValidateDescriptionLines(System.Text.Json.JsonElement lines,int experienceIndex,List<string> errors) {
+        int i=0;
+        foreach(var line in lines.EnumerateArray()) {
+            var path=$"experience[{experienceIndex}].descriptionLines[{i}]";
+            if(line.ValueKind==System.Text.Json.JsonValueKind.String) { i++; continue; }
+            if(line.ValueKind!=System.Text.Json.JsonValueKind.Object) {
+                errors.Add($"{path} must be a string or a {{ \"segments\": [...] }} object");
+                i++; continue;
+            }
+            if(!line.TryGetProperty("segments",out var segments) || segments.ValueKind!=System.Text.Json.JsonValueKind.Array) {
+                errors.Add($"{path}.segments is missing or not an array");
+                i++; continue;
+            }
+            int s=0;
+            foreach(var segment in segments.EnumerateArray()) {
+                var segmentPath=$"{path}.segments[{s}]";
+                if(segment.ValueKind!=System.Text.Json.JsonValueKind.Object) errors.Add($"{segmentPath} must be an object");
+                else {
+                    if(!segment.TryGetProperty("text",out var text) || text.ValueKind!=System.Text.Json.JsonValueKind.String)
+                        errors.Add($"{segmentPath}.text is missing or not a string");
+                    if(segment.TryGetProperty("bold",out var bold)
+                       && bold.ValueKind!=System.Text.Json.JsonValueKind.True && bold.ValueKind!=System.Text.Json.JsonValueKind.False)
+                        errors.Add($"{segmentPath}.bold must be true or false");
+                }
+                s++;
+            }
+            i++;
+        }
+    }
+
+    /// <summary>
+    /// The documented contract check: content and style together, reported as a list instead of an
+    /// exception. Used by the tests and by anyone checking an AI answer before it is rendered.
+    /// Unlike the capture pipeline, nothing here is repaired — an out-of-range style is an error.
+    /// </summary>
+    public static List<string> ValidateResumeJson(string json) {
+        var errors=new List<string>();
+        System.Text.Json.JsonDocument doc;
+        try { doc=System.Text.Json.JsonDocument.Parse(json,new System.Text.Json.JsonDocumentOptions{AllowTrailingCommas=true,CommentHandling=System.Text.Json.JsonCommentHandling.Skip}); }
+        catch(System.Text.Json.JsonException ex) { errors.Add("The resume JSON could not be parsed: "+ex.Message); return errors; }
+
+        using(doc) {
+            try { Validate(doc.RootElement); }
+            catch(InvalidDataException ex) {
+                foreach(var line in ex.Message.Split('\n')) {
+                    var trimmed=line.TrimStart().TrimStart('•').Trim();
+                    if(trimmed.Length>0 && !trimmed.StartsWith("Profile schema errors",StringComparison.Ordinal)) errors.Add(trimmed);
+                }
+            }
+        }
+        return errors;
     }
 }

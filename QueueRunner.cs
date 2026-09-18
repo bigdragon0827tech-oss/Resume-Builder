@@ -5,6 +5,19 @@ namespace ResumeBuilder;
 
 public enum QueueState { Idle, Running, Paused, Finished }
 
+/// <summary>Whether a captured answer may be attributed to the active job.</summary>
+public enum CaptureDecision {
+    Accept,
+    /// <summary>No job is waiting: the capture has nothing to belong to.</summary>
+    NoActiveJob,
+    /// <summary>Already accepted for an earlier job.</summary>
+    Duplicate,
+    /// <summary>Belongs to a job whose capture timed out; never given to the next job.</summary>
+    LateResponse,
+    /// <summary>A slice of our own prepared request, not ChatGPT's answer.</summary>
+    PromptEcho
+}
+
 /// <summary>What to do after a rejected response.</summary>
 public enum FailureOutcome {
     /// <summary>First rejection: the job stays Processing and another Copy is requested.</summary>
@@ -26,6 +39,7 @@ public enum FailureOutcome {
 public sealed class QueueRunner {
     readonly List<JobTask> _snapshot = new();
     readonly HashSet<string> _acceptedHashes = new(StringComparer.Ordinal);
+    readonly HashSet<string> _timedOutHashes = new(StringComparer.Ordinal);
     int _index = -1;
     int _strikes;
 
@@ -136,6 +150,37 @@ public sealed class QueueRunner {
         _strikes++;
         if (_strikes >= 2) { ActiveJobId = null; return FailureOutcome.GiveUp; }
         return FailureOutcome.RetryCopy;
+    }
+
+    /// <summary>
+    /// A6.6.13: no valid capture arrived within the watchdog timeout after ChatGPT finished. Nothing is
+    /// active afterwards (the caller marks the job Failed / CaptureTimeout and advances).
+    /// <paramref name="clipboardText"/> is the profile-like text on the clipboard at that moment, if any
+    /// (most likely the timed-out job's own answer). It is remembered so that a late event carrying it
+    /// can never be attributed to the next job. Returns the job that timed out.
+    /// </summary>
+    public string? OnCaptureTimedOut(string? clipboardText) {
+        var timedOut = ActiveJobId;
+        ActiveJobId = null;
+        _strikes = 0;
+        if (!string.IsNullOrWhiteSpace(clipboardText) && !IsDuplicate(clipboardText))
+            _timedOutHashes.Add(Hash(clipboardText));
+        return timedOut;
+    }
+
+    /// <summary>True when this response was on the clipboard when an earlier job's capture timed out.</summary>
+    public bool IsLateResponse(string text) => _timedOutHashes.Contains(Hash(text));
+
+    /// <summary>
+    /// Decides whether a profile-like capture may be attributed to the active job. Pure: the caller has
+    /// already checked <see cref="ResultCapture.ShouldCapture"/> and performs the effects.
+    /// </summary>
+    public CaptureDecision Classify(string text, string? preparedText) {
+        if (ActiveJobId is null) return CaptureDecision.NoActiveJob;
+        if (IsDuplicate(text)) return CaptureDecision.Duplicate;
+        if (IsLateResponse(text)) return CaptureDecision.LateResponse;
+        if (PromptEchoGuard.IsEchoOfPrompt(text, preparedText)) return CaptureDecision.PromptEcho;
+        return CaptureDecision.Accept;
     }
 
     /// <summary>Abandons the active job (the Skip button). The caller marks it Failed.</summary>

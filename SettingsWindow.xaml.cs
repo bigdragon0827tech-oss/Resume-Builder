@@ -6,8 +6,519 @@ namespace ResumeBuilder;
 
 public partial class SettingsWindow : Window {
     AppSettings _s=Storage.LoadSettings();
-    public SettingsWindow(){ InitializeComponent(); LoadFields(); RefreshInspector(); }
-    void LoadFields(){ ResumeBox.Text=_s.OriginalResume; PromptBox.Text=_s.MasterPrompt; BaselineStatus.Text=File.Exists(BaselineProfileImporter.BaselineProfilePath) ? "Imported" : "Not imported"; IncomingBox.Text=_s.IncomingFolder; ImportedBox.Text=_s.ImportedFolder; RootBox.Text=_s.ResumeRootFolder; DocxBox.IsChecked=_s.Docx; PdfBox.IsChecked=_s.Pdf; AutoFillBox.IsChecked=_s.AutoFillComposer; AutoCaptureBox.IsChecked=_s.AutoCaptureResult; AutoSendBox.IsChecked=_s.AutoSend; }
+    public SettingsWindow(){ InitializeComponent(); LoadFields(); RefreshInspector(); InitTracking(); }
+
+    // ---------- job application tracking dashboard ----------
+    //
+    // The views edit the live JobTask objects from MainWindow whenever this window has one as its
+    // owner, so a status change here and a queue change there can never overwrite each other. Every
+    // calculation lives in JobTracker; this is only the screen.
+
+    /// <summary>The tasks being tracked: the main window's live list, or the saved file if standalone.</summary>
+    IReadOnlyList<JobTask> TrackedTasks => (Owner as MainWindow)?.Tasks ?? (_standaloneTasks ??= Storage.LoadTasks());
+    List<JobTask>? _standaloneTasks;
+
+    /// <summary>Set while the dashboard is rebuilding, so rebinding a row does not look like an edit.</summary>
+    bool _refreshingTracking;
+
+    bool _boardView;
+
+    /// <summary>One bar of the activity chart. Heights are pixels, worked out per refresh.</summary>
+    sealed class ActivityBar {
+        public string Label { get; init; } = "";
+        public string CountLabel { get; init; } = "";
+        public double BarHeight { get; init; }
+        public double Width { get; init; }
+        public Thickness Gap { get; init; }
+        public System.Windows.Media.Brush BarBrush { get; init; } = System.Windows.Media.Brushes.Gray;
+        public string Tooltip { get; init; } = "";
+    }
+
+    /// <summary>One stage box in the pipeline strip.</summary>
+    sealed class PipelineBox {
+        public string Status { get; init; } = "";
+        public int Count { get; init; }
+        public string Conversion { get; init; } = "";
+        public string Tooltip { get; init; } = "";
+        public Visibility ConversionVisibility { get; init; }
+        public Visibility ArrowVisibility { get; init; }
+        public System.Windows.Media.Geometry? Icon { get; init; }
+        public System.Windows.Media.Brush Background { get; init; } = System.Windows.Media.Brushes.Gainsboro;
+        public System.Windows.Media.Brush Foreground { get; init; } = System.Windows.Media.Brushes.Black;
+    }
+
+    /// <summary>One Kanban column.</summary>
+    sealed class BoardColumn {
+        public string Status { get; init; } = "";
+        public List<JobTask> Jobs { get; init; } = new();
+        public int Count => Jobs.Count;
+        public Visibility EmptyVisibility => Jobs.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        public System.Windows.Media.Geometry? Icon { get; init; }
+        public System.Windows.Media.Brush Background { get; init; } = System.Windows.Media.Brushes.Gainsboro;
+        public System.Windows.Media.Brush Foreground { get; init; } = System.Windows.Media.Brushes.Black;
+    }
+
+    const string ActivityLast7="7 Days", ActivityLast30="30 Days", ActivityAllTime="All Time";
+
+    /// <summary>
+    /// The badge colours for a status, taken from the window's resources so XAML stays the single
+    /// source of truth. A missing key falls back rather than throwing the dashboard away.
+    /// </summary>
+    System.Windows.Media.Brush StatusBrush(string status,string suffix) =>
+        TryFindResource("Status"+status+suffix) as System.Windows.Media.Brush
+        ?? TryFindResource("StatusViewed"+suffix) as System.Windows.Media.Brush
+        ?? System.Windows.Media.Brushes.Gray;
+
+    /// <summary>The vector icon for a status, from the same resources the list badge uses.</summary>
+    System.Windows.Media.Geometry? StatusIcon(string status) =>
+        TryFindResource("Icon"+status) as System.Windows.Media.Geometry;
+
+    /// <summary>The exact day picked from the calendar, or null when a quick range is in force.</summary>
+    DateTime? _exactDate;
+
+    /// <summary>The quick range currently chosen. Ignored while an exact date is set.</summary>
+    string _dateFilter=DateFilter.AllDates;
+
+    void InitTracking() {
+        foreach(var filter in ApplicationStatus.Filters) TrackingFilterBox.Items.Add(filter);
+        foreach(var range in DateFilter.Options) QuickDateList.Items.Add(range);
+        foreach(var range in new[]{ActivityLast7,ActivityLast30,ActivityAllTime}) ActivityRangeBox.Items.Add(range);
+
+        _refreshingTracking=true;
+        TrackingFilterBox.SelectedIndex=0;      // All
+        ActivityRangeBox.SelectedIndex=1;       // 30 days
+        ListToggle.IsChecked=true;              // the Checked handler is inert while refreshing
+        _refreshingTracking=false;
+
+        // The flow graph is drawn against the canvas's real width, so it is rebuilt when that changes.
+        FlowCanvas.SizeChanged+=(_,_) => { if(_boardView) BuildFlowGraph(TrackedTasks); };
+
+        UpdateViewToggle();
+        RefreshTracking();
+    }
+
+    // ---------- date filter: quick ranges plus an exact day ----------
+
+    void DateFilterButton_Click(object s,RoutedEventArgs e) {
+        DateFilterPopup.IsOpen=DateFilterButton.IsChecked==true;
+        if(!DateFilterPopup.IsOpen) return;
+
+        _refreshingTracking=true;
+        QuickDateList.SelectedItem=_exactDate is null?_dateFilter:null;
+        DateFilterCalendar.SelectedDate=_exactDate;
+        DateFilterCalendar.DisplayDate=_exactDate ?? DateTime.Now;
+        _refreshingTracking=false;
+    }
+
+    void DateFilterPopup_Closed(object? s,EventArgs e) => DateFilterButton.IsChecked=false;
+
+    void QuickDate_Changed(object s,System.Windows.Controls.SelectionChangedEventArgs e) {
+        if(_refreshingTracking || QuickDateList.SelectedItem is not string choice) return;
+
+        _dateFilter=choice;
+        _exactDate=null;
+        DateFilterCalendar.SelectedDate=null;
+        DateFilterButton.Content=choice;
+        DateFilterPopup.IsOpen=false;
+        RefreshTracking();
+    }
+
+    /// <summary>An exact day from the calendar. It uses the same tracking date as the quick ranges.</summary>
+    void DateFilterCalendar_Changed(object s,System.Windows.Controls.SelectionChangedEventArgs e) {
+        if(_refreshingTracking || DateFilterCalendar.SelectedDate is not DateTime day) return;
+
+        _exactDate=day.Date;
+        QuickDateList.SelectedItem=null;
+        DateFilterButton.Content=day.ToString("MMM d, yyyy");
+        DateFilterPopup.IsOpen=false;
+        RefreshTracking();
+    }
+
+    void TrackingFilter_Changed(object s,System.Windows.Controls.SelectionChangedEventArgs e) {
+        if(!_refreshingTracking) RefreshTracking();
+    }
+
+    void TrackingSearch_Changed(object s,System.Windows.Controls.TextChangedEventArgs e) {
+        if(!_refreshingTracking) RefreshTracking();
+    }
+
+    void TrackingRefresh_Click(object s,RoutedEventArgs e) {
+        _standaloneTasks=null;                  // re-read from disk when there is no main window
+        RefreshTracking();
+    }
+
+    void TrackingListView_Click(object s,RoutedEventArgs e) {
+        _boardView=false; UpdateViewToggle();
+        if(!_refreshingTracking) RefreshTracking();
+    }
+
+    void TrackingBoardView_Click(object s,RoutedEventArgs e) {
+        _boardView=true; UpdateViewToggle();
+        if(!_refreshingTracking) RefreshTracking();
+    }
+
+    /// <summary>
+    /// List and Board swap both the table and the graph above it: the daily activity chart belongs to
+    /// the list, the pipeline flow graph to the board. The stage strip is hidden in board mode because
+    /// the flow graph already shows those counts.
+    /// </summary>
+    void UpdateViewToggle() {
+        if(ListViewCard is null) return;
+        ListViewCard.Visibility=_boardView?Visibility.Collapsed:Visibility.Visible;
+        BoardViewCard.Visibility=_boardView?Visibility.Visible:Visibility.Collapsed;
+        ActivityCard.Visibility=_boardView?Visibility.Collapsed:Visibility.Visible;
+        FlowCard.Visibility=_boardView?Visibility.Visible:Visibility.Collapsed;
+        PipelineView.Visibility=_boardView?Visibility.Collapsed:Visibility.Visible;
+        PipelineHeader.Visibility=_boardView?Visibility.Collapsed:Visibility.Visible;
+    }
+
+    /// <summary>Rebuilds every part of the dashboard from the current tasks and filters.</summary>
+    public void RefreshTracking() {
+        if(TrackingGrid is null || _refreshingTracking) return;
+        _refreshingTracking=true;
+        try {
+            var tasks=TrackedTasks;
+
+            // Reconnect any job whose document exists but whose path predates tracking, so its
+            // Resume actions work instead of silently doing nothing.
+            if(JobTracker.RelinkResumes(tasks,Storage.LoadSettings().ResumeRootFolder)>0)
+                JobTracker.SaveTrackingData(tasks);
+
+            var filtered=JobTracker.ApplyFilters(tasks,TrackingSearchBox.Text,
+                                                 TrackingFilterBox.SelectedItem as string,
+                                                 _dateFilter,null,_exactDate);
+
+            var selected=TrackingGrid.SelectedItem as JobTask;
+            TrackingGrid.ItemsSource=filtered;
+            if(selected is not null && filtered.Contains(selected)) TrackingGrid.SelectedItem=selected;
+
+            // Empty states tell the two cases apart: nothing tracked at all, or nothing matching.
+            ListEmptyText.Visibility=filtered.Count==0?Visibility.Visible:Visibility.Collapsed;
+            ListEmptyText.Text=tasks.Count==0
+                ? "No applications found."
+                : "No applications match the current filters.";
+
+            BoardView.ItemsSource=ApplicationStatus.Ordered.Select(status => new BoardColumn{
+                Status=status,
+                Jobs=JobTracker.GetTasksByStatus(filtered,status),
+                Icon=StatusIcon(status),
+                Background=StatusBrush(status,"Bg"),
+                Foreground=StatusBrush(status,"Fg")
+            }).ToList();
+
+            // The summary cards and the pipeline describe everything, not the current filter.
+            var activity=JobTracker.GetApplicationActivity(tasks);
+            TodayCountText.Text=activity.Today.ToString();
+            MonthCountText.Text=activity.Last30Days.ToString();
+            TotalCountText.Text=activity.Total.ToString();
+
+            var stats=JobTracker.GetStatistics(tasks);
+            var stages=JobTracker.GetPipelineCounts(tasks);
+            PipelineView.ItemsSource=stages.Select((stage,index) => {
+                // Under each stage: the previous stage's share of the two. The first has no previous.
+                var previous=index==0?0:stages[index-1].Count;
+                return new PipelineBox{
+                    Status=stage.Status, Count=stage.Count,
+                    Conversion=previous+stage.Count==0?"":JobStatistics.WholePercent(JobStatistics.PairShare(previous,stage.Count))+" of pair",
+                    ConversionVisibility=index>0 && previous+stage.Count>0?Visibility.Visible:Visibility.Collapsed,
+                    ArrowVisibility=index<ApplicationStatus.Ordered.Length-1?Visibility.Visible:Visibility.Collapsed,
+                    Tooltip=StageTooltip(stages,index),
+                    Icon=StatusIcon(stage.Status),
+                    Background=StatusBrush(stage.Status,"Bg"),
+                    Foreground=StatusBrush(stage.Status,"Fg")
+                };
+            }).ToList();
+
+            TrackingCountsText.Text=
+                $"Total jobs: {stats.Total}    Viewed: {stats.Viewed}    Ready: {stats.Ready}    "+
+                $"Applied: {stats.Applied}    Interview: {stats.Interview}    Done: {stats.Done}";
+            TrackingRatesText.Text=
+                $"Applied rate: {JobStatistics.Percent(stats.AppliedRate)} ({stats.AppliedOrLater}/{stats.Total})    "+
+                $"Interview rate: {JobStatistics.Percent(stats.InterviewRate)} ({stats.InterviewOrLater}/{stats.AppliedOrLater})    "+
+                $"Completion rate: {JobStatistics.Percent(stats.CompletionRate)} ({stats.Done}/{stats.InterviewOrLater})";
+
+            if(_boardView) BuildFlowGraph(tasks);
+            else RefreshActivityChart(tasks);
+
+            PerfLog.Line($"TRACKING dashboard refreshed total={stats.Total} applied={stats.Applied} "+
+                         $"interview={stats.Interview} done={stats.Done}");
+        } finally {
+            _refreshingTracking=false;
+        }
+    }
+
+    /// <summary>A plain WPF bar chart: one Border per day, scaled against the busiest day on show.</summary>
+    void RefreshActivityChart(IReadOnlyList<JobTask> tasks) {
+        const double PlotHeight=100;
+
+        var days=(ActivityRangeBox.SelectedItem as string) switch {
+            ActivityLast7 => 7,
+            ActivityAllTime => 0,
+            _ => 30
+        };
+
+        var counts=JobTracker.GetDailyApplicationCounts(tasks,days);
+        var peak=counts.Count==0?0:counts.Max(c => c.Count);
+
+        // Bars share the card's width, so a 30-day window stays inside it without scrolling.
+        var (width,gap)=counts.Count switch {
+            <= 8 => (46.0,4.0),
+            <= 14 => (34.0,3.0),
+            <= 24 => (24.0,2.0),
+            <= 40 => (16.0,2.0),
+            _ => (10.0,1.0)
+        };
+
+        // With many bars only every nth date is labelled, so the axis never overlaps itself.
+        var labelEvery=counts.Count switch { <= 10 => 1, <= 16 => 2, <= 32 => 4, _ => 7 };
+        var accent=TryFindResource("AccentSoft") as System.Windows.Media.Brush ?? System.Windows.Media.Brushes.SteelBlue;
+        var faint=TryFindResource("GridLine") as System.Windows.Media.Brush ?? System.Windows.Media.Brushes.Gainsboro;
+
+        ActivityChart.ItemsSource=counts.Select((c,index) => new ActivityBar{
+            // Label the last bar always, then work backwards, so "today" is never the hidden one.
+            Label=(counts.Count-1-index)%labelEvery==0?c.Label:"",
+            CountLabel=c.Count>0?c.Count.ToString():"",
+            Width=width,
+            Gap=new Thickness(gap,0,gap,0),
+            // A day with no applications keeps a faint sliver, so the axis reads as a row of days.
+            BarHeight=peak==0?2:Math.Max(2,c.Count/(double)peak*PlotHeight),
+            BarBrush=c.Count>0?accent:faint,
+            Tooltip=$"{c.Date:MMM d, yyyy}{Environment.NewLine}{c.Count} Application{(c.Count==1?"":"s")}"
+        }).ToList();
+
+        ActivityPeakText.Text=peak.ToString();
+
+        var empty=peak==0;
+        ActivityChart.Visibility=empty?Visibility.Collapsed:Visibility.Visible;
+        ActivityGuides.Visibility=empty?Visibility.Collapsed:Visibility.Visible;
+        ActivityEmptyText.Visibility=empty?Visibility.Visible:Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// "Applied / 30 jobs / 60% Ready vs 40% Applied" — the pair share, spelled out for both sides so
+    /// the percentage cannot be mistaken for a conversion rate. Shared by the pipeline and the graph.
+    /// </summary>
+    static string StageTooltip(IReadOnlyList<PipelineStage> stages,int index) {
+        var stage=stages[index];
+        var text=$"{stage.Status}{Environment.NewLine}{stage.Count} job{(stage.Count==1?"":"s")}";
+
+        if(index==0) return text;
+        var previous=stages[index-1];
+        if(previous.Count+stage.Count==0) return text;
+
+        return text+Environment.NewLine+JobStatistics.PairSplit(previous.Status,previous.Count,stage.Status,stage.Count);
+    }
+
+    /// <summary>
+    /// The board's graph: five bands whose height is proportional to the stage count, joined by
+    /// tapering connectors, so the drop-off from stage to stage is visible at a glance. Plain WPF
+    /// shapes on a Canvas — no charting dependency.
+    /// </summary>
+    void BuildFlowGraph(IReadOnlyList<JobTask> tasks) {
+        if(FlowCanvas is null) return;
+        FlowCanvas.Children.Clear();
+
+        var stages=JobTracker.GetPipelineCounts(tasks);
+        var peak=stages.Max(s => s.Count);
+
+        FlowEmptyText.Visibility=peak==0?Visibility.Visible:Visibility.Collapsed;
+        if(peak==0) return;
+
+        var width=FlowCanvas.ActualWidth;
+        var height=FlowCanvas.ActualHeight;
+        if(width<60 || height<60) return;          // not laid out yet; SizeChanged will call back
+
+        const double NodeWidth=70, LabelHeight=44, MinBand=5;
+        var plotHeight=Math.Max(30,height-LabelHeight);
+        var gap=stages.Count>1?(width-stages.Count*NodeWidth)/(stages.Count-1):0;
+        if(gap<8) return;                           // too narrow to draw honestly
+
+        // Band geometry first, so the connectors can be drawn underneath the nodes.
+        var tops=new double[stages.Count];
+        var heights=new double[stages.Count];
+        var lefts=new double[stages.Count];
+        for(var i=0;i<stages.Count;i++) {
+            heights[i]=Math.Max(MinBand,stages[i].Count/(double)peak*plotHeight);
+            tops[i]=(plotHeight-heights[i])/2;
+            lefts[i]=i*(NodeWidth+gap);
+        }
+
+        // A transparent full-height target per stage, added first so it sits behind everything. A
+        // stage with one job is a five-pixel band; without this, its statistics would be unhoverable.
+        for(var i=0;i<stages.Count;i++) {
+            var target=new System.Windows.Controls.Border {
+                Width=NodeWidth+gap*0.6,
+                Height=height,
+                Background=System.Windows.Media.Brushes.Transparent,
+                ToolTip=StageTooltip(stages,i)
+            };
+            System.Windows.Controls.Canvas.SetLeft(target,lefts[i]-(target.Width-NodeWidth)/2);
+            System.Windows.Controls.Canvas.SetTop(target,0);
+            FlowCanvas.Children.Add(target);
+        }
+
+        for(var i=0;i<stages.Count-1;i++) {
+            var flow=new System.Windows.Shapes.Polygon {
+                Fill=StatusBrush(stages[i].Status,"Bg"),
+                Opacity=0.85,
+                ToolTip=$"{stages[i].Status} → {stages[i+1].Status}{Environment.NewLine}"+
+                        (stages[i].Count+stages[i+1].Count==0?"no jobs in either stage"
+                            :JobStatistics.PairSplit(stages[i].Status,stages[i].Count,stages[i+1].Status,stages[i+1].Count)),
+                Points=new System.Windows.Media.PointCollection {
+                    new System.Windows.Point(lefts[i]+NodeWidth,tops[i]),
+                    new System.Windows.Point(lefts[i+1],tops[i+1]),
+                    new System.Windows.Point(lefts[i+1],tops[i+1]+heights[i+1]),
+                    new System.Windows.Point(lefts[i]+NodeWidth,tops[i]+heights[i])
+                }
+            };
+            FlowCanvas.Children.Add(flow);
+        }
+
+        for(var i=0;i<stages.Count;i++) {
+            var stage=stages[i];
+
+            var node=new System.Windows.Controls.Border {
+                Width=NodeWidth,
+                Height=heights[i],
+                CornerRadius=new CornerRadius(4),
+                Background=StatusBrush(stage.Status,"Fg"),
+                Opacity=0.9,
+                ToolTip=StageTooltip(stages,i)
+            };
+            System.Windows.Controls.Canvas.SetLeft(node,lefts[i]);
+            System.Windows.Controls.Canvas.SetTop(node,tops[i]);
+            FlowCanvas.Children.Add(node);
+
+            // Icon, name and count sit under the band, where there is always room for them.
+            var caption=new System.Windows.Controls.StackPanel { Width=NodeWidth+gap*0.6, HorizontalAlignment=System.Windows.HorizontalAlignment.Center };
+
+            var title=new System.Windows.Controls.StackPanel { Orientation=System.Windows.Controls.Orientation.Horizontal, HorizontalAlignment=System.Windows.HorizontalAlignment.Center };
+            title.Children.Add(new System.Windows.Shapes.Path {
+                Data=StatusIcon(stage.Status), Fill=StatusBrush(stage.Status,"Fg"),
+                Width=11, Height=11, Stretch=System.Windows.Media.Stretch.Uniform,
+                VerticalAlignment=System.Windows.VerticalAlignment.Center, Margin=new Thickness(0,0,4,0)
+            });
+            title.Children.Add(new System.Windows.Controls.TextBlock {
+                Text=stage.Status, FontSize=10.5, FontWeight=FontWeights.SemiBold,
+                Foreground=StatusBrush(stage.Status,"Fg")
+            });
+            caption.Children.Add(title);
+
+            caption.Children.Add(new System.Windows.Controls.TextBlock {
+                Text=stage.Count.ToString(), FontSize=15, FontWeight=FontWeights.Bold,
+                Foreground=StatusBrush(stage.Status,"Fg"), HorizontalAlignment=System.Windows.HorizontalAlignment.Center
+            });
+
+            System.Windows.Controls.Canvas.SetLeft(caption,lefts[i]-(caption.Width-NodeWidth)/2);
+            System.Windows.Controls.Canvas.SetTop(caption,plotHeight+6);
+            FlowCanvas.Children.Add(caption);
+        }
+    }
+
+    // ---------- row and card actions ----------
+
+    /// <summary>
+    /// The job a menu item or in-row control belongs to. A context menu inside a template carries the
+    /// row's own task as its DataContext, so this works for both the list and the board without
+    /// depending on what happens to be selected.
+    /// </summary>
+    static JobTask? JobOf(object sender) => (sender as FrameworkElement)?.DataContext as JobTask;
+
+    void TrackingSetStatus_Click(object s,RoutedEventArgs e) {
+        if(s is not System.Windows.Controls.MenuItem item || item.Tag is not string status) return;
+        ChangeStatus(JobOf(s) ?? TrackingGrid.SelectedItem as JobTask,status);
+    }
+
+    /// <summary>The in-row dropdown. Rebinding during a refresh must not be mistaken for a choice.</summary>
+    void TrackingStatusBox_Changed(object s,System.Windows.Controls.SelectionChangedEventArgs e) {
+        if(_refreshingTracking) return;
+        if(s is not System.Windows.Controls.ComboBox box || box.SelectedItem is not string status) return;
+        ChangeStatus(JobOf(s),status);
+    }
+
+    void ChangeStatus(JobTask? job,string status) {
+        if(job is null){ TrackingStatus.Text="Select a job first."; return; }
+
+        if(!JobTracker.UpdateStatus(job,status)) {
+            TrackingStatus.Text=$"{job.Company} — {job.Title} is already {status}.";
+            return;
+        }
+
+        JobTracker.SaveTrackingData(TrackedTasks);
+        // Rebuilding the grid from inside a row's own event is deferred, so the control that raised it
+        // is not torn down underneath the event.
+        Dispatcher.BeginInvoke(new Action(RefreshTracking));
+        TrackingStatus.Text=$"{job.Company} — {job.Title} is now {job.ApplicationStatus}. Saved.";
+    }
+
+    void TrackingGrid_DoubleClick(object s,System.Windows.Input.MouseButtonEventArgs e) =>
+        OpenJobUrl(TrackingGrid.SelectedItem as JobTask);
+
+    /// <summary>
+    /// Widening the window can leave the grid scrolled to an offset that no longer exists, which
+    /// shows as a strip of blank space on the right. The DataGrid owns horizontal scrolling on its
+    /// own (the dashboard's ScrollViewer is vertical only), so clamping its offset here is enough.
+    /// </summary>
+    void TrackingGrid_SizeChanged(object s,SizeChangedEventArgs e) {
+        if(!e.WidthChanged) return;
+
+        var scroller=Descendant<System.Windows.Controls.ScrollViewer>(TrackingGrid);
+        if(scroller is null) return;
+
+        if(scroller.HorizontalOffset>scroller.ScrollableWidth)
+            scroller.ScrollToHorizontalOffset(scroller.ScrollableWidth);
+    }
+
+    static T? Descendant<T>(DependencyObject root) where T : DependencyObject {
+        for(var i=0;i<System.Windows.Media.VisualTreeHelper.GetChildrenCount(root);i++) {
+            var child=System.Windows.Media.VisualTreeHelper.GetChild(root,i);
+            if(child is T match) return match;
+            if(Descendant<T>(child) is T nested) return nested;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// A DataGrid does not select on right-click, so the row under the cursor is selected first —
+    /// otherwise the context menu would silently act on whatever was selected before.
+    /// </summary>
+    void TrackingGrid_RightButtonDown(object s,System.Windows.Input.MouseButtonEventArgs e) {
+        for(var element=e.OriginalSource as DependencyObject; element is not null;
+            element=System.Windows.Media.VisualTreeHelper.GetParent(element))
+            if(element is System.Windows.Controls.DataGridRow row) { row.IsSelected=true; return; }
+    }
+
+    void TrackingOpenUrl_Click(object s,RoutedEventArgs e) =>
+        OpenJobUrl(JobOf(s) ?? TrackingGrid.SelectedItem as JobTask);
+
+    void OpenJobUrl(JobTask? job) {
+        if(job is null){ TrackingStatus.Text="Select a job first."; return; }
+        if(string.IsNullOrWhiteSpace(job.Link)) { TrackingStatus.Text=$"{job.Company} — {job.Title} has no job link."; return; }
+
+        TrackingStatus.Text=JobTracker.OpenJobUrl(job)
+            ? $"Opened the posting for {job.Company} — {job.Title} in your browser."
+            : $"That job link could not be opened: {job.Link}";
+    }
+
+    void TrackingOpenResume_Click(object s,RoutedEventArgs e) {
+        var job=JobOf(s) ?? TrackingGrid.SelectedItem as JobTask;
+        if(job is null){ TrackingStatus.Text="Select a job first."; return; }
+
+        TrackingStatus.Text=JobTracker.OpenResume(job)
+            ? $"Opened the resume for {job.Company} — {job.Title}."
+            : $"No generated resume was found for {job.Company} — {job.Title}.";
+    }
+
+    void TrackingOpenResumeFolder_Click(object s,RoutedEventArgs e) {
+        var job=JobOf(s) ?? TrackingGrid.SelectedItem as JobTask;
+        if(job is null){ TrackingStatus.Text="Select a job first."; return; }
+
+        TrackingStatus.Text=JobTracker.OpenResumeFolder(job)
+            ? $"Opened the resume folder for {job.Company} — {job.Title}."
+            : $"No resume folder was found for {job.Company} — {job.Title}.";
+    }
+
+    void LoadFields(){ ResumeBox.Text=_s.OriginalResume; PromptBox.Text=_s.MasterPrompt; BaselineStatus.Text=File.Exists(BaselineProfileImporter.BaselineProfilePath) ? "Imported" : "Not imported"; IncomingBox.Text=_s.IncomingFolder; ImportedBox.Text=_s.ImportedFolder; RootBox.Text=_s.ResumeRootFolder; DocxBox.IsChecked=_s.Docx; PdfBox.IsChecked=_s.Pdf; AutoFillBox.IsChecked=_s.AutoFillComposer; AutoCaptureBox.IsChecked=_s.AutoCaptureResult; AutoSendBox.IsChecked=_s.AutoSend; ReadyToastBox.IsChecked=_s.ReadyToast; ReadySoundBox.IsChecked=_s.ReadySound; ReadyFlashBox.IsChecked=_s.ReadyFlash; FocusHotkeyBox.IsChecked=_s.FocusHotkey; }
     string? PickFile(string filter){ var d=new Microsoft.Win32.OpenFileDialog{Filter=filter}; return d.ShowDialog()==true?d.FileName:null; }
     string? PickFolder(){ using var d=new Forms.FolderBrowserDialog(); return d.ShowDialog()==Forms.DialogResult.OK?d.SelectedPath:null; }
     void ResumeBrowse_Click(object s,RoutedEventArgs e){var p=PickFile("Resume files|*.docx;*.pdf|All files|*.*");if(p!=null)ResumeBox.Text=p;}
@@ -18,24 +529,33 @@ public partial class SettingsWindow : Window {
     void Save_Click(object s,RoutedEventArgs e){
         if(!string.IsNullOrWhiteSpace(IncomingBox.Text)&&!Directory.Exists(IncomingBox.Text)){System.Windows.MessageBox.Show("Incoming folder does not exist.");return;}
         if(!string.IsNullOrWhiteSpace(ImportedBox.Text)&&!Directory.Exists(ImportedBox.Text)){System.Windows.MessageBox.Show("Imported folder does not exist.");return;}
-        _s=new(){OriginalResume=ResumeBox.Text.Trim(),CandidateProfile=_s.CandidateProfile,MasterPrompt=PromptBox.Text.Trim(),IncomingFolder=IncomingBox.Text.Trim(),ImportedFolder=ImportedBox.Text.Trim(),ResumeRootFolder=RootBox.Text.Trim(),Docx=DocxBox.IsChecked==true,Pdf=PdfBox.IsChecked==true,AutoFillComposer=AutoFillBox.IsChecked==true,AutoCaptureResult=AutoCaptureBox.IsChecked==true,AutoSend=AutoSendBox.IsChecked==true};
+        _s=new(){OriginalResume=ResumeBox.Text.Trim(),CandidateProfile=_s.CandidateProfile,MasterPrompt=PromptBox.Text.Trim(),IncomingFolder=IncomingBox.Text.Trim(),ImportedFolder=ImportedBox.Text.Trim(),ResumeRootFolder=RootBox.Text.Trim(),Docx=DocxBox.IsChecked==true,Pdf=PdfBox.IsChecked==true,AutoFillComposer=AutoFillBox.IsChecked==true,AutoCaptureResult=AutoCaptureBox.IsChecked==true,AutoSend=AutoSendBox.IsChecked==true,ReadyToast=ReadyToastBox.IsChecked==true,ReadySound=ReadySoundBox.IsChecked==true,ReadyFlash=ReadyFlashBox.IsChecked==true,FocusHotkey=FocusHotkeyBox.IsChecked==true};
         Storage.SaveSettings(_s); System.Windows.MessageBox.Show("Settings saved.");
     }
 
-    void LoadSampleJobs_Click(object s, RoutedEventArgs e) {
+    void LoadSampleJobs_Click(object s, RoutedEventArgs e) =>
+        WriteJobs(SampleJobs.CreateSampleJobs(), "sample-job", "3 sample jobs created in Incoming, one file each.");
+
+    /// <summary>50 synthetic jobs for queue stress testing. Nothing is written until this is clicked.</summary>
+    void LoadStressJobs_Click(object s, RoutedEventArgs e) =>
+        WriteJobs(SampleJobs.CreateStressJobs(50), "stress-job",
+            "50 synthetic jobs created in Incoming, one file each. They use invented companies and job descriptions.");
+
+    /// <summary>One file per job, because the importer takes exactly one job per file.</summary>
+    void WriteJobs(List<JobImportData> jobs, string filePrefix, string message) {
         var settings=Storage.LoadSettings();
         if(string.IsNullOrWhiteSpace(settings.IncomingFolder)||!Directory.Exists(settings.IncomingFolder)){System.Windows.MessageBox.Show("Configure an existing Incoming folder first.");return;}
-        var batch=new JobBatch{SchemaVersion="1.0",Source="sample",Jobs=new(){
-            new(){JobId="SAMPLE-001",Company="Google",Title="Senior Software Engineer",Location="Mountain View, CA",Jd="Sample JD for a senior software engineer role."},
-            new(){JobId="SAMPLE-002",Company="Stripe",Title="Backend Engineer",Location="Remote",Jd="Sample JD for a backend engineer role."},
-            new(){JobId="SAMPLE-003",Company="Amazon",Title="Software Engineer II",Location="Seattle, WA",Jd="Sample JD for a software engineer role."}}};
-        var file=Path.Combine(settings.IncomingFolder,$"sample-jobs-{DateTime.Now:yyyyMMdd-HHmmssfff}.json");
-        File.WriteAllText(file,System.Text.Json.JsonSerializer.Serialize(batch,new System.Text.Json.JsonSerializerOptions{WriteIndented=true}));
-        System.Windows.MessageBox.Show("Sample JobBatch v1 created in Incoming. Click Refresh Input on the main screen.");
+        var stamp=DateTime.Now.ToString("yyyyMMdd-HHmmssfff");
+        var options=new System.Text.Json.JsonSerializerOptions{WriteIndented=true};
+        for(var i=0;i<jobs.Count;i++)
+            File.WriteAllText(Path.Combine(settings.IncomingFolder,$"{filePrefix}-{stamp}-{i+1:D3}.json"),
+                              System.Text.Json.JsonSerializer.Serialize(jobs[i],options));
+        System.Windows.MessageBox.Show(message+Environment.NewLine+Environment.NewLine+"Click Refresh Input on the main screen to import them.");
     }
+
     void ClearTestQueue_Click(object s, RoutedEventArgs e) {
-        var tasks=Storage.LoadTasks(); var n=tasks.RemoveAll(t=>t.JobId.StartsWith("SAMPLE-",StringComparison.OrdinalIgnoreCase)); Storage.SaveTasks(tasks);
-        System.Windows.MessageBox.Show($"Removed {n} sample task(s). Restart A to refresh the visible queue.");
+        var tasks=Storage.LoadTasks(); var n=tasks.RemoveAll(SampleJobs.IsTestJob); Storage.SaveTasks(tasks);
+        System.Windows.MessageBox.Show($"Removed {n} sample/stress task(s). Restart A to refresh the visible queue.");
     }
 
 

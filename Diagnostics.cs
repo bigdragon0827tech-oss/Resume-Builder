@@ -21,6 +21,18 @@ public static class PerfLog {
     /// <summary>Times a stage; dispose (or let `using` do it) to record the elapsed milliseconds.</summary>
     public static IDisposable Measure(string stage) => new Scope(stage);
 
+    public static void Clear() {
+        try {
+            lock (Gate) {
+                Directory.CreateDirectory(Storage.DataDir);
+                if (File.Exists(Path))
+                    File.Delete(Path);
+            }
+        } catch {
+            // Diagnostics must never break startup.
+        }
+    }
+    
     public static void Line(string text) {
         if (!Enabled) return;
         try {

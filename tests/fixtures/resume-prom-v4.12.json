@@ -1,0 +1,169 @@
+{
+  "info": {
+    "name": "BILLY LIN",
+    "title": "Senior AI/ML Software Engineer",
+    "location": "Menlo Park, CA",
+    "email": "billy.lin@example.com",
+    "phone": "(650) 555-0142",
+    "linkedin": "linkedin.com/in/billylin"
+  },
+  "summary": "Senior engineer with twelve years building distributed backend services and, for the last four, production machine-learning systems. Ships models end to end: data pipeline, training, evaluation, serving and the on-call rotation that follows.",
+  "skills": [
+    {
+      "category": "Languages",
+      "skills": ["Python", "Go", "TypeScript", "SQL"]
+    },
+    {
+      "category": "Machine Learning",
+      "skills": ["PyTorch", "scikit-learn", "MLflow", "Ray", "Hugging Face Transformers"]
+    },
+    {
+      "category": "Infrastructure",
+      "skills": ["AWS", "Kubernetes", "Terraform", "Kafka", "Postgres"]
+    }
+  ],
+  "experience": [
+    {
+      "title": "Senior AI Software Engineer",
+      "company": "Caterpillar Inc.",
+      "startDate": "Sep 2025",
+      "endDate": "Present",
+      "location": "Peoria, IL",
+      "employmentType": "Full-time",
+      "workArrangement": "Hybrid",
+      "subtitle": "Predictive Maintenance Platform",
+      "descriptionLines": [
+        "Architected production AI services handling 40 million daily inference requests across 12 fleet regions.",
+        "Cut model training cost 38 percent by moving the pipeline onto spot instances with checkpoint resume.",
+        "Led the evaluation harness that blocked three regressions from reaching customer equipment."
+      ]
+    },
+    {
+      "title": "Software Engineer",
+      "company": "Netflix",
+      "startDate": "Mar 2021",
+      "endDate": "Aug 2025",
+      "location": "Los Gatos, CA",
+      "employmentType": "Full-time",
+      "workArrangement": "Remote",
+      "subtitle": "",
+      "descriptionLines": [
+        "Built the recommendation feature store serving 200 million member profiles at p99 under 15 ms.",
+        "Migrated batch scoring from nightly Spark jobs to streaming, cutting recommendation staleness from 22 hours to 4 minutes."
+      ]
+    }
+  ],
+  "certifications": [
+    {
+      "name": "AWS Certified Machine Learning - Specialty",
+      "issuer": "Amazon Web Services",
+      "date": "2024"
+    }
+  ],
+  "education": [
+    {
+      "degree": "M.S.",
+      "major": "Computer Science",
+      "school": "Stanford University",
+      "startDate": "2013",
+      "endDate": "2015"
+    },
+    {
+      "degree": "B.S.",
+      "major": "Computer Science",
+      "school": "University of Illinois Urbana-Champaign",
+      "startDate": "2009",
+      "endDate": "2013"
+    }
+  ],
+  "style": {
+    "preset": "promV4.12",
+    "page": {
+      "size": "LETTER",
+      "marginTop": 0.45,
+      "marginBottom": 0.45,
+      "marginLeft": 0.55,
+      "marginRight": 0.55
+    },
+    "colors": {
+      "primary": "#1F4E79",
+      "body": "#000000",
+      "secondary": "#4A4A4A"
+    },
+    "fonts": {
+      "family": "Arial"
+    },
+    "name": {
+      "fontSize": 17,
+      "bold": true,
+      "alignment": "center",
+      "spaceAfter": 0
+    },
+    "headline": {
+      "fontSize": 12,
+      "bold": true,
+      "alignment": "center",
+      "spaceAfter": 0
+    },
+    "contact": {
+      "fontSize": 10,
+      "alignment": "center",
+      "spaceAfter": 3
+    },
+    "sectionHeading": {
+      "fontSize": 12.5,
+      "bold": true,
+      "color": "#1F4E79",
+      "uppercase": true,
+      "spaceBefore": 4,
+      "spaceAfter": 1,
+      "bottomBorder": true
+    },
+    "skillCategory": {
+      "fontSize": 11.5,
+      "bold": true,
+      "color": "#1F4E79",
+      "spaceBefore": 2,
+      "spaceAfter": 0
+    },
+    "skillValues": {
+      "fontSize": 10.5,
+      "bold": false,
+      "color": "#000000",
+      "lineSpacing": 1.0,
+      "spaceAfter": 1
+    },
+    "companyHeading": {
+      "fontSize": 12,
+      "bold": true,
+      "color": "#1F4E79",
+      "spaceBefore": 3,
+      "spaceAfter": 0,
+      "keepWithNext": true
+    },
+    "metadata": {
+      "fontSize": 10.5,
+      "color": "#4A4A4A",
+      "spaceAfter": 1
+    },
+    "body": {
+      "fontSize": 11,
+      "color": "#000000",
+      "lineSpacing": 1.0,
+      "spaceAfter": 1
+    },
+    "bullet": {
+      "fontSize": 11,
+      "color": "#000000",
+      "lineSpacing": 1.0,
+      "leftIndent": 0.18,
+      "hangingIndent": 0.14,
+      "spaceAfter": 1
+    },
+    "education": {
+      "fontSize": 11,
+      "lineSpacing": 1.0,
+      "spaceAfter": 0
+    }
+  }
+}

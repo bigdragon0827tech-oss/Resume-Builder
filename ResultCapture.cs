@@ -128,6 +128,10 @@ public static class ProfileResultStore {
     public static string RawPath(string jobId) => Path.Combine(ResultsDir, Safe(jobId) + ".raw.txt");
     public static string DocGenLogPath(string jobId) => Path.Combine(ResultsDir, Safe(jobId) + ".docgen.txt");
 
+    /// <summary>Style system: the fully resolved style a document was rendered with, for debugging.</summary>
+    public static string EffectiveStylePath(string? jobId) =>
+        Path.Combine(ResultsDir, Safe(string.IsNullOrWhiteSpace(jobId) ? ResultCapture.BaselineJobId : jobId) + ".effective-style.json");
+
     /// <summary>Records why documents could not be produced. Never touches the validated JSON.</summary>
     public static void SaveDocGenLog(string? jobId, string text) {
         try {
@@ -153,5 +157,34 @@ public static class ProfileResultStore {
     static string Safe(string jobId) {
         var cleaned = new string(jobId.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c).ToArray()).Trim();
         return cleaned.Length == 0 ? ResultCapture.BaselineJobId : cleaned;
+    }
+}
+
+/// <summary>
+/// A6.6.13 guard for "Copy last code block". The prepared request itself contains code blocks (the
+/// master prompt's schema template, for example). If an answer ever arrives without a code block, the
+/// shortcut could copy a block from the user's own prompt — and an empty schema template would pass
+/// validation and be saved as a "tailored" resume. A genuine answer is never a verbatim slice of the
+/// prompt, so text that is one is refused before it reaches the pipeline.
+/// </summary>
+public static class PromptEchoGuard {
+    const int MinimumLength = 40;
+
+    public static bool IsEchoOfPrompt(string? captured, string? preparedRequest) {
+        if (string.IsNullOrWhiteSpace(captured) || string.IsNullOrWhiteSpace(preparedRequest)) return false;
+        var copied = Collapse(captured);
+        if (copied.Length < MinimumLength) return false;
+        return Collapse(preparedRequest).Contains(copied, StringComparison.Ordinal);
+    }
+
+    /// <summary>Clipboard and code-block copies can change line endings and indentation; compare content.</summary>
+    static string Collapse(string text) {
+        var sb = new System.Text.StringBuilder(text.Length);
+        var inSpace = false;
+        foreach (var c in text) {
+            if (char.IsWhiteSpace(c)) { if (!inSpace) sb.Append(' '); inSpace = true; }
+            else { sb.Append(c); inSpace = false; }
+        }
+        return sb.ToString().Trim();
     }
 }

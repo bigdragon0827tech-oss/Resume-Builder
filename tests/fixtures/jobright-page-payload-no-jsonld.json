@@ -1,0 +1,15 @@
+{
+  "href": "https://jobright.ai/jobs/info/6aac7fec95c707f49dff195f?utm_source=1146",
+  "canonical": "https://jobright.ai/jobs/info/6aac7fec95c707f49dff195f",
+  "ld": [],
+  "next": {
+    "jobId": "6aac7fec95c707f49dff195f",
+    "title": "Backend Software Engineer",
+    "summary": "ClearlyRated is a B2B SaaS platform that helps professional services firms measure client experience.",
+    "responsibilities": ["System, Database and API design as a first-class skill.", "Own reliability &amp; observability."],
+    "required": ["5+ years of backend development in Python", "Strong SQL"],
+    "preferred": ["Experience with event-driven systems"],
+    "company": "ClearlyRated",
+    "companyUrl": "https://www.clearlyrated.com"
+  }
+}

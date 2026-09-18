@@ -1,0 +1,54 @@
+{
+  "info": {
+    "name": "BILLY LIN",
+    "title": "Senior AI/ML Software Engineer",
+    "location": "Menlo Park, CA",
+    "email": "billy.lin@example.com",
+    "phone": "(650) 555-0142",
+    "linkedin": "linkedin.com/in/billylin"
+  },
+  "summary": "Senior engineer with twelve years building distributed backend services and, for the last four, production machine-learning systems.",
+  "skills": [
+    {
+      "category": "Languages",
+      "skills": ["Python", "Go", "TypeScript", "SQL"]
+    },
+    {
+      "category": "Machine Learning",
+      "skills": ["PyTorch", "scikit-learn", "MLflow"]
+    }
+  ],
+  "experience": [
+    {
+      "title": "Senior AI Software Engineer",
+      "company": "Caterpillar Inc.",
+      "startDate": "Sep 2025",
+      "endDate": "Present",
+      "location": "Peoria, IL",
+      "descriptionLines": [
+        "Architected production AI services handling 40 million daily inference requests.",
+        "Reduced model training cost by 38 percent by moving the pipeline to spot instances."
+      ]
+    },
+    {
+      "title": "Software Engineer",
+      "company": "Netflix",
+      "startDate": "Mar 2021",
+      "endDate": "Aug 2025",
+      "location": "",
+      "descriptionLines": [
+        "Built the recommendation feature store serving 200 million member profiles."
+      ]
+    }
+  ],
+  "certifications": [],
+  "education": [
+    {
+      "degree": "B.S.",
+      "major": "Computer Science",
+      "school": "University of Illinois Urbana-Champaign",
+      "startDate": "2009",
+      "endDate": "2013"
+    }
+  ]
+}
