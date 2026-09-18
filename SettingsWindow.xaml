@@ -536,6 +536,29 @@
 </Grid>
 <ComboBox DockPanel.Dock="Right" x:Name="TrackingFilterBox" Width="104" Margin="8,0,0,0"
           Style="{StaticResource FilterControlStyle}" SelectionChanged="TrackingFilter_Changed"/>
+<!-- Platforms: multi-select, OR matching. Built like the date filter; the checkboxes are added in code
+     in JobTracker.PlatformFilterOrder. The selection lives only in this window. -->
+<Grid DockPanel.Dock="Right" Margin="8,0,0,0">
+<ToggleButton x:Name="PlatformFilterButton" Width="132" Height="26" FontSize="11.5" HorizontalContentAlignment="Left"
+              Padding="8,0" Content="All platforms" Click="PlatformFilterButton_Click"
+              ToolTip="Show jobs from any of the ticked application platforms"/>
+<Path Data="M 0 0 L 8 0 L 4 5 Z" Fill="{StaticResource Muted}" HorizontalAlignment="Right" VerticalAlignment="Center"
+      Margin="0,0,8,0" IsHitTestVisible="False"/>
+<Popup x:Name="PlatformFilterPopup" PlacementTarget="{Binding ElementName=PlatformFilterButton}" Placement="Bottom"
+       StaysOpen="False" AllowsTransparency="True" Closed="PlatformFilterPopup_Closed">
+<Border Background="{StaticResource CardFill}" BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+        CornerRadius="8" Padding="10,8" Margin="0,4,8,8" MinWidth="160">
+<Border.Effect><DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.18" Color="#4A5568"/></Border.Effect>
+<StackPanel>
+<StackPanel x:Name="PlatformCheckList"/>
+<Border Height="1" Background="{StaticResource GridLine}" Margin="0,6,0,4"/>
+<Button x:Name="PlatformClearButton" Content="Clear" HorizontalAlignment="Left" Padding="2,1" FontSize="11.5"
+        Background="Transparent" BorderThickness="0" Foreground="{StaticResource AccentSoft}" Cursor="Hand"
+        Click="PlatformClear_Click"/>
+</StackPanel>
+</Border>
+</Popup>
+</Grid>
 <Grid>
 <TextBox x:Name="TrackingSearchBox" Height="26" VerticalContentAlignment="Center" Padding="8,0" FontSize="11.5"
          TextChanged="TrackingSearch_Changed"/>

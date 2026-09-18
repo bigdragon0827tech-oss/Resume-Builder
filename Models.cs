@@ -35,6 +35,14 @@ public sealed class JobTask : System.ComponentModel.INotifyPropertyChanged {
     /// <summary>When <see cref="ApplyUrl"/> was recorded; null when it never was.</summary>
     public DateTime? ApplyUrlCapturedAt { get; set; }
 
+    /// <summary>
+    /// The platform <see cref="ApplyUrl"/> points at, derived by <see cref="ApplicationPlatformDetector"/>.
+    /// Unknown when there is no ApplyUrl (and for every task saved before it existed). Read tolerantly:
+    /// an unreadable stored value becomes Unknown rather than failing the whole tasks.json.
+    /// </summary>
+    [JsonConverter(typeof(TolerantPlatformConverter))]
+    public ApplicationPlatform ApplicationPlatform { get; set; } = ApplicationPlatform.Unknown;
+
     public string About { get; set; } = "";
 
     string _status = "Queued";

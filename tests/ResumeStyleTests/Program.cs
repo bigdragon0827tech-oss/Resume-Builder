@@ -125,6 +125,11 @@ static class Program {
             Test("date filtering uses each job's tracking date", DateFiltering);
             Test("an exact calendar date filters to that day", ExactDateFiltering);
             Test("search spans company, role and job id together", SearchAcrossFields);
+            Test("no platform selection shows every job", PlatformFilterEmptySelection);
+            Test("one selected platform shows only its jobs", PlatformFilterSinglePlatform);
+            Test("several selected platforms match with OR", PlatformFilterOrMatching);
+            Test("the platform filter combines with search, status and dates", PlatformFilterCombined);
+            Test("the platform filter label and choice order", PlatformFilterLabelAndOrder);
             Test("resume actions are safe when no resume exists", ResumeActionsAreSafe);
             Test("a resume already on disk is relinked to its job", ResumeRelinking);
 
@@ -163,6 +168,16 @@ static class Program {
             Test("ApplyUrl and ApplyUrlCapturedAt survive save and reload", ApplyUrlSurvivesReload);
             Test("only an outside http(s) application address is captured", ApplyUrlCaptureRule);
             Test("the address is recorded on the matching Jobright job only", ApplyUrlMatchesJob);
+
+            Console.WriteLine();
+            Console.WriteLine("Application platform detection");
+            Test("each known ATS address maps to its platform", PlatformMatching);
+            Test("look-alike domains are not mistaken for an ATS", PlatformLookAlikes);
+            Test("embedded Greenhouse / Ashby job links are recognised", PlatformEmbeddedLinks);
+            Test("a missing or unusable ApplyUrl is Unknown; an unrecognised site is Other", PlatformMissingOrUnknown);
+            Test("an unreadable stored platform loads as Unknown and keeps every task", PlatformTolerantLoading);
+            Test("the platform survives save and reload; older tasks load as Unknown", PlatformSaveReload);
+            Test("capture and startup refresh derive the platform from ApplyUrl", PlatformDerivedFromApplyUrl);
 
             Console.WriteLine();
             Console.WriteLine("Sample output");
@@ -1846,6 +1861,249 @@ static class Program {
               ApplyCapture.Record(tasks, ApplyJobPage, "https://careers.oracle.com/jobs/9", now.AddDays(1)), "a new address");
         Equal("https://careers.oracle.com/jobs/9", oracle.ApplyUrl, "replaced");
         Equal(now.AddDays(1), oracle.ApplyUrlCapturedAt, "restamped");
+    }
+
+    // ---------- platform filter ----------
+
+    static JobTask PlatformJob(string id, ApplicationPlatform platform, string status = ApplicationStatus.Viewed,
+                               string company = "Acme", string title = "Engineer", DateTime? created = null) {
+        var job = Job(id, company, title);
+        job.ApplicationPlatform = platform;
+        if (created is DateTime at) job.CreatedAt = at;
+        if (status != ApplicationStatus.Viewed) JobTracker.UpdateStatus(job, status, job.CreatedAt);
+        return job;
+    }
+
+    static List<JobTask> PlatformSet() => new() {
+        PlatformJob("GH-1", ApplicationPlatform.Greenhouse),
+        PlatformJob("WD-1", ApplicationPlatform.Workday),
+        PlatformJob("WD-2", ApplicationPlatform.Workday),
+        PlatformJob("LI-1", ApplicationPlatform.LinkedIn),
+        PlatformJob("OT-1", ApplicationPlatform.Other),
+        PlatformJob("UN-1", ApplicationPlatform.Unknown),
+    };
+
+    static string Ids(IEnumerable<JobTask> tasks) => string.Join(",", tasks.Select(t => t.JobId));
+
+    static void PlatformFilterEmptySelection() {
+        var tasks = PlatformSet();
+        Equal(6, JobTracker.ApplyFilters(tasks, null, null, null).Count, "the parameter left out");
+        Equal(6, JobTracker.ApplyFilters(tasks, null, null, null, platforms: null).Count, "null");
+        Equal(6, JobTracker.ApplyFilters(tasks, null, null, null, platforms: new HashSet<ApplicationPlatform>()).Count, "empty");
+        Equal(6, JobTracker.ApplyFilters(tasks, null, null, null, platforms: JobTracker.PlatformFilterOrder.ToList()).Count,
+              "every choice ticked");
+        Equal(Ids(tasks), Ids(JobTracker.ApplyFilters(tasks, null, null, null, platforms: new List<ApplicationPlatform>())),
+              "order is kept");
+    }
+
+    static void PlatformFilterSinglePlatform() {
+        var tasks = PlatformSet();
+        Equal("WD-1,WD-2", Ids(JobTracker.ApplyFilters(tasks, null, null, null, platforms: new[] { ApplicationPlatform.Workday })), "Workday");
+        Equal("UN-1", Ids(JobTracker.ApplyFilters(tasks, null, null, null, platforms: new[] { ApplicationPlatform.Unknown })), "Unknown");
+        Equal("OT-1", Ids(JobTracker.ApplyFilters(tasks, null, null, null, platforms: new[] { ApplicationPlatform.Other })), "Other");
+        Equal(0, JobTracker.ApplyFilters(tasks, null, null, null, platforms: new[] { ApplicationPlatform.Lever }).Count, "no Lever jobs");
+    }
+
+    static void PlatformFilterOrMatching() {
+        var tasks = PlatformSet();
+        Equal("GH-1,WD-1,WD-2",
+              Ids(JobTracker.ApplyFilters(tasks, null, null, null,
+                  platforms: new HashSet<ApplicationPlatform> { ApplicationPlatform.Workday, ApplicationPlatform.Greenhouse })),
+              "Greenhouse OR Workday");
+        Equal("LI-1,OT-1,UN-1",
+              Ids(JobTracker.ApplyFilters(tasks, null, null, null,
+                  platforms: new[] { ApplicationPlatform.Unknown, ApplicationPlatform.Other, ApplicationPlatform.LinkedIn })),
+              "three platforms, selection order does not matter");
+        Equal("WD-1,WD-2",
+              Ids(JobTracker.ApplyFilters(tasks, null, null, null, platforms: new[] { ApplicationPlatform.Workday, ApplicationPlatform.Lever })),
+              "a platform with no jobs adds nothing");
+    }
+
+    static void PlatformFilterCombined() {
+        var now = new DateTime(2026, 9, 18, 12, 0, 0);
+        var tasks = new List<JobTask> {
+            PlatformJob("C-1", ApplicationPlatform.Workday, ApplicationStatus.Applied, "Caterpillar", "AI Engineer", now),
+            PlatformJob("C-2", ApplicationPlatform.Workday, ApplicationStatus.Viewed, "Caterpillar", "Data Engineer", now),
+            PlatformJob("C-3", ApplicationPlatform.Greenhouse, ApplicationStatus.Applied, "Stripe", "AI Engineer", now.AddDays(-10)),
+            PlatformJob("C-4", ApplicationPlatform.LinkedIn, ApplicationStatus.Applied, "Caterpillar", "AI Engineer", now),
+        };
+        var workdayOrGreenhouse = new[] { ApplicationPlatform.Workday, ApplicationPlatform.Greenhouse };
+
+        Equal("C-1,C-3", Ids(JobTracker.ApplyFilters(tasks, null, ApplicationStatus.Applied, null, now, null, workdayOrGreenhouse)),
+              "platform AND status");
+        Equal("C-1,C-2", Ids(JobTracker.ApplyFilters(tasks, "caterpillar", null, null, now, null, workdayOrGreenhouse)),
+              "platform AND search");
+        Equal("C-1", Ids(JobTracker.ApplyFilters(tasks, "caterpillar ai", ApplicationStatus.Applied, null, now, null, workdayOrGreenhouse)),
+              "platform AND search AND status");
+        Equal("C-1,C-2", Ids(JobTracker.ApplyFilters(tasks, null, null, DateFilter.Last7, now, null, workdayOrGreenhouse)),
+              "platform AND date range");
+        Equal("C-3", Ids(JobTracker.ApplyFilters(tasks, null, null, DateFilter.AllDates, now, now.AddDays(-10).Date, workdayOrGreenhouse)),
+              "platform AND exact day");
+
+        // Board columns are GetTasksByStatus over the same filtered list, so they agree with the List.
+        var filtered = JobTracker.ApplyFilters(tasks, null, null, null, now, null, workdayOrGreenhouse);
+        var board = ApplicationStatus.Ordered.SelectMany(status => JobTracker.GetTasksByStatus(filtered, status)).Select(t => t.JobId);
+        Equal("C-1,C-2,C-3", string.Join(",", board.OrderBy(id => id)), "the board shows exactly the list's jobs");
+
+        // The platform filter never changes a task.
+        Equal(ApplicationPlatform.LinkedIn, tasks[3].ApplicationPlatform, "tasks untouched");
+    }
+
+    static void PlatformFilterLabelAndOrder() {
+        Equal("Greenhouse,Workday,Lever,LinkedIn,Ashby,SmartRecruiters,ICims,Other,Unknown",
+              string.Join(",", JobTracker.PlatformFilterOrder), "the explicit choice order");
+        Equal(Enum.GetValues<ApplicationPlatform>().Length, JobTracker.PlatformFilterOrder.Count, "every platform is a choice");
+        Equal(JobTracker.PlatformFilterOrder.Count, JobTracker.PlatformFilterOrder.Distinct().Count(), "no choice twice");
+
+        Equal("All platforms", JobTracker.PlatformFilterLabel(null), "null");
+        Equal("All platforms", JobTracker.PlatformFilterLabel(new HashSet<ApplicationPlatform>()), "nothing ticked");
+        Equal("All platforms", JobTracker.PlatformFilterLabel(JobTracker.PlatformFilterOrder.ToList()), "everything ticked");
+        Equal("Workday", JobTracker.PlatformFilterLabel(new[] { ApplicationPlatform.Workday }), "one");
+        Equal("iCIMS", JobTracker.PlatformFilterLabel(new[] { ApplicationPlatform.ICims }), "display name");
+        Equal("Greenhouse, Workday",
+              JobTracker.PlatformFilterLabel(new[] { ApplicationPlatform.Workday, ApplicationPlatform.Greenhouse }),
+              "two, in the fixed order whatever the tick order");
+        Equal("3 platforms",
+              JobTracker.PlatformFilterLabel(new[] { ApplicationPlatform.Unknown, ApplicationPlatform.Lever, ApplicationPlatform.Ashby }),
+              "three or more");
+        Equal("8 platforms", JobTracker.PlatformFilterLabel(JobTracker.PlatformFilterOrder.Skip(1).ToList()), "all but one");
+    }
+
+    // ---------- application platform detection ----------
+
+    static void PlatformIs(ApplicationPlatform expected, string? url) =>
+        Equal(expected, ApplicationPlatformDetector.Detect(url), url ?? "null");
+
+    static void PlatformMatching() {
+        PlatformIs(ApplicationPlatform.Greenhouse, "https://boards.greenhouse.io/company/jobs/12345");
+        PlatformIs(ApplicationPlatform.Greenhouse, "https://job-boards.greenhouse.io/company/jobs/12345");
+        PlatformIs(ApplicationPlatform.Greenhouse, "https://boards.eu.greenhouse.io/company/jobs/12345");
+        PlatformIs(ApplicationPlatform.Workday, "https://company.wd5.myworkdayjobs.com/job/12345");
+        PlatformIs(ApplicationPlatform.Workday, "https://COMPANY.WD1.MYWORKDAYJOBS.COM/en-US/External/job/X_R1");
+        PlatformIs(ApplicationPlatform.Workday, "https://wd3.myworkdaysite.com/recruiting/company/External/job/1");
+        PlatformIs(ApplicationPlatform.Lever, "https://jobs.lever.co/company/12345");
+        PlatformIs(ApplicationPlatform.Lever, "https://jobs.eu.lever.co/company/12345/apply");
+        PlatformIs(ApplicationPlatform.LinkedIn, "https://www.linkedin.com/jobs/view/12345");
+        PlatformIs(ApplicationPlatform.Ashby, "https://jobs.ashbyhq.com/company/12345");
+        PlatformIs(ApplicationPlatform.SmartRecruiters, "https://jobs.smartrecruiters.com/Company/12345-engineer");
+        PlatformIs(ApplicationPlatform.ICims, "https://careers-company.icims.com/jobs/12345/engineer/job");
+        PlatformIs(ApplicationPlatform.Greenhouse, "http://boards.greenhouse.io/company/jobs/1");
+    }
+
+    static void PlatformLookAlikes() {
+        PlatformIs(ApplicationPlatform.Other, "https://notgreenhouse.io/company/jobs/1");
+        PlatformIs(ApplicationPlatform.Other, "https://greenhouse.io.evil.com/company/jobs/1");
+        PlatformIs(ApplicationPlatform.Other, "https://mylever.co/jobs/1");
+        PlatformIs(ApplicationPlatform.Other, "https://fakemyworkdayjobs.com/job/1");
+        PlatformIs(ApplicationPlatform.Other, "https://example.com/boards.greenhouse.io/jobs/1");
+        PlatformIs(ApplicationPlatform.Other, "https://example.com/apply?next=https://jobs.lever.co/x/1");
+        // LinkedIn counts only for its job postings.
+        PlatformIs(ApplicationPlatform.Other, "https://www.linkedin.com/company/1028");
+        PlatformIs(ApplicationPlatform.Other, "https://www.linkedin.com/in/someone/");
+    }
+
+    static void PlatformEmbeddedLinks() {
+        PlatformIs(ApplicationPlatform.Greenhouse, "https://careers.example.com/jobs?gh_jid=4012345");
+        PlatformIs(ApplicationPlatform.Greenhouse, "https://www.example.com/open-roles/?utm_source=x&GH_JID=7");
+        PlatformIs(ApplicationPlatform.Ashby, "https://example.com/careers?ashby_jid=5b1c-22");
+        // A parameter that only contains the name is not the embed id.
+        PlatformIs(ApplicationPlatform.Other, "https://example.com/careers?not_gh_jid=1");
+        PlatformIs(ApplicationPlatform.Other, "https://example.com/careers#gh_jid=1");
+    }
+
+    static void PlatformMissingOrUnknown() {
+        foreach (var missing in new[] { null, "", "   ", "not a url", "/jobs/1", "about:blank", "mailto:jobs@x.com", "ftp://jobs.lever.co/x" })
+            PlatformIs(ApplicationPlatform.Unknown, missing);
+        PlatformIs(ApplicationPlatform.Other, "https://careers.oracle.com/jobs/12345");
+        PlatformIs(ApplicationPlatform.Other, "https://example.com/");
+        Equal(ApplicationPlatform.Unknown, new JobTask().ApplicationPlatform, "a new task starts Unknown");
+    }
+
+    static void PlatformTolerantLoading() => WithLiveTasksFile(() => {
+        Directory.CreateDirectory(Storage.DataDir);
+        File.WriteAllText(Storage.TasksPath, """
+        [
+          { "JobId": "P-1", "ApplicationPlatform": "Greenhouse" },
+          { "JobId": "P-2", "ApplicationPlatform": "greenhouse" },
+          { "JobId": "P-3", "ApplicationPlatform": "Taleo" },
+          { "JobId": "P-4", "ApplicationPlatform": null },
+          { "JobId": "P-5", "ApplicationPlatform": 999 },
+          { "JobId": "P-6", "ApplicationPlatform": 2 },
+          { "JobId": "P-7", "ApplicationPlatform": "3" },
+          { "JobId": "P-8", "ApplicationPlatform": { "name": "Lever" } },
+          { "JobId": "P-9", "ApplicationPlatform": [ "Lever" ] },
+          { "JobId": "P-10", "ApplicationPlatform": "" }
+        ]
+        """);
+
+        var tasks = Storage.LoadTasks();
+        Equal(10, tasks.Count, "no task is lost to an unreadable platform");
+        Equal(ApplicationPlatform.Greenhouse, tasks[0].ApplicationPlatform, "a known name");
+        Equal(ApplicationPlatform.Greenhouse, tasks[1].ApplicationPlatform, "case does not matter");
+        Equal(ApplicationPlatform.Unknown, tasks[2].ApplicationPlatform, "a name this version does not know");
+        Equal(ApplicationPlatform.Unknown, tasks[3].ApplicationPlatform, "null");
+        Equal(ApplicationPlatform.Unknown, tasks[4].ApplicationPlatform, "an out-of-range number");
+        Equal(ApplicationPlatform.Workday, tasks[5].ApplicationPlatform, "a defined number");
+        Equal(ApplicationPlatform.Unknown, tasks[6].ApplicationPlatform, "a number written as text");
+        Equal(ApplicationPlatform.Unknown, tasks[7].ApplicationPlatform, "an object");
+        Equal(ApplicationPlatform.Unknown, tasks[8].ApplicationPlatform, "an array");
+        Equal(ApplicationPlatform.Unknown, tasks[9].ApplicationPlatform, "empty text");
+        Equal("P-10", tasks[9].JobId, "reading continues correctly after skipped values");
+    });
+
+    static void PlatformSaveReload() => WithLiveTasksFile(() => {
+        var captured = Job("RB-PLAT-1", "Oracle", "ML Engineer", ApplyJobPage);
+        captured.ApplyUrl = "https://jobs.lever.co/oracle/1";
+        captured.ApplicationPlatform = ApplicationPlatform.Lever;
+        Storage.SaveTasks(new[] { captured, Job("RB-PLAT-2") });
+
+        var text = File.ReadAllText(Storage.TasksPath);
+        Check(text.Contains("\"ApplicationPlatform\": \"Lever\""), "stored as the name, not a number");
+
+        var reloaded = Storage.LoadTasks();
+        Equal(ApplicationPlatform.Lever, reloaded[0].ApplicationPlatform, "platform survived");
+        Equal("https://jobs.lever.co/oracle/1", reloaded[0].ApplyUrl, "ApplyUrl survived");
+        Equal(ApplicationPlatform.Unknown, reloaded[1].ApplicationPlatform, "an uncaptured task stays Unknown");
+
+        // The shape tasks.json had before the platform existed.
+        File.WriteAllText(Storage.TasksPath, $$"""
+        [ { "JobId": "RB-OLD-P", "Link": "{{ApplyJobPage}}", "ApplyUrl": "https://boards.greenhouse.io/o/jobs/1",
+            "ApplyUrlCapturedAt": "2026-09-18T14:00:00", "Status": "Completed" },
+          { "JobId": "RB-OLD-Q", "Status": "Queued" } ]
+        """);
+        var older = Storage.LoadTasks();
+        Equal(2, older.Count, "older tasks load");
+        Equal(ApplicationPlatform.Unknown, older[0].ApplicationPlatform, "no stored platform reads as Unknown");
+        Equal("https://boards.greenhouse.io/o/jobs/1", older[0].ApplyUrl, "its ApplyUrl is kept");
+        Equal(ApplicationPlatform.Unknown, older[1].ApplicationPlatform, "no ApplyUrl, Unknown");
+    });
+
+    static void PlatformDerivedFromApplyUrl() {
+        var now = new DateTime(2026, 9, 18, 16, 0, 0);
+        var job = Job("RB-DER-1", "Oracle", "ML Engineer", ApplyJobPage);
+        var tasks = new List<JobTask> { job };
+
+        ApplyCapture.Record(tasks, ApplyJobPage, "https://jobs.ashbyhq.com/oracle/1", now);
+        Equal(ApplicationPlatform.Ashby, job.ApplicationPlatform, "capture detects the platform");
+
+        ApplyCapture.Record(tasks, ApplyJobPage, "https://careers.oracle.com/jobs/2", now);
+        Equal(ApplicationPlatform.Other, job.ApplicationPlatform, "a replaced address re-detects");
+
+        // An unknown job and a refused address leave the platform alone.
+        ApplyCapture.Record(tasks, ApplyJobPage, "https://www.linkedin.com/in/someone/", now);
+        Equal(ApplicationPlatform.Other, job.ApplicationPlatform, "a refused address changes nothing");
+
+        // Startup refresh: a task loaded with an ApplyUrl but no platform gets one; the rest are untouched.
+        var loaded = Job("RB-DER-2"); loaded.ApplyUrl = "https://boards.greenhouse.io/x/jobs/1";
+        var stale = Job("RB-DER-3"); stale.ApplyUrl = "https://jobs.lever.co/x/1"; stale.ApplicationPlatform = ApplicationPlatform.Workday;
+        var none = Job("RB-DER-4");
+        var set = new List<JobTask> { loaded, stale, none };
+
+        Equal(2, ApplicationPlatformDetector.Refresh(set), "two tasks needed a platform");
+        Equal(ApplicationPlatform.Greenhouse, loaded.ApplicationPlatform, "filled in");
+        Equal(ApplicationPlatform.Lever, stale.ApplicationPlatform, "corrected from its ApplyUrl");
+        Equal(ApplicationPlatform.Unknown, none.ApplicationPlatform, "no ApplyUrl stays Unknown");
+        Equal(0, ApplicationPlatformDetector.Refresh(set), "a second refresh changes nothing (no needless save)");
     }
 
     // ---------- the importer ----------

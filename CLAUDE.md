@@ -183,6 +183,7 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 | `CaptureWatchdog.cs` | `CaptureWatchdog` — 30 s bounded wait for the Copy after a confirmed READY (no I/O, injectable delay) |
 | `GlobalHotkey.cs` | `GlobalHotkey` — system-wide Ctrl+Shift+' that only brings Resume Builder forward |
 | `ApplyCapture.cs` | `ApplyCapture`, `ApplyCaptureResult` — decides whether a user's Apply destination is recorded, and on which task |
+| `ApplicationPlatformDetector.cs` | `ApplicationPlatform` enum, `ApplicationPlatformDetector` (ApplyUrl -> platform), `TolerantPlatformConverter` |
 | `TaskViews.cs` | `TaskViews` — the Active / History display filter over the one task collection |
 | `Models.cs` | `JobBatch`, `JobInput`, `JobTask`, `AppSettings`, `PreparedRequest` |
 
@@ -371,9 +372,46 @@ the user clicks them, and every job still goes through `JobrightPageExtractor` a
   address again is Unchanged (time kept); a different one replaces it and restamps.
 - `JobTask.ApplyUrl` ("" = none) and `ApplyUrlCapturedAt` (null = none) are additive; older
   `tasks.json` loads with them empty. Informational only — never a duplicate key; `Link` keeps its
-  meaning. No ATS detection or platform filter yet.
+  meaning.
 - Diagnostics: `JOBBROWSER apply seen <scheme+host+path> via <navigation|new-window> -> <result>`.
 - Tests: `ResumeStyleTests` "Job browser: application link capture" (4 checks).
+
+### Application platform detection (phase 2)
+
+- `JobTask.ApplicationPlatform` is an `ApplicationPlatform` enum — Unknown, Greenhouse, Workday,
+  Lever, LinkedIn, Ashby, SmartRecruiters, ICims, Other. **Unknown = no ApplyUrl; Other = an ApplyUrl
+  on a site not recognised.** It is **always derived** from `ApplyUrl` by
+  `ApplicationPlatformDetector.Detect`, never entered by hand.
+- Detection is by host, exact or subdomain (look-alikes such as `notgreenhouse.io` are Other):
+  greenhouse.io; myworkdayjobs.com / myworkdaysite.com / myworkday.com; lever.co; ashbyhq.com;
+  smartrecruiters.com; icims.com; linkedin.com only for `/jobs/` paths. A company careers page with a
+  `gh_jid` or `ashby_jid` query parameter is Greenhouse / Ashby (embedded boards). Pure; never throws.
+- Runs in `ApplyCapture.Record` whenever it records an address, and at startup
+  (`ApplicationPlatformDetector.Refresh` next to `RecoverStaleProcessing`), which re-derives every task
+  and saves once only if something changed — so older jobs and detector updates are applied.
+- **Stored as the name** (`"Greenhouse"`), read by `TolerantPlatformConverter`: missing, null,
+  misspelled, future or wrongly-typed values become Unknown instead of throwing. This matters because
+  `Storage.LoadTasks` turns any exception into an EMPTY list, which the next save would write over the
+  user's jobs. Any future enum field on `JobTask` needs the same tolerant treatment.
+- Tests: `ResumeStyleTests` "Application platform detection" (7 checks).
+
+### Application platform filter (phase 3)
+
+- **Same pipeline, one extra optional parameter**: `JobTracker.ApplyFilters(..., exactDate, platforms)`.
+  Order: status -> search -> platforms (`FilterByPlatforms`) -> date. Null or empty = every platform;
+  otherwise **OR** — a job passes when its platform is any ticked one. List and Board both use the one
+  `filtered` result, so they cannot disagree. Cards, pipeline and chart still describe ALL jobs.
+- **Choice order is `JobTracker.PlatformFilterOrder`**, explicit and never the enum's declaration
+  order: Greenhouse, Workday, Lever, LinkedIn, Ashby, SmartRecruiters, iCIMS, Other, Unknown.
+  `PlatformDisplayName` shows `ICims` as "iCIMS". A new enum value must be added there too (a test
+  asserts every platform is a choice, exactly once).
+- **Label** (`PlatformFilterLabel`): "All platforms" for none or all ticked; one or two names in that
+  order ("Greenhouse, Workday"); "N platforms" for three or more.
+- UI: `PlatformFilterButton` + `PlatformFilterPopup` left of the Status dropdown, built like the date
+  filter. Checkboxes are created in `InitTracking` from `PlatformFilterOrder`; each tick refreshes at
+  once, the popup stays open until an outside click, and Clear unticks all with a single refresh.
+- **The selection is `SettingsWindow._platformFilter` only** — never tasks.json, settings or a task.
+- Tests: 5 checks in the "Tracking dashboard" group of `ResumeStyleTests`.
 
 ### Design direction — agreed, NOT yet built
 

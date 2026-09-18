@@ -25,6 +25,7 @@
     <Compile Include="..\..\JobBrowser.cs" Link="JobBrowser.cs" />
     <Compile Include="..\..\JobrightPageExtractor.cs" Link="JobrightPageExtractor.cs" />
     <Compile Include="..\..\ApplyCapture.cs" Link="ApplyCapture.cs" />
+    <Compile Include="..\..\ApplicationPlatformDetector.cs" Link="ApplicationPlatformDetector.cs" />
     <Compile Include="..\..\SampleJobs.cs" Link="SampleJobs.cs" />
     <Compile Include="..\..\ResumeOutputManager.cs" Link="ResumeOutputManager.cs" />
     <Compile Include="..\..\Services.cs" Link="Services.cs" />

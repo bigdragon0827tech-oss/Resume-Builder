@@ -270,12 +270,14 @@ public static class JobTracker {
     }
 
     /// <summary>
-    /// The list and board share one filter path: free text, then the status filter, then either one
-    /// exact date or a quick range over each job's tracking date. Order is never changed.
+    /// The list and board share one filter path: free text, then the status filter, then the platform
+    /// filter, then either one exact date or a quick range over each job's tracking date. Order is
+    /// never changed. <paramref name="platforms"/> is optional: null or empty means every platform.
     /// </summary>
     public static List<JobTask> ApplyFilters(IEnumerable<JobTask> tasks, string? search, string? status,
-                                             string? dateFilter, DateTime? now = null, DateTime? exactDate = null) {
-        IEnumerable<JobTask> result = Search(GetTasksByStatus(tasks, status), search);
+                                             string? dateFilter, DateTime? now = null, DateTime? exactDate = null,
+                                             IReadOnlyCollection<ApplicationPlatform>? platforms = null) {
+        IEnumerable<JobTask> result = FilterByPlatforms(Search(GetTasksByStatus(tasks, status), search), platforms);
 
         if (exactDate is DateTime day) return result.Where(t => t.TrackingDate.Date == day.Date).ToList();
 
@@ -303,6 +305,40 @@ public static class JobTracker {
     }
 
     static string Searchable(JobTask task) => $"{task.Company} {task.Title} {task.JobId}";
+
+    // ---------- platform filter ----------
+
+    /// <summary>
+    /// The order the platform filter lists its choices in — explicit, never the enum's declaration
+    /// order, so reordering the enum cannot reshuffle the UI or the label.
+    /// </summary>
+    public static readonly IReadOnlyList<ApplicationPlatform> PlatformFilterOrder = new[] {
+        ApplicationPlatform.Greenhouse, ApplicationPlatform.Workday, ApplicationPlatform.Lever,
+        ApplicationPlatform.LinkedIn, ApplicationPlatform.Ashby, ApplicationPlatform.SmartRecruiters,
+        ApplicationPlatform.ICims, ApplicationPlatform.Other, ApplicationPlatform.Unknown
+    };
+
+    public static string PlatformDisplayName(ApplicationPlatform platform) =>
+        platform == ApplicationPlatform.ICims ? "iCIMS" : platform.ToString();
+
+    /// <summary>OR matching: a job passes when its platform is any selected one. Null or empty selects all.</summary>
+    public static List<JobTask> FilterByPlatforms(IEnumerable<JobTask> tasks, IReadOnlyCollection<ApplicationPlatform>? platforms) {
+        var all = (tasks ?? Enumerable.Empty<JobTask>()).ToList();
+        if (platforms is null || platforms.Count == 0) return all;
+        return all.Where(task => platforms.Contains(task.ApplicationPlatform)).ToList();
+    }
+
+    /// <summary>
+    /// "All platforms" for none or every choice; one or two names in <see cref="PlatformFilterOrder"/>;
+    /// "N platforms" for three or more.
+    /// </summary>
+    public static string PlatformFilterLabel(IReadOnlyCollection<ApplicationPlatform>? selected) {
+        var chosen = PlatformFilterOrder.Where(p => selected?.Contains(p) == true).ToList();
+        if (chosen.Count == 0 || chosen.Count == PlatformFilterOrder.Count) return "All platforms";
+        return chosen.Count <= 2
+            ? string.Join(", ", chosen.Select(PlatformDisplayName))
+            : $"{chosen.Count} platforms";
+    }
 
     /// <summary>Jobs that reached Applied — they all carry an AppliedAt, so activity can be counted.</summary>
     static IEnumerable<JobTask> AppliedJobs(IEnumerable<JobTask> tasks) =>

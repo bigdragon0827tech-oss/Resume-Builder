@@ -79,8 +79,23 @@ public partial class SettingsWindow : Window {
     /// <summary>The quick range currently chosen. Ignored while an exact date is set.</summary>
     string _dateFilter=DateFilter.AllDates;
 
+    /// <summary>
+    /// The ticked application platforms. Empty means all. Lives only in this window: never saved to
+    /// tasks.json, settings or a task — each JobTask keeps its one detected ApplicationPlatform.
+    /// </summary>
+    readonly HashSet<ApplicationPlatform> _platformFilter=new();
+
     void InitTracking() {
         foreach(var filter in ApplicationStatus.Filters) TrackingFilterBox.Items.Add(filter);
+        foreach(var platform in JobTracker.PlatformFilterOrder) {
+            var box=new System.Windows.Controls.CheckBox {
+                Content=JobTracker.PlatformDisplayName(platform), Tag=platform,
+                FontSize=11.5, Margin=new Thickness(0,3,0,3)
+            };
+            box.Checked+=PlatformCheck_Changed;
+            box.Unchecked+=PlatformCheck_Changed;
+            PlatformCheckList.Children.Add(box);
+        }
         foreach(var range in DateFilter.Options) QuickDateList.Items.Add(range);
         foreach(var range in new[]{ActivityLast7,ActivityLast30,ActivityAllTime}) ActivityRangeBox.Items.Add(range);
 
@@ -131,6 +146,31 @@ public partial class SettingsWindow : Window {
         QuickDateList.SelectedItem=null;
         DateFilterButton.Content=day.ToString("MMM d, yyyy");
         DateFilterPopup.IsOpen=false;
+        RefreshTracking();
+    }
+
+    // ---------- platform filter: multi-select checkboxes, OR matching ----------
+
+    void PlatformFilterButton_Click(object s,RoutedEventArgs e) =>
+        PlatformFilterPopup.IsOpen=PlatformFilterButton.IsChecked==true;
+
+    void PlatformFilterPopup_Closed(object? s,EventArgs e) => PlatformFilterButton.IsChecked=false;
+
+    /// <summary>Each tick filters at once; the popup stays open until the user clicks outside it.</summary>
+    void PlatformCheck_Changed(object s,RoutedEventArgs e) {
+        if(_refreshingTracking || s is not System.Windows.Controls.CheckBox { Tag: ApplicationPlatform platform } box) return;
+        if(box.IsChecked==true) _platformFilter.Add(platform); else _platformFilter.Remove(platform);
+        PlatformFilterButton.Content=JobTracker.PlatformFilterLabel(_platformFilter);
+        RefreshTracking();
+    }
+
+    void PlatformClear_Click(object s,RoutedEventArgs e) {
+        if(_platformFilter.Count==0) return;
+        _refreshingTracking=true;       // untick without refreshing once per box
+        foreach(var box in PlatformCheckList.Children.OfType<System.Windows.Controls.CheckBox>()) box.IsChecked=false;
+        _refreshingTracking=false;
+        _platformFilter.Clear();
+        PlatformFilterButton.Content=JobTracker.PlatformFilterLabel(_platformFilter);
         RefreshTracking();
     }
 
@@ -186,7 +226,7 @@ public partial class SettingsWindow : Window {
 
             var filtered=JobTracker.ApplyFilters(tasks,TrackingSearchBox.Text,
                                                  TrackingFilterBox.SelectedItem as string,
-                                                 _dateFilter,null,_exactDate);
+                                                 _dateFilter,null,_exactDate,_platformFilter);
 
             var selected=TrackingGrid.SelectedItem as JobTask;
             TrackingGrid.ItemsSource=filtered;

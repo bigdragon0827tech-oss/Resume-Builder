@@ -80,6 +80,7 @@ public static class ApplyCapture {
 
         task.ApplyUrl = url;
         task.ApplyUrlCapturedAt = now;
+        task.ApplicationPlatform = ApplicationPlatformDetector.Detect(url);
         return ApplyCaptureResult.Recorded;
     }
 }

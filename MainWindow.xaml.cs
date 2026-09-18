@@ -128,7 +128,9 @@ public partial class MainWindow : Window {
 
         // A job left Processing by a crash or a close would never be re-run; put it back in the queue.
         var recovered = QueueRunner.RecoverStaleProcessing(_tasks);
-        if (recovered > 0) Storage.SaveTasks(_tasks);
+        // The platform is always derived from ApplyUrl: fill in older jobs and apply detector updates.
+        var redetected = ApplicationPlatformDetector.Refresh(_tasks);
+        if (recovered > 0 || redetected > 0) Storage.SaveTasks(_tasks);
 
         _taskView = TaskViews.CreateView(_tasks, () => _showHistory);
         TaskList.ItemsSource = _taskView;
