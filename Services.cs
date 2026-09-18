@@ -175,11 +175,20 @@ public static class JobImporter {
         // One job URL, one task — however the address was written.
         var existing = tasks.FirstOrDefault(t => JobUrls.Normalize(t.Link) == jobUrl);
         if (existing is not null)
+        {
+            PerfLog.Line(
+            $"DUPLICATE FOUND\n" +
+            $"incoming: {jobUrl}\n" +
+            $"existing: {existing.Link}\n" +
+            $"jobId: {existing.JobId}\n" +
+            $"title: {existing.Title}"
+        );
+        
             return new JobImportOutcome {
                 Kind = JobImportKind.Duplicate, JobId = existing.JobId, Title = existing.Title,
                 Company = existing.Company, ApplicationStatus = existing.ApplicationStatus
             };
-
+        }
         var task = new JobTask {
             JobId = NewInternalId(tasks),
             Source = source,

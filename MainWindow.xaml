@@ -12,7 +12,7 @@
      <!-- Hidden at the user's request until they ask for it again. The feature is intact; set
           Visibility back to Visible (or remove the attribute) to bring it back. -->
      <Button x:Name="JobBrowserButton" Content="🔎 Job Browser" Margin="0,8,8,8" Padding="12,0" Click="JobBrowser_Click"
-             ToolTip="Browse jobs in a separate built-in browser" Visibility="Collapsed"/>
+        ToolTip="Browse jobs in a separate built-in browser"/>
      <Button Content="⚙ Settings" Margin="0,8,0,8" Padding="12,0" Click="Settings_Click"/>
     </StackPanel>
    </Grid>

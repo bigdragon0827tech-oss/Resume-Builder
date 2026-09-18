@@ -299,10 +299,46 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 
 ## Built-in job browser (phase 1)
 
-- **Currently HIDDEN at the user's request** ("hide job browser until I ask again, don't remove it").
-  Only the header button is collapsed (`JobBrowserButton`, `Visibility="Collapsed"` in
-  `MainWindow.xaml`); every file, test and behaviour below is intact. Do not delete or unhide it until
-  the user asks — then just make that button visible again.
+- **Visible again.** It was hidden at the user's request for a while; the `JobBrowserButton` in
+  `MainWindow.xaml` is shown once more.
+
+### Find Jobs / Auto Import (user-started batch on a Jobright results page)
+
+These buttons are the one deliberate exception to "no batch, no crawling" below: they run only when
+the user clicks them, and every job still goes through `JobrightPageExtractor` and `ImportJob`.
+
+- **Jobright scrolls an internal container, not the window**: `div.index_jobs-page-main-content__qd__a`.
+  `ScrollDownAsync` scrolls with `container.scrollTop += amount` (80% of `clientHeight`) and waits for
+  more results to load. **Never use `window.scrollTo` / `window.scrollBy`** — the window does not
+  scroll there, so no new jobs load.
+- `FindJobsUntilTargetAsync(target)` repeats collect `a[href*="/jobs/info/"]` links -> scroll until
+  the target is reached or Stop is pressed. Verified: it collected 50 jobs with a target of 50.
+- The scan target is chosen in `JobTargetBox` (20 / 50 / 100 / 200 / 500, default 50) and read by
+  `GetJobTarget`, which falls back to 50.
+- **The target counts NEW jobs only** — jobs not already in Resume Builder. While scanning,
+  `CollectJobsFromCurrentPageAsync` checks each link with `JobExists` and skips existing ones (counted
+  and reported as "skipped … already in Resume Builder", never toward the target); each link is keyed by
+  `JobUrls.Normalize` so a card seen again after a scroll is counted once. The scan keeps scrolling
+  until it has that many unseen jobs, the user presses Stop, or it reaches the end of the list —
+  `EndOfListRounds` (3) rounds in a row with no new job and no scroll movement — so it can never loop
+  forever when Jobright runs out.
+- **`AutoImportFoundJobsAsync` skips URLs already in the queue before navigating to them**, through
+  the `JobExists` delegate (`MainWindow` compares with `JobUrls.Normalize`), so existing jobs cost no
+  page load. New ones are opened one at a time and imported through the normal `ImportJob` path, which
+  still refuses duplicates on its own.
+
+### Design direction — agreed, NOT yet built
+
+Do not implement these without the user starting the work; they record intent, not current behaviour.
+
+- **Jobright "Remove From List"** makes a card disappear from Jobright's results, so future scans stop
+  finding it. It is the candidate mechanism for keeping unwanted jobs out of later scans. Clicking it
+  changes the user's Jobright account, so automating it needs the user's explicit go-ahead and must
+  stay a user-started action — never a side effect of a scan or an import.
+- **"Already Applied" stays a local application status** (`ApplicationStatus`), not a deletion — the
+  job and its history remain in Resume Builder.
+
+### Core job-browser rules
 
 - **It is a SECOND WebView2 and shares nothing with the ChatGPT one.** Its user-data folder is
   `%LOCALAPPDATA%\ResumeBuilder\JobBrowserWebView2` — a sibling of the ChatGPT profile, never inside

@@ -17,14 +17,77 @@
             ToolTip="Back to the Jobright home page" IsEnabled="False" Click="Home_Click"/>
 
     <!-- Enabled only on a single Jobright job page, once it has finished loading. -->
-    <Button x:Name="ImportButton" DockPanel.Dock="Right" Content="⬇ Import Current Job"
-            Margin="10,7,0,7" Padding="12,0" IsEnabled="False" FontWeight="SemiBold"
-            ToolTip="Open a single Jobright job to import it into the queue."
-            Click="Import_Click"/>
+        <Button x:Name="ImportButton"
+                DockPanel.Dock="Right"
+                Content="⬇ Import Current Job"
+                Margin="10,7,0,7"
+                Padding="12,0"
+                FontWeight="SemiBold"
+                ToolTip="Open a single Jobright job to import it into the queue."
+                Click="Import_Click"/>
 
-    <TextBox x:Name="AddressBox" IsReadOnly="True" IsReadOnlyCaretVisible="True" VerticalContentAlignment="Center"
-             Margin="0,7,0,7" Padding="8,0" FontSize="11.5" Foreground="#333" Background="White"
-             ToolTip="The page you are on"/>
+        <!-- Automation Phase 1: find jobs on the current Jobright results page. -->
+        
+        <ComboBox x:Name="JobTargetBox"
+                DockPanel.Dock="Right"
+                Width="70"
+                Margin="8,7,0,7"
+                VerticalContentAlignment="Center"
+                SelectedIndex="1">
+        <ComboBoxItem Content="20"/>
+        <ComboBoxItem Content="50"/>
+        <ComboBoxItem Content="100"/>
+        <ComboBoxItem Content="200"/>
+        <ComboBoxItem Content="500"/>
+        </ComboBox>
+
+        <Button x:Name="FindJobsButton"
+                DockPanel.Dock="Right"
+                Content="🔎 Find Jobs"
+                Margin="8,7,0,7"
+                Padding="12,0"
+                FontWeight="SemiBold"
+                IsEnabled="False"
+                ToolTip="Find jobs on the current Jobright results page."
+                Click="FindJobs_Click"/>
+
+        <Button x:Name="StopFindingButton"
+                DockPanel.Dock="Right"
+                Content="■ Stop"
+                Margin="8,7,0,7"
+                Padding="12,0"
+                FontWeight="SemiBold"
+                IsEnabled="False"
+                Click="StopFinding_Click"/>     
+
+        <Button x:Name="AutoImportButton"
+                DockPanel.Dock="Right"
+                Content="▶ Import Found"
+                Margin="8,7,0,7"
+                Padding="12,0"
+                FontWeight="SemiBold"
+                IsEnabled="False"
+                ToolTip="Import the jobs found on this page one by one."
+                Click="AutoImport_Click"/>
+
+        <TextBlock x:Name="FoundJobsText"
+                DockPanel.Dock="Right"
+                Text="Found: 0"
+                Margin="10,0,0,0"
+                VerticalAlignment="Center"
+                Foreground="#666"
+                FontSize="11.5"/>
+
+        <TextBox x:Name="AddressBox"
+                IsReadOnly="True"
+                IsReadOnlyCaretVisible="True"
+                VerticalContentAlignment="Center"
+                Margin="0,7,0,7"
+                Padding="8,0"
+                FontSize="11.5"
+                Foreground="#333"
+                Background="White"
+                ToolTip="The page you are on"/>
    </DockPanel>
   </Border>
 

@@ -174,7 +174,13 @@ public partial class MainWindow : Window {
             return;
         }
 
-        _jobBrowser=new JobBrowserWindow { Owner=this, ImportJob=ImportFromBrowser };
+        _jobBrowser=new JobBrowserWindow {
+            Owner=this,
+            ImportJob=ImportFromBrowser,
+            JobExists = url => _tasks.Any(t =>
+                JobUrls.Normalize(t.Link) ==
+                JobUrls.Normalize(url))
+        };
         _jobBrowser.Closed+=(_,_) => _jobBrowser=null;
         _jobBrowser.Show();
     }
