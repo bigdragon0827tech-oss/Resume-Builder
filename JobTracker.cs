@@ -375,6 +375,23 @@ public static class JobTracker {
     public static bool OpenJobUrl(string? url) => IsOpenableUrl(url) && Launch(url!.Trim());
 
     /// <summary>
+    /// The application address to open for a job: its ApplyUrl when that is an http/https address,
+    /// otherwise null. Never falls back to <see cref="JobTask.Link"/> — the Jobright posting is Open Job.
+    /// </summary>
+    public static string? ApplyUrlToOpen(JobTask? job) =>
+        job is not null && IsOpenableUrl(job.ApplyUrl) ? job.ApplyUrl.Trim() : null;
+
+    /// <summary>
+    /// Opens the recorded application page (ApplyUrl) in the default browser, through the same
+    /// validation and launch as Open Job. Logs the job id only, never the address.
+    /// </summary>
+    public static bool OpenApplyUrl(JobTask? job) {
+        if (ApplyUrlToOpen(job) is not string url || !Launch(url)) return false;
+        PerfLog.Line("TRACKING open apply URL " + job!.JobId);
+        return true;
+    }
+
+    /// <summary>
     /// Opens the generated resume in whatever Windows uses for a DOCX. The path was produced by this
     /// app, but it is still checked to exist first — a document deleted or moved by hand does nothing
     /// rather than throwing.

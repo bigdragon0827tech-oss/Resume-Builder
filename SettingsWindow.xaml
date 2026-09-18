@@ -2,6 +2,7 @@
  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
  xmlns:sys="clr-namespace:System;assembly=mscorlib"
+ xmlns:local="clr-namespace:ResumeBuilder"
  Title="Settings / Inspector" Height="700" Width="1000">
  <Window.Resources>
   <!-- ===================================================================
@@ -271,6 +272,34 @@
    <Setter Property="Height" Value="26"/>
    <Setter Property="VerticalContentAlignment" Value="Center"/>
    <Setter Property="FontSize" Value="11.5"/>
+  </Style>
+
+  <!-- Application platform badge, shared by the List's Job cell and the Board card. Neutral colours on
+       purpose, so it never reads as an application status. Text comes from JobTracker.PlatformDisplayName;
+       Unknown (no application link recorded) is hidden, and so is its tooltip. Display only. -->
+  <local:PlatformDisplayConverter x:Key="PlatformDisplay"/>
+  <local:OpenableUrlConverter x:Key="OpenableUrl"/>
+  <Style x:Key="PlatformBadgeStyle" TargetType="ContentControl">
+   <Setter Property="Focusable" Value="False"/>
+   <Setter Property="VerticalAlignment" Value="Center"/>
+   <Setter Property="ToolTip" Value="{Binding ApplyUrl}"/>
+   <Setter Property="Template">
+    <Setter.Value>
+     <ControlTemplate TargetType="ContentControl">
+      <Border Background="{StaticResource PanelFill}" BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+              CornerRadius="4" Padding="5,0,5,1">
+       <TextBlock Text="{Binding ApplicationPlatform, Converter={StaticResource PlatformDisplay}}"
+                  FontSize="9.5" Foreground="{StaticResource Muted}"/>
+      </Border>
+     </ControlTemplate>
+    </Setter.Value>
+   </Setter>
+   <Style.Triggers>
+    <DataTrigger Binding="{Binding ApplicationPlatform}" Value="{x:Static local:ApplicationPlatform.Unknown}">
+     <Setter Property="Visibility" Value="Collapsed"/>
+     <Setter Property="ToolTip" Value="{x:Null}"/>
+    </DataTrigger>
+   </Style.Triggers>
   </Style>
 
   <Style x:Key="BoardCardStyle" TargetType="Border">
@@ -615,6 +644,7 @@
 <DataGrid.ContextMenu>
 <ContextMenu>
 <MenuItem Header="Open Job Posting" Click="TrackingOpenUrl_Click"/>
+<MenuItem Header="Open Application" Click="TrackingOpenApply_Click"/>
 <MenuItem Header="Open Resume" Click="TrackingOpenResume_Click"/>
 <MenuItem Header="Open Resume Folder" Click="TrackingOpenResumeFolder_Click"/>
 <Separator/>
@@ -629,8 +659,12 @@
 <DataGridTemplateColumn Header="Job" Width="2*" MinWidth="150" MaxWidth="420">
 <DataGridTemplateColumn.CellTemplate>
 <DataTemplate>
+<!-- Title, then the platform badge; the title trims first so the badge always stays visible. -->
+<DockPanel VerticalAlignment="Center">
+<ContentControl DockPanel.Dock="Right" Style="{StaticResource PlatformBadgeStyle}" Margin="6,0,0,0"/>
 <TextBlock Text="{Binding Title}" FontWeight="SemiBold" Foreground="{StaticResource Ink}"
            TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTip="{Binding Title}"/>
+</DockPanel>
 </DataTemplate>
 </DataGridTemplateColumn.CellTemplate>
 </DataGridTemplateColumn>
@@ -668,12 +702,16 @@
 </Style>
 </DataGridTextColumn.ElementStyle>
 </DataGridTextColumn>
-<DataGridTemplateColumn Header="Actions" Width="196" MinWidth="196">
+<DataGridTemplateColumn Header="Actions" Width="246" MinWidth="246">
 <DataGridTemplateColumn.CellTemplate>
 <DataTemplate>
 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
 <Button Content="Open Job" Padding="8,2" FontSize="10.5" Click="TrackingOpenUrl_Click"
         ToolTip="Open the job posting in your browser"/>
+<!-- The recorded application page (ApplyUrl), never the Jobright link. Disabled until one is recorded. -->
+<Button Content="Apply" Padding="8,2" FontSize="10.5" Margin="5,0,0,0" Click="TrackingOpenApply_Click"
+        IsEnabled="{Binding ApplyUrl, Converter={StaticResource OpenableUrl}}"
+        ToolTip="{Binding ApplyUrl}" ToolTipService.ShowOnDisabled="False"/>
 <Button Content="Resume" Padding="8,2" FontSize="10.5" Margin="5,0,0,0" Click="TrackingOpenResume_Click"
         IsEnabled="{Binding ResumeGenerated}" ToolTip="Open the generated DOCX"/>
 <Button Content="Folder" Padding="8,2" FontSize="10.5" Margin="5,0,0,0" Click="TrackingOpenResumeFolder_Click"
@@ -716,6 +754,7 @@
 <Border.ContextMenu>
 <ContextMenu>
 <MenuItem Header="Open Job Posting" Click="TrackingOpenUrl_Click"/>
+<MenuItem Header="Open Application" Click="TrackingOpenApply_Click"/>
 <MenuItem Header="Open Resume" Click="TrackingOpenResume_Click"/>
 <MenuItem Header="Open Resume Folder" Click="TrackingOpenResumeFolder_Click"/>
 <Separator/>
@@ -732,8 +771,11 @@
 <TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="11" Foreground="{StaticResource Ink}"
            TextTrimming="CharacterEllipsis" ToolTip="{Binding Title}"/>
 </StackPanel>
+<DockPanel>
+<ContentControl DockPanel.Dock="Right" Style="{StaticResource PlatformBadgeStyle}" Margin="6,1,0,0"/>
 <TextBlock Text="{Binding Company}" FontSize="10" Foreground="{StaticResource Muted}"
            TextTrimming="CharacterEllipsis"/>
+</DockPanel>
 <DockPanel Margin="0,5,0,0">
 <TextBlock Text="{Binding TrackingDateDisplay}" FontSize="9.5" Foreground="{StaticResource Muted}"/>
 <TextBlock DockPanel.Dock="Right" HorizontalAlignment="Right" FontSize="9.5"

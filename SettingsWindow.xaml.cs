@@ -540,6 +540,21 @@ public partial class SettingsWindow : Window {
             : $"That job link could not be opened: {job.Link}";
     }
 
+    /// <summary>Opens the recorded application page (ApplyUrl). The job's Jobright link is Open Job's, never used here.</summary>
+    void TrackingOpenApply_Click(object s,RoutedEventArgs e) {
+        var job=JobOf(s) ?? TrackingGrid.SelectedItem as JobTask;
+        if(job is null){ TrackingStatus.Text="Select a job first."; return; }
+        if(JobTracker.ApplyUrlToOpen(job) is null) {
+            TrackingStatus.Text=$"No application link is recorded for {job.Company} — {job.Title} yet. "+
+                                "Click Apply on the job in the Job Browser to record it.";
+            return;
+        }
+
+        TrackingStatus.Text=JobTracker.OpenApplyUrl(job)
+            ? $"Opened the application for {job.Company} — {job.Title} in your browser."
+            : $"The application link for {job.Company} — {job.Title} could not be opened.";
+    }
+
     void TrackingOpenResume_Click(object s,RoutedEventArgs e) {
         var job=JobOf(s) ?? TrackingGrid.SelectedItem as JobTask;
         if(job is null){ TrackingStatus.Text="Select a job first."; return; }
@@ -680,4 +695,27 @@ public partial class SettingsWindow : Window {
             await main.GenerateForJobAsync(jobId!);
     }
 
+}
+/// <summary>
+/// Display text for an application platform badge. Goes through JobTracker.PlatformDisplayName
+/// ("iCIMS", not the enum's ICims) so the UI never shows raw enum names. Display only; one-way.
+/// </summary>
+public sealed class PlatformDisplayConverter : System.Windows.Data.IValueConverter {
+    public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
+        value is ApplicationPlatform platform ? JobTracker.PlatformDisplayName(platform) : "";
+
+    public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
+        System.Windows.Data.Binding.DoNothing;
+}
+
+/// <summary>
+/// True when an address may be opened (JobTracker.IsOpenableUrl: absolute http/https). Enables the
+/// List's Apply button only for a usable ApplyUrl. Display only; one-way.
+/// </summary>
+public sealed class OpenableUrlConverter : System.Windows.Data.IValueConverter {
+    public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
+        JobTracker.IsOpenableUrl(value as string);
+
+    public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
+        System.Windows.Data.Binding.DoNothing;
 }

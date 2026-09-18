@@ -305,7 +305,9 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
   crushed to 57/37/20 px in a narrow window while the extent never exceeded the viewport — the content
   looked clipped and offset, and there was no scrollbar to bring it back. With a floor on each column
   the grid scrolls honestly instead. Current floors: Job 150, Company 110, Status 140, Resume 116,
-  Date 88, Actions 196 — 800 px total, which fits the ~900 px grid at a 1000 px window.
+  Date 88, Actions 246 — 850 px total, which fits the ~900 px grid at a 1000 px window with little to
+  spare (Actions grew from 196 when the Apply button was added). Do not add a column without
+  revisiting this.
 - **The DataGrid is the only horizontal scroll owner.** The dashboard's outer `ScrollViewer` is
   vertical only (its default `HorizontalScrollBarVisibility` is Disabled); do not enable horizontal
   scrolling there, or the two will fight. `TrackingGrid_SizeChanged` clamps the grid's horizontal
@@ -411,6 +413,20 @@ the user clicks them, and every job still goes through `JobrightPageExtractor` a
   filter. Checkboxes are created in `InitTracking` from `PlatformFilterOrder`; each tick refreshes at
   once, the popup stays open until an outside click, and Clear unticks all with a single refresh.
 - **The selection is `SettingsWindow._platformFilter` only** — never tasks.json, settings or a task.
+- **Platform badge** (display only): one shared `PlatformBadgeStyle` (a templated `ContentControl`,
+  neutral colours so it never reads as a status) used in the List's Job cell (right-docked after the
+  title, which trims first — no extra column, so the 800 px column floors still hold) and on the Board
+  card's company line. Text goes through `PlatformDisplayConverter` -> `JobTracker.PlatformDisplayName`;
+  **Unknown is hidden and carries no tooltip**; Other and every recognised platform show, with the
+  `ApplyUrl` as tooltip. `RecordApplyUrlFromBrowser` calls `RefreshDashboardIfOpen()` after a
+  successful record, so a new badge appears without a manual refresh.
+- **Open Application** (`JobTracker.OpenApplyUrl`): opens the recorded `ApplyUrl` through the same
+  `IsOpenableUrl` (http/https only) and `Launch` as Open Job, and logs `TRACKING open apply URL <jobId>`
+  (id only). `ApplyUrlToOpen` **never falls back to `Link`** — the Jobright posting is Open Job's. UI:
+  an Apply button between Open Job and Resume in the List's Actions column (disabled via
+  `OpenableUrlConverter` unless the ApplyUrl is usable; tooltip = ApplyUrl), and "Open Application"
+  under "Open Job Posting" in the List and Board context menus, which show a status message instead of
+  opening when no link is recorded. Test: `OpenApplicationIsSafe` (refusals only — it never launches).
 - Tests: 5 checks in the "Tracking dashboard" group of `ResumeStyleTests`.
 
 ### Design direction — agreed, NOT yet built

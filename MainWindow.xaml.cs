@@ -225,7 +225,11 @@ public partial class MainWindow : Window {
     /// </summary>
     ApplyCaptureResult RecordApplyUrlFromBrowser(string jobPageUrl,string applyUrl) {
         var result=ApplyCapture.Record(_tasks,jobPageUrl,applyUrl,DateTime.Now);
-        if(result==ApplyCaptureResult.Recorded) Storage.SaveTasks(_tasks);
+        if(result==ApplyCaptureResult.Recorded) {
+            Storage.SaveTasks(_tasks);
+            // The job's platform badge and the platform filter show the new value straight away.
+            RefreshDashboardIfOpen();
+        }
         return result;
     }
 

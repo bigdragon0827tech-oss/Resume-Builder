@@ -132,6 +132,7 @@ static class Program {
             Test("the platform filter label and choice order", PlatformFilterLabelAndOrder);
             Test("resume actions are safe when no resume exists", ResumeActionsAreSafe);
             Test("a resume already on disk is relinked to its job", ResumeRelinking);
+            Test("Open Application uses only a usable ApplyUrl, never the job link", OpenApplicationIsSafe);
 
             Console.WriteLine();
             Console.WriteLine("Job browser");
@@ -1863,6 +1864,36 @@ static class Program {
         Equal(now.AddDays(1), oracle.ApplyUrlCapturedAt, "restamped");
     }
 
+    // ---------- open application ----------
+
+    static void OpenApplicationIsSafe() {
+        // Only refusals are exercised here, so no browser is ever launched by the test run.
+        Check(JobTracker.ApplyUrlToOpen(null) is null, "no job");
+        Check(!JobTracker.OpenApplyUrl(null), "no job is not opened");
+
+        // Missing ApplyUrl: refused even though the job has a perfectly good Jobright link.
+        var noApply = Job("OA-1", "Cogniify", "Engineer", "https://jobright.ai/jobs/info/6aada17fde327d3e210d3913");
+        Check(JobTracker.ApplyUrlToOpen(noApply) is null, "an empty ApplyUrl is never replaced by Link");
+        Check(!JobTracker.OpenApplyUrl(noApply), "an empty ApplyUrl opens nothing");
+
+        foreach (var bad in new[] { " ", "not a url", "/apply/1", "file:///C:/Windows/System32/calc.exe",
+                                    "javascript:alert(1)", "mailto:jobs@example.com", "ftp://example.com/apply",
+                                    @"C:\Users\someone\apply.html", "about:blank" }) {
+            var job = Job("OA-BAD", "Acme", "Engineer", "https://jobright.ai/jobs/info/6aada17fde327d3e210d3913");
+            job.ApplyUrl = bad;
+            Check(JobTracker.ApplyUrlToOpen(job) is null, "refused: " + bad);
+            Check(!JobTracker.OpenApplyUrl(job), "not launched: " + bad);
+        }
+
+        // A usable ApplyUrl is what would be opened — never Link, even when both are set.
+        var both = Job("OA-2", "Cogniify", "Engineer", "https://jobright.ai/jobs/info/6aada17fde327d3e210d3913");
+        both.ApplyUrl = "  https://app.dover.com/apply/Cogniify/1e3fc78f?jr_id=6aada17f  ";
+        Equal("https://app.dover.com/apply/Cogniify/1e3fc78f?jr_id=6aada17f", JobTracker.ApplyUrlToOpen(both), "ApplyUrl, trimmed");
+        both.Link = "";
+        Equal("https://app.dover.com/apply/Cogniify/1e3fc78f?jr_id=6aada17f", JobTracker.ApplyUrlToOpen(both), "Link plays no part");
+        Check(JobTracker.IsOpenableUrl("http://careers.example.com/apply"), "plain http is allowed, as for Open Job");
+    }
+
     // ---------- platform filter ----------
 
     static JobTask PlatformJob(string id, ApplicationPlatform platform, string status = ApplicationStatus.Viewed,
@@ -1967,6 +1998,12 @@ static class Program {
               JobTracker.PlatformFilterLabel(new[] { ApplicationPlatform.Unknown, ApplicationPlatform.Lever, ApplicationPlatform.Ashby }),
               "three or more");
         Equal("8 platforms", JobTracker.PlatformFilterLabel(JobTracker.PlatformFilterOrder.Skip(1).ToList()), "all but one");
+
+        // The badge and the filter share these display names.
+        Equal("Other", JobTracker.PlatformDisplayName(ApplicationPlatform.Other), "Other badge text");
+        Equal("SmartRecruiters", JobTracker.PlatformDisplayName(ApplicationPlatform.SmartRecruiters), "SmartRecruiters badge text");
+        foreach (var platform in JobTracker.PlatformFilterOrder)
+            Check(JobTracker.PlatformDisplayName(platform).Length > 0, platform + " has display text");
     }
 
     // ---------- application platform detection ----------
