@@ -2,6 +2,7 @@ using System.IO;
 using MigraDoc.DocumentObjectModel;
 using MigraDoc.Rendering;
 using PdfSharp.Fonts;
+using Color = MigraDoc.DocumentObjectModel.Color;
 using Font = MigraDoc.DocumentObjectModel.Font;
 
 namespace ResumeBuilder;
@@ -11,16 +12,15 @@ namespace ResumeBuilder;
 /// rendering a PDF no longer starts a browser, so it costs no extra processes and no ~80 MB of
 /// transient renderer memory per document. No Word, no COM, no Office, no browser.
 ///
-/// Both renderers still consume the same <see cref="ResumeDocument"/>, so the DOCX and the PDF carry
-/// identical content — a test walks this document model and compares it with the DOCX round trip.
+/// Both renderers still consume the same <see cref="ResumeDocument"/> and the same normalized
+/// <see cref="ResumeStyle"/>, so the DOCX and the PDF carry identical content and the same styling
+/// decisions — a test walks this document model and compares it with the DOCX round trip.
 /// </summary>
 public static class PdfWriter {
     static PdfWriter() {
         // PDFsharp resolves fonts itself; point it at the installed Windows fonts once.
         GlobalFontSettings.FontResolver ??= new ResumeFontResolver();
     }
-
-    const string FontFamily = "Calibri";
 
     public static void Write(ResumeDocument resume, string path) {
         var renderer = new PdfDocumentRenderer { Document = BuildDocument(resume) };
@@ -30,66 +30,65 @@ public static class PdfWriter {
 
     /// <summary>The document model, exposed so content parity with the DOCX can be asserted.</summary>
     public static Document BuildDocument(ResumeDocument resume) {
+        var style = resume.Style;
+
         var doc = new Document();
         doc.Info.Title = string.IsNullOrWhiteSpace(resume.Name) ? "Resume" : resume.Name + " — Resume";
 
         var normal = doc.Styles["Normal"];
         if (normal is null) throw new InvalidOperationException("MigraDoc default style is missing.");
-        normal.Font.Name = FontFamily;
-        normal.Font.Size = Unit.FromPoint(10.5);
-        normal.ParagraphFormat.SpaceAfter = Unit.FromPoint(3);
+        normal.Font.Name = style.Fonts.Family;
+        normal.Font.Size = Unit.FromPoint(style.Body.FontSize);
+        normal.Font.Color = Rgb(style.Colors.Body);
+        normal.ParagraphFormat.SpaceAfter = Unit.FromPoint(style.Body.SpaceAfter);
 
         var section = doc.AddSection();
-        section.PageSetup.PageFormat = PageFormat.Letter;
-        section.PageSetup.TopMargin = Unit.FromCentimeter(1.4);
-        section.PageSetup.BottomMargin = Unit.FromCentimeter(1.4);
-        section.PageSetup.LeftMargin = Unit.FromCentimeter(1.5);
-        section.PageSetup.RightMargin = Unit.FromCentimeter(1.5);
+        section.PageSetup.PageFormat = style.Page.Size.Equals("A4", StringComparison.OrdinalIgnoreCase) ? PageFormat.A4 : PageFormat.Letter;
+        section.PageSetup.TopMargin = Unit.FromInch(style.Page.MarginTop);
+        section.PageSetup.BottomMargin = Unit.FromInch(style.Page.MarginBottom);
+        section.PageSetup.LeftMargin = Unit.FromInch(style.Page.MarginLeft);
+        section.PageSetup.RightMargin = Unit.FromInch(style.Page.MarginRight);
 
-        if (resume.Name.Length > 0) Add(section, resume.Name, 16, bold: true, after: 2);
-        if (resume.Title.Length > 0) Add(section, resume.Title, 12, bold: true, after: 2);
-        if (resume.Contact.Length > 0) Add(section, resume.Contact, 9, after: 8);
+        if (resume.Name.Length > 0) Add(section, ResumeDocument.Cased(resume.Name, style.Name), style.Name, style);
+        if (resume.Title.Length > 0) Add(section, ResumeDocument.Cased(resume.Title, style.Headline), style.Headline, style);
+        if (resume.Contact.Length > 0) Add(section, ResumeDocument.Cased(resume.Contact, style.Contact), style.Contact, style);
 
         if (resume.Summary.Length > 0) {
-            Heading(section, "PROFESSIONAL SUMMARY");
-            Add(section, resume.Summary, after: 6);
+            Heading(section, resume.Heading(ResumeDocument.SummaryHeading), style);
+            // Forced regular weight: the summary never carries inline emphasis.
+            Add(section, resume.Summary, style.Body, style, bold: false);
         }
 
         if (resume.Skills.Count > 0) {
-            Heading(section, "SKILLS");
-            foreach (var s in resume.Skills) {
-                var p = section.AddParagraph();
-                p.Format.SpaceAfter = Unit.FromPoint(2);
-                if (s.Category.Length > 0) p.AddFormattedText(s.Category + ": ", TextFormat.Bold);
-                p.AddText(s.Skills);
+            Heading(section, resume.Heading(ResumeDocument.SkillsHeading), style);
+            foreach (var skill in resume.Skills) {
+                if (skill.Category.Length > 0) Add(section, ResumeDocument.Cased(skill.Category, style.SkillCategory), style.SkillCategory, style);
+                // Skill values are always regular weight, whatever the style asked for.
+                if (skill.Skills.Length > 0) Add(section, skill.Skills, style.SkillValues, style, bold: false);
             }
-            section.AddParagraph().Format.SpaceAfter = Unit.FromPoint(4);
         }
 
         if (resume.Experience.Count > 0) {
-            Heading(section, "PROFESSIONAL EXPERIENCE");
-            foreach (var e in resume.Experience) {
-                Add(section, ResumeDocument.Join(e.Title, e.Company), bold: true, after: 1);
-                var meta = ResumeDocument.Join(e.Dates, e.Location);
-                if (meta.Length > 0) Add(section, meta, 9, italic: true, after: 3);
-                foreach (var line in e.Lines) Bullet(section, line);
-                section.AddParagraph().Format.SpaceAfter = Unit.FromPoint(4);
+            Heading(section, resume.Heading(ResumeDocument.ExperienceHeading), style);
+            foreach (var job in resume.Experience) {
+                if (job.Heading.Length > 0) Add(section, ResumeDocument.Cased(job.Heading, style.CompanyHeading), style.CompanyHeading, style);
+                if (job.Subtitle.Length > 0) Add(section, job.Subtitle, style.Subtitle, style);
+                if (job.Metadata.Length > 0) Metadata(section, job.Metadata, style);
+                foreach (var line in job.Lines) Bullet(section, line, style);
             }
         }
 
         if (resume.Certifications.Count > 0) {
-            Heading(section, "CERTIFICATIONS");
-            foreach (var c in resume.Certifications) Bullet(section, c);
-            section.AddParagraph().Format.SpaceAfter = Unit.FromPoint(4);
+            Heading(section, resume.Heading(ResumeDocument.CertificationsHeading), style);
+            foreach (var certification in resume.Certifications) Bullet(section, BulletLine.Plain(certification), style);
         }
 
         if (resume.Education.Count > 0) {
-            Heading(section, "EDUCATION");
-            foreach (var ed in resume.Education) {
-                var degree = ed.Major.Length > 0 && !ed.Degree.Contains(ed.Major, StringComparison.OrdinalIgnoreCase)
-                    ? ResumeDocument.Join(ed.Degree, ed.Major) : ed.Degree;
-                Add(section, ResumeDocument.Join(degree, ed.School), bold: true, after: 1);
-                if (ed.Dates.Length > 0) Add(section, ed.Dates, 9, italic: true, after: 5);
+            Heading(section, resume.Heading(ResumeDocument.EducationHeading), style);
+            foreach (var entry in resume.Education) {
+                // Education is ordinary body text: no emphasis, whatever the style asked for.
+                if (entry.Heading.Length > 0) Add(section, entry.Heading, style.Education, style, bold: false);
+                if (entry.Dates.Length > 0) Add(section, entry.Dates, style.Education, style, bold: false);
             }
         }
 
@@ -134,64 +133,126 @@ public static class PdfWriter {
         return text;
     }
 
-    static void Heading(Section section, string text) {
-        var p = section.AddParagraph();
-        p.Format.SpaceBefore = Unit.FromPoint(6);
-        p.Format.SpaceAfter = Unit.FromPoint(3);
-        p.Format.Borders.Bottom.Width = 0.5;
-        p.AddFormattedText(text, new Font { Bold = true, Size = Unit.FromPoint(11) });
+    // ---------- reusable style application ----------
+
+    static void Heading(Section section, string text, ResumeStyle style) {
+        var paragraph = Paragraph(section, style.SectionHeading);
+        if (style.SectionHeading.BottomBorder) {
+            paragraph.Format.Borders.Bottom.Width = 0.5;
+            paragraph.Format.Borders.Bottom.Color = Rgb(style.SectionHeading.Color);
+        }
+        paragraph.AddFormattedText(text, RunFont(style.SectionHeading, style, style.SectionHeading.Bold));
     }
+
+    static void Metadata(Section section, string text, ResumeStyle style) =>
+        Add(section, text, style.Metadata, style);
 
     /// <summary>Bullets mirror the DOCX: a bullet character with a hanging indent, not a list part.</summary>
-    static void Bullet(Section section, string text) {
-        var p = section.AddParagraph();
-        p.Format.LeftIndent = Unit.FromCentimeter(0.6);
-        p.Format.FirstLineIndent = Unit.FromCentimeter(-0.3);
-        p.Format.SpaceAfter = Unit.FromPoint(2);
-        p.AddText("• " + text);
+    static void Bullet(Section section, BulletLine line, ResumeStyle style) {
+        var paragraph = Paragraph(section, style.Bullet);
+        paragraph.AddFormattedText(ResumeDocument.Bullet, RunFont(style.Bullet, style, bold: false));
+        foreach (var segment in line.Segments)
+            paragraph.AddFormattedText(segment.Text, RunFont(style.Bullet, style, segment.Bold));
     }
 
-    static void Add(Section section, string text, double size = 10.5, bool bold = false, bool italic = false, double after = 3) {
-        var p = section.AddParagraph();
-        p.Format.SpaceAfter = Unit.FromPoint(after);
-        p.AddFormattedText(text, new Font { Size = Unit.FromPoint(size), Bold = bold, Italic = italic });
+    static void Add(Section section, string text, TextStyle text_style, ResumeStyle style, bool? bold = null) {
+        var paragraph = Paragraph(section, text_style);
+        paragraph.AddFormattedText(text, RunFont(text_style, style, bold ?? text_style.Bold));
+    }
+
+    static Paragraph Paragraph(Section section, TextStyle text_style) {
+        var paragraph = section.AddParagraph();
+        ApplyParagraphStyle(paragraph, text_style);
+        return paragraph;
+    }
+
+    static void ApplyParagraphStyle(Paragraph paragraph, TextStyle style) {
+        paragraph.Format.SpaceBefore = Unit.FromPoint(style.SpaceBefore);
+        paragraph.Format.SpaceAfter = Unit.FromPoint(style.SpaceAfter);
+        paragraph.Format.LineSpacingRule = LineSpacingRule.Multiple;
+        paragraph.Format.LineSpacing = style.LineSpacing;
+        paragraph.Format.Alignment = Alignment(style.Alignment);
+        paragraph.Format.KeepWithNext = style.KeepWithNext;
+        if (style.LeftIndent > 0) paragraph.Format.LeftIndent = Unit.FromInch(style.LeftIndent);
+        if (style.HangingIndent > 0) paragraph.Format.FirstLineIndent = Unit.FromInch(-style.HangingIndent);
+    }
+
+    static Font RunFont(TextStyle text_style, ResumeStyle style, bool bold) => new() {
+        Name = style.Fonts.Family,
+        Size = Unit.FromPoint(text_style.FontSize),
+        Bold = bold,
+        Italic = text_style.Italic,
+        Color = Rgb(text_style.Color)
+    };
+
+    static ParagraphAlignment Alignment(string alignment) => alignment.ToLowerInvariant() switch {
+        "center" => ParagraphAlignment.Center,
+        "right" => ParagraphAlignment.Right,
+        "justify" => ParagraphAlignment.Justify,
+        _ => ParagraphAlignment.Left
+    };
+
+    static Color Rgb(string hex) {
+        var (r, g, b) = ResumeStyle.Rgb(hex);
+        return new Color(r, g, b);
     }
 }
 
 /// <summary>
 /// Resolves the resume font from the installed Windows fonts. PDFsharp 6 has no font source of its
-/// own, so this maps the four faces we use to real font files, with fallbacks — keeping PDF output
+/// own, so this maps each allowed family to real font files, with fallbacks — keeping PDF output
 /// deterministic and free of any GDI/WPF-flavoured package variant.
 /// </summary>
 sealed class ResumeFontResolver : IFontResolver {
     static readonly string FontsDir = Environment.GetFolderPath(Environment.SpecialFolder.Fonts);
 
-    // Regular, bold, italic, bold-italic — first file that exists wins.
-    static readonly string[][] Candidates = {
-        new[] { "calibri.ttf", "segoeui.ttf", "arial.ttf" },
-        new[] { "calibrib.ttf", "segoeuib.ttf", "arialbd.ttf" },
-        new[] { "calibrii.ttf", "segoeuii.ttf", "ariali.ttf" },
-        new[] { "calibriz.ttf", "segoeuiz.ttf", "arialbi.ttf" }
+    // Regular, bold, italic, bold-italic for every family the style system allows.
+    static readonly Dictionary<string, string[]> Families = new(StringComparer.OrdinalIgnoreCase) {
+        ["Arial"] = new[] { "arial.ttf", "arialbd.ttf", "ariali.ttf", "arialbi.ttf" },
+        ["Calibri"] = new[] { "calibri.ttf", "calibrib.ttf", "calibrii.ttf", "calibriz.ttf" },
+        ["Cambria"] = new[] { "cambria.ttc", "cambriab.ttf", "cambriai.ttf", "cambriaz.ttf" },
+        ["Garamond"] = new[] { "gara.ttf", "garabd.ttf", "garait.ttf", "garabd.ttf" },
+        ["Georgia"] = new[] { "georgia.ttf", "georgiab.ttf", "georgiai.ttf", "georgiaz.ttf" },
+        ["Helvetica"] = new[] { "arial.ttf", "arialbd.ttf", "ariali.ttf", "arialbi.ttf" },
+        ["Tahoma"] = new[] { "tahoma.ttf", "tahomabd.ttf", "tahoma.ttf", "tahomabd.ttf" },
+        ["Times New Roman"] = new[] { "times.ttf", "timesbd.ttf", "timesi.ttf", "timesbi.ttf" },
+        ["Verdana"] = new[] { "verdana.ttf", "verdanab.ttf", "verdanai.ttf", "verdanaz.ttf" }
+    };
+
+    // Used when the requested family is not installed on this machine.
+    static readonly string[][] Fallbacks = {
+        new[] { "arial.ttf", "calibri.ttf", "segoeui.ttf" },
+        new[] { "arialbd.ttf", "calibrib.ttf", "segoeuib.ttf" },
+        new[] { "ariali.ttf", "calibrii.ttf", "segoeuii.ttf" },
+        new[] { "arialbi.ttf", "calibriz.ttf", "segoeuiz.ttf" }
     };
 
     static int Index(bool bold, bool italic) => (bold ? 1 : 0) + (italic ? 2 : 0);
 
-    public FontResolverInfo? ResolveTypeface(string familyName, bool isBold, bool isItalic) =>
-        new FontResolverInfo("resume#" + Index(isBold, isItalic));
+    public FontResolverInfo? ResolveTypeface(string familyName, bool isBold, bool isItalic) {
+        var family = Families.ContainsKey(familyName) ? familyName : "Arial";
+        return new FontResolverInfo(family + "#" + Index(isBold, isItalic));
+    }
 
     public byte[]? GetFont(string faceName) {
-        var index = faceName.StartsWith("resume#", StringComparison.Ordinal)
-            ? int.Parse(faceName.Substring("resume#".Length)) : 0;
+        var separator = faceName.LastIndexOf('#');
+        var family = separator > 0 ? faceName.Substring(0, separator) : "Arial";
+        var index = separator > 0 && int.TryParse(faceName.Substring(separator + 1), out var parsed) ? parsed : 0;
 
-        foreach (var file in Candidates[index]) {
-            var path = Path.Combine(FontsDir, file);
-            if (File.Exists(path)) return File.ReadAllBytes(path);
-        }
+        if (Families.TryGetValue(family, out var files) && Read(files[index]) is byte[] face) return face;
+
+        foreach (var candidate in Fallbacks[index])
+            if (Read(candidate) is byte[] fallback) return fallback;
+
         // Last resort: any regular face we can find, so a PDF is still produced.
-        foreach (var file in Candidates[0]) {
-            var path = Path.Combine(FontsDir, file);
-            if (File.Exists(path)) return File.ReadAllBytes(path);
-        }
+        foreach (var candidate in Fallbacks[0])
+            if (Read(candidate) is byte[] regular) return regular;
+
         throw new FileNotFoundException("No usable system font was found for the PDF.");
+    }
+
+    static byte[]? Read(string file) {
+        var path = Path.Combine(FontsDir, file);
+        return File.Exists(path) ? File.ReadAllBytes(path) : null;
     }
 }

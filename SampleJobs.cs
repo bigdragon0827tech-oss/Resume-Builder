@@ -1,13 +1,21 @@
 namespace ResumeBuilder;
 
 /// <summary>
-/// Synthetic job batches for testing the queue. Everything here is invented sample data — no real
-/// company, posting or candidate information — and a batch only reaches the Incoming folder when the
-/// user explicitly clicks one of the Development actions.
+/// Synthetic jobs for testing the queue. Everything here is invented sample data — no real company,
+/// posting or candidate information — and a job only reaches the Incoming folder when the user
+/// explicitly clicks one of the Development actions.
+///
+/// Each job is written as its own file in the one-job input format, because the importer takes
+/// exactly one job per file. Every job URL is under <see cref="SampleUrlRoot"/>, which is how the test
+/// queue is recognised and cleared, and each run gets its own URLs so a second run is not a duplicate.
 /// </summary>
 public static class SampleJobs {
+    /// <summary>Ids given to test jobs before the one-job contract; still recognised when clearing.</summary>
     public const string SamplePrefix = "SAMPLE-";
     public const string StressPrefix = "STRESS-";
+
+    /// <summary>Every synthetic job URL starts here. example.com is reserved for exactly this use.</summary>
+    public const string SampleUrlRoot = "https://example.com/sample/";
 
     static readonly string[] Companies = {
         "Northwind Systems", "Contoso Cloud", "Fabrikam Robotics", "Litware Analytics", "Adventure Labs",
@@ -24,53 +32,52 @@ public static class SampleJobs {
         "Cloud Infrastructure Engineer"
     };
 
-    static readonly string[] Locations = {
-        "Mountain View, CA", "Seattle, WA", "Austin, TX", "Remote", "Boston, MA",
-        "Denver, CO", "Chicago, IL", "New York, NY", "San Diego, CA", "Portland, OR"
-    };
-
-    /// <summary>The original three-job batch, kept so the existing Development action is unchanged.</summary>
-    public static JobBatch CreateSampleBatch() => new() {
-        SchemaVersion = "1.0",
-        Source = "sample",
-        Jobs = new() {
-            new() { JobId = SamplePrefix + "001", Company = "Google", Title = "Senior Software Engineer", Location = "Mountain View, CA", Jd = "Sample JD for a senior software engineer role." },
-            new() { JobId = SamplePrefix + "002", Company = "Stripe", Title = "Backend Engineer", Location = "Remote", Jd = "Sample JD for a backend engineer role." },
-            new() { JobId = SamplePrefix + "003", Company = "Amazon", Title = "Software Engineer II", Location = "Seattle, WA", Jd = "Sample JD for a software engineer role." }
-        }
-    };
+    /// <summary>The original three sample jobs.</summary>
+    public static List<JobImportData> CreateSampleJobs(string? runId = null) {
+        runId ??= DateTime.Now.ToString("yyyyMMdd-HHmmss");
+        JobImportData Job(int n, string company, string title, string description) => new() {
+            Company = company, Title = title, Description = description,
+            JobUrl = $"{SampleUrlRoot}{runId}/{n}", CompanyUrl = null
+        };
+        return new() {
+            Job(1, "Google", "Senior Software Engineer", "Sample JD for a senior software engineer role."),
+            Job(2, "Stripe", "Backend Engineer", "Sample JD for a backend engineer role."),
+            Job(3, "Amazon", "Software Engineer II", "Sample JD for a software engineer role.")
+        };
+    }
 
     /// <summary>
-    /// A larger synthetic batch for queue stress testing: unique ids, varied company and role names,
-    /// and a complete payload for every job so preparation behaves exactly as it would in real use.
+    /// A larger synthetic set for queue stress testing: varied company and role names and a complete
+    /// description for every job, so preparation behaves exactly as it would in real use.
     /// </summary>
-    public static JobBatch CreateStressBatch(int count = 50, string? runId = null) {
-        runId ??= DateTime.Now.ToString("HHmmss");
-        var batch = new JobBatch { SchemaVersion = "1.0", Source = "stress-sample" };
+    public static List<JobImportData> CreateStressJobs(int count = 50, string? runId = null) {
+        runId ??= DateTime.Now.ToString("yyyyMMdd-HHmmss");
+        var jobs = new List<JobImportData>();
 
         for (var i = 0; i < count; i++) {
             var company = Companies[i % Companies.Length];
             var role = Roles[(i / Companies.Length + i) % Roles.Length];
-            var location = Locations[i % Locations.Length];
 
-            batch.Jobs.Add(new JobInput {
-                JobId = $"{StressPrefix}{runId}-{i + 1:D3}",
+            jobs.Add(new JobImportData {
                 Company = company,
                 Title = role,
-                Location = location,
-                Jd = $"Synthetic job description {i + 1} of {count}. {company} is hiring a {role} in {location}. " +
-                     "Responsibilities include designing, building and operating backend services, data pipelines " +
-                     "and cloud infrastructure, with an emphasis on reliability, testing, observability and CI/CD. " +
-                     "This is sample data generated for queue testing and is not a real posting.",
-                Link = $"https://example.com/sample/{i + 1}",
-                About = $"{company} is a fictional company used only for ResumeBuilder queue testing."
+                JobUrl = $"{SampleUrlRoot}{runId}/{i + 1}",
+                CompanyUrl = "https://example.com/company/" + company.Replace(' ', '-').ToLowerInvariant(),
+                Description = $"Synthetic job description {i + 1} of {count}. {company} is hiring a {role}. " +
+                              "Responsibilities include designing, building and operating backend services, data pipelines " +
+                              "and cloud infrastructure, with an emphasis on reliability, testing, observability and CI/CD. " +
+                              "This is sample data generated for queue testing and is not a real posting."
             });
         }
-        return batch;
+        return jobs;
     }
 
-    /// <summary>True for any id created by the Development actions, so test queues can be cleared.</summary>
-    public static bool IsTestJobId(string jobId) =>
-        jobId.StartsWith(SamplePrefix, StringComparison.OrdinalIgnoreCase) ||
-        jobId.StartsWith(StressPrefix, StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// True for any job created by the Development actions, so the test queue can be cleared: by its
+    /// sample URL (the one-job contract) or by the id prefix older test jobs were saved with.
+    /// </summary>
+    public static bool IsTestJob(JobTask task) =>
+        (task.Link ?? "").StartsWith(SampleUrlRoot, StringComparison.OrdinalIgnoreCase)
+        || task.JobId.StartsWith(SamplePrefix, StringComparison.OrdinalIgnoreCase)
+        || task.JobId.StartsWith(StressPrefix, StringComparison.OrdinalIgnoreCase);
 }

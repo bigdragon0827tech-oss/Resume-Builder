@@ -1,0 +1,75 @@
+{
+  "info": {
+    "name": "BILLY LIN",
+    "title": "Senior AI/ML Software Engineer",
+    "location": "Menlo Park, CA",
+    "email": "billy.lin@example.com",
+    "phone": "(650) 555-0142",
+    "linkedin": "linkedin.com/in/billylin"
+  },
+  "summary": "Senior engineer who ships production machine-learning systems end to end.",
+  "skills": [
+    {
+      "category": "Languages",
+      "skills": ["Python", "Go", "SQL"]
+    }
+  ],
+  "experience": [
+    {
+      "title": "Senior AI Software Engineer",
+      "company": "Caterpillar Inc.",
+      "startDate": "Sep 2025",
+      "endDate": "Present",
+      "location": "California",
+      "employmentType": "Full-time",
+      "workArrangement": "",
+      "subtitle": "",
+      "descriptionLines": [
+        "Architected production AI services handling 40 million daily inference requests."
+      ]
+    },
+    {
+      "title": "Software Engineer",
+      "company": "Netflix",
+      "startDate": "Mar 2021",
+      "endDate": "Aug 2025",
+      "location": "",
+      "employmentType": "",
+      "workArrangement": "",
+      "subtitle": "",
+      "descriptionLines": [
+        "Built the recommendation feature store serving 200 million member profiles."
+      ]
+    }
+  ],
+  "certifications": [],
+  "education": [
+    {
+      "degree": "B.S.",
+      "major": "Computer Science",
+      "school": "University of Illinois Urbana-Champaign",
+      "startDate": "2009",
+      "endDate": "2013"
+    }
+  ],
+  "style": {
+    "preset": "promV4.12",
+    "colors": {
+      "primary": "#17365D"
+    },
+    "fonts": {
+      "family": "Calibri"
+    },
+    "page": {
+      "marginLeft": 0.75,
+      "marginRight": 0.75
+    },
+    "sectionHeading": {
+      "uppercase": false,
+      "bottomBorder": false
+    },
+    "bullet": {
+      "leftIndent": 0.25
+    }
+  }
+}

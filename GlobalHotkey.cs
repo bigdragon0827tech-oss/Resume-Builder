@@ -5,15 +5,18 @@ using WindowState = System.Windows.WindowState;
 
 namespace ResumeBuilder;
 
-/// <summary>
-/// A6.6.13 — a system-wide hotkey (Ctrl+Shift+') that brings Resume Builder to the front from any app
-/// and puts keyboard focus in the ChatGPT pane, so the user's next Ctrl+Shift+; reaches ChatGPT.
-///
-/// It only moves focus. It never sends a keystroke to ChatGPT and never copies anything: the copy is
-/// still the user's own Ctrl+Shift+; handled by ChatGPT's own feature. A hotkey press is user input,
-/// which is what allows Windows to let the app come to the foreground.
-/// </summary>
+
+
+
 public sealed class GlobalHotkey : IDisposable {
+    /// <summary>
+    /// A6.6.13 — a system-wide hotkey (Ctrl+Shift+') that brings Resume Builder to the front from any app
+    /// and puts keyboard focus in the ChatGPT pane, so the user's next Ctrl+Shift+; reaches ChatGPT.
+    ///
+    /// It only moves focus. It never sends a keystroke to ChatGPT and never copies anything: the copy is
+    /// still the user's own Ctrl+Shift+; handled by ChatGPT's own feature. A hotkey press is user input,
+    /// which is what allows Windows to let the app come to the foreground.
+    /// </summary>
     public const int MOD_CONTROL = 0x0002;
     public const int MOD_SHIFT = 0x0004;
     public const int MOD_NOREPEAT = 0x4000;
@@ -25,9 +28,25 @@ public sealed class GlobalHotkey : IDisposable {
     const int WM_HOTKEY = 0x0312;
     const int HotkeyId = 0x5242;   // "RB"
 
+    [DllImport("user32.dll")]
+    static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr processId);
+
+    [DllImport("kernel32.dll")]
+    static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll")]
+    static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+    [DllImport("user32.dll")]
+    static extern bool BringWindowToTop(IntPtr hWnd);
+
     [DllImport("user32.dll", SetLastError = true)] static extern bool RegisterHotKey(IntPtr hWnd, int id, int fsModifiers, int vk);
     [DllImport("user32.dll", SetLastError = true)] static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
+
 
     HwndSource? _source;
     IntPtr _handle = IntPtr.Zero;
@@ -70,15 +89,81 @@ public sealed class GlobalHotkey : IDisposable {
     }
 
     /// <summary>Restores and activates the window. Called from the hotkey, so Windows permits it.</summary>
-    public static void BringToFront(Window window) {
-        try {
-            if (window.WindowState == WindowState.Minimized) window.WindowState = WindowState.Normal;
-            if (!window.IsVisible) window.Show();
-            window.Activate();
-            SetForegroundWindow(new WindowInteropHelper(window).Handle);
-        } catch {
-            // Focus is a convenience; failing to take it must not affect a job.
+    /// 
+    public static void BringToFront(Window window)
+    {
+        try
+        {
+            if (window.WindowState == WindowState.Minimized)
+                window.WindowState = WindowState.Normal;
+
+            if (!window.IsVisible)
+                window.Show();
+
+            var target = new WindowInteropHelper(window).Handle;
+            var foreground = GetForegroundWindow();
+
+            uint currentThread = GetCurrentThreadId();
+            uint foregroundThread =
+                foreground != IntPtr.Zero
+                    ? GetWindowThreadProcessId(foreground, IntPtr.Zero)
+                    : 0;
+
+            bool attached = false;
+
+            try
+            {
+                if (foregroundThread != 0 &&
+                    foregroundThread != currentThread)
+                {
+                    attached = AttachThreadInput(
+                        currentThread,
+                        foregroundThread,
+                        true);
+                }
+
+                BringWindowToTop(target);
+
+                var activated = window.Activate();
+                var foregroundResult = SetForegroundWindow(target);
+
+                PerfLog.Line(
+                    $"BringToFront Attach={attached} " +
+                    $"Activate={activated} " +
+                    $"SetForegroundWindow={foregroundResult}");
+            }
+            finally
+            {
+                if (attached)
+                {
+                    AttachThreadInput(
+                        currentThread,
+                        foregroundThread,
+                        false);
+                }
+            }
         }
+        catch (Exception ex)
+        {
+            PerfLog.Line("BringToFront ERROR: " + ex.Message);
+        }
+    }
+
+    [DllImport("user32.dll")]
+    static extern bool IsWindow(IntPtr hWnd);
+
+    public static IntPtr CurrentForegroundWindow()
+    {
+        return GetForegroundWindow();
+    }
+
+    public static bool TryRestoreForegroundWindow(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || !IsWindow(hwnd))
+            return false;
+
+        BringWindowToTop(hwnd);
+        return SetForegroundWindow(hwnd);
     }
 
     public void Dispose() {

@@ -1,8 +1,12 @@
-# Resume Builder A6.6.13
+# Resume Builder v1.0
 
-Based on A6.6.12. Everything else is unchanged — this release adds the "answer ready" notification.
+Version 1.0 (assembly version 1.0.0) is Resume Builder's first numbered release. It carries forward
+everything built in the A6.x development line. The notes below describe milestones from that line and
+are kept as history.
 
-## Change in A6.6.13 — "answer ready" + one keypress
+## History: A6.6.13 — "answer ready" + one keypress
+
+A6.6.13 was based on A6.6.12 and added the "answer ready" notification.
 
 ```
 Start Queue

@@ -368,7 +368,10 @@ public static class ChatCompletionWatcher {
                 } else if (state == "idle") {
                     idleStreak++;
                     // Normal case: generation was seen, and it has now been idle long enough.
-                    if (sawGenerating && idleStreak >= StablePolls) return CompletionOutcome.Ready;
+                    if (sawGenerating && idleStreak >= StablePolls) {
+                        // GPT finishes work!           
+                        return CompletionOutcome.Ready;
+                    }
                     // Generation was never observed within the start budget: it either finished
                     // before the first poll or never began. Either way, tell the user to look.
                     if (!sawGenerating && waited >= StartBudgetMs && idleStreak >= StablePolls) return CompletionOutcome.ReadyUnconfirmed;

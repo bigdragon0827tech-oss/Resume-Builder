@@ -1,0 +1,76 @@
+{
+  "info": {
+    "name": "BILLY LIN",
+    "title": "Senior AI/ML Software Engineer",
+    "location": "Menlo Park, CA",
+    "email": "billy.lin@example.com",
+    "phone": "(650) 555-0142",
+    "linkedin": "linkedin.com/in/billylin"
+  },
+  "summary": "The content here is valid; every problem in this fixture is in the style block.",
+  "skills": [
+    {
+      "category": "Languages",
+      "skills": ["Python"]
+    }
+  ],
+  "experience": [
+    {
+      "title": "Senior AI Software Engineer",
+      "company": "Caterpillar Inc.",
+      "startDate": "Sep 2025",
+      "endDate": "Present",
+      "location": "Peoria, IL",
+      "employmentType": "Full-time",
+      "workArrangement": "Hybrid",
+      "subtitle": "",
+      "descriptionLines": [
+        "Architected production AI services handling 40 million daily inference requests."
+      ]
+    }
+  ],
+  "certifications": [],
+  "education": [
+    {
+      "degree": "B.S.",
+      "major": "Computer Science",
+      "school": "University of Illinois Urbana-Champaign",
+      "startDate": "2009",
+      "endDate": "2013"
+    }
+  ],
+  "style": {
+    "preset": "fancy",
+    "page": {
+      "size": "TABLOID",
+      "marginLeft": 2.0
+    },
+    "colors": {
+      "primary": "blue",
+      "body": "#000"
+    },
+    "fonts": {
+      "family": "Comic Sans MS"
+    },
+    "name": {
+      "fontSize": 40,
+      "alignment": "middle"
+    },
+    "body": {
+      "fontSize": 9
+    },
+    "bullet": {
+      "lineSpacing": 0.8
+    },
+    "skillValues": {
+      "fontSize": 8,
+      "bold": true
+    },
+    "sectionHeading": {
+      "dropShadow": true
+    },
+    "sidebar": {
+      "width": 2.5
+    }
+  }
+}

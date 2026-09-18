@@ -20,12 +20,12 @@ public enum WatchdogResult {
 /// an earlier job can never fail the job that is active now.
 /// </summary>
 public sealed class CaptureWatchdog {
-    public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
+    public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(10);
 
     /// <summary>The failure reason recorded on the job.</summary>
     public const string FailureReason = JobTask.CaptureTimeoutReason;
 
-    public const string TimeoutMessage = "No valid result capture received within 30 seconds after ChatGPT completed.";
+    public const string TimeoutMessage = "No valid result capture received within 10 seconds after ChatGPT completed.";
 
     readonly Func<TimeSpan, CancellationToken, Task> _delay;
     CancellationTokenSource? _cancellation;

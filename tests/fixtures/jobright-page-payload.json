@@ -1,0 +1,17 @@
+{
+  "href": "https://jobright.ai/jobs/info/6aac7fec95c707f49dff195f?utm_source=1146&utm_campaign=remote",
+  "canonical": "https://jobright.ai/jobs/info/6aac7fec95c707f49dff195f",
+  "ld": [
+    "{\"@context\":\"https://schema.org\",\"@type\":\"JobPosting\",\"title\":\"[Remote] Backend Software Engineer\",\"description\":\"<p>Note: The job is a remote job and is open to candidates in USA. ClearlyRated is a B2B SaaS platform that helps professional services firms measure, understand &amp; improve client experience.</p><p><strong>Responsibilities</strong></p><ul><li>Design, build and operate backend services in Python</li><li>Own reliability &amp; observability</li></ul><script>alert(1)</script><p>Salary: $140,000&nbsp;&ndash; $170,000</p>\",\"datePosted\":\"2026-09-18 00:03:56\",\"employmentType\":\"FULL_TIME\",\"hiringOrganization\":{\"@type\":\"Organization\",\"name\":\"ClearlyRated\"},\"jobLocationType\":\"TELECOMMUTE\",\"jobLocation\":{\"address\":{\"addressLocality\":\"United States\",\"addressCountry\":\"US\",\"@type\":\"PostalAddress\"},\"@type\":\"Place\"},\"identifier\":{\"@type\":\"PropertyValue\",\"name\":\"ClearlyRated\",\"value\":\"6aac7fec95c707f49dff195f\"}}"
+  ],
+  "next": {
+    "jobId": "6aac7fec95c707f49dff195f",
+    "title": "Backend Software Engineer",
+    "summary": "ClearlyRated is a B2B SaaS platform that helps professional services firms measure client experience.",
+    "responsibilities": ["System, Database and API design as a first-class skill.", "Own reliability and observability."],
+    "required": ["5+ years of backend development in Python"],
+    "preferred": ["Experience with event-driven systems"],
+    "company": "ClearlyRated",
+    "companyUrl": "https://www.clearlyrated.com"
+  }
+}

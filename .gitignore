@@ -73,3 +73,6 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 .DS_Store
+
+# Sample and debug document output produced by tests\ResumeStyleTests
+output/

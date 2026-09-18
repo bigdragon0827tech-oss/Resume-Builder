@@ -85,9 +85,27 @@ public static class ProfileNormalizer {
             ["education"] = NormalizeEducation(Use(map, used, "education", "educationHistory", "academics", "schools"), report)
         };
 
+        // Style system: the optional style block. It is kept only after normalization, so what lands in the
+        // profile is always a complete, in-range style — never raw AI values.
+        var style = Use(map, used, "style", "styling", "format", "formatting");
+        if (style is not null) NormalizeStyle(style, profile, report);
+
         ReportLeftovers(map, used, "", report);
         report.Profile = profile;
         return report;
+    }
+
+    // ---------- style ----------
+
+    /// <summary>
+    /// The style block is run through the preset merge, the range clamps and the hard
+    /// typography rules before it is stored, so the saved profile can only ever contain a style the
+    /// renderers accept. Every correction is reported rather than applied silently.
+    /// </summary>
+    static void NormalizeStyle(JsonNode style, JsonObject profile, NormalizationReport report) {
+        var normalized = StyleNormalizer.Normalize(style);
+        foreach (var warning in normalized.Warnings) report.Changes.Add("style: " + warning);
+        profile["style"] = normalized.Style.ToJson();
     }
 
     static bool LooksLikeProfile(JsonObject o) {
@@ -223,6 +241,11 @@ public static class ProfileNormalizer {
                 report.Changes.Add($"experience[{index}]: split a combined date range into startDate/endDate");
             }
 
+            // Style system: metadata the renderer prints on its own line, and an optional project subtitle.
+            var employmentType = Text(Use(map, used, "employmentType", "employment_type", "employment", "jobType", "contractType"));
+            var workArrangement = Text(Use(map, used, "workArrangement", "work_arrangement", "workMode", "work_mode", "arrangement", "remote"));
+            var subtitle = Text(Use(map, used, "subtitle", "project", "product", "projectName", "productName", "team"));
+
             var lines = Use(map, used, "descriptionLines", "bullets", "highlights", "responsibilities",
                             "achievements", "accomplishments", "details", "description", "descriptions", "summary");
 
@@ -233,11 +256,86 @@ public static class ProfileNormalizer {
                 ["startDate"] = start,
                 ["endDate"] = end,
                 ["location"] = location,
-                ["descriptionLines"] = StringArray(lines)
+                ["employmentType"] = employmentType,
+                ["workArrangement"] = workArrangement,
+                ["subtitle"] = subtitle,
+                ["descriptionLines"] = DescriptionLines(lines, index, report)
             });
             index++;
         }
         return result;
+    }
+
+    /// <summary>
+    /// Description lines. A plain string stays a plain string, so every older profile is
+    /// untouched. A { "segments": [ { "text", "bold" } ] } line keeps its structure, which is how
+    /// inline emphasis arrives without any Markdown in resume text. A segmented line with no emphasis
+    /// collapses back to a plain string so the saved profile stays as simple as the content allows.
+    /// </summary>
+    static JsonArray DescriptionLines(JsonNode? node, int experienceIndex, NormalizationReport report) {
+        if (node is not JsonArray array) return StringArray(node);
+
+        var result = new JsonArray();
+        foreach (var item in array) {
+            if (item is JsonObject o) {
+                var map = Map(o);
+                var used = new HashSet<string>(StringComparer.Ordinal);
+                var segments = Use(map, used, "segments", "runs", "parts");
+
+                if (segments is JsonArray rawSegments) {
+                    var normalized = Segments(rawSegments);
+                    if (normalized.Count == 0) continue;
+
+                    if (normalized.All(s => !s.Bold)) {
+                        AddLine(result, string.Concat(normalized.Select(s => s.Text)).Trim());
+                        report.Changes.Add($"experience[{experienceIndex}]: a description line with no emphasis was stored as plain text");
+                        continue;
+                    }
+
+                    var line = new JsonArray();
+                    foreach (var segment in normalized)
+                        line.Add(new JsonObject { ["text"] = segment.Text, ["bold"] = segment.Bold });
+                    result.Add(new JsonObject { ["segments"] = line });
+                    continue;
+                }
+
+                // Not segmented: the pre-existing object shapes ({ "text": ... } and friends).
+                var text = Text(Use(map, used, "text", "line", "value", "description", "bullet", "content"));
+                if (text.Length == 0) text = Text(item);
+                if (text.Length > 0) AddLine(result, text);
+                continue;
+            }
+
+            var plain = Text(item);
+            if (plain.Length > 0) AddLine(result, plain);
+        }
+        return result;
+    }
+
+    /// <summary>Segment objects, in order, with empty text removed. Nothing here invents content.</summary>
+    static List<(string Text, bool Bold)> Segments(JsonArray raw) {
+        var segments = new List<(string Text, bool Bold)>();
+        foreach (var item in raw) {
+            string text;
+            var bold = false;
+
+            if (item is JsonObject o) {
+                var map = Map(o);
+                var used = new HashSet<string>(StringComparer.Ordinal);
+                // Segment text keeps its exact spacing: the surrounding spaces are what join the
+                // segments back into one sentence.
+                text = RawText(Use(map, used, "text", "value", "content", "line"));
+                var flag = Use(map, used, "bold", "strong", "emphasis", "isBold");
+                if (flag is JsonValue v) bold = v.TryGetValue<bool>(out var b) ? b
+                    : v.TryGetValue<string>(out var s) && s.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
+            } else {
+                text = RawText(item);
+            }
+
+            if (text.Trim().Length == 0) continue;
+            segments.Add((text, bold));
+        }
+        return segments;
     }
 
     // ---------- certifications ----------
@@ -364,6 +462,10 @@ public static class ProfileNormalizer {
             report.Dropped.Add(prefix + pair.Value.Key);
         }
     }
+
+    /// <summary>A string value exactly as written, including leading and trailing spaces.</summary>
+    static string RawText(JsonNode? node) =>
+        node is JsonValue v && v.TryGetValue<string>(out var s) ? s : Text(node);
 
     static string Text(JsonNode? node) {
         switch (node) {

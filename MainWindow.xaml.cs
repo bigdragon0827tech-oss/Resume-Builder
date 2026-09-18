@@ -1,13 +1,27 @@
+using System;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Web.WebView2.Core;
+using System.Runtime.InteropServices;
 
 namespace ResumeBuilder;
 
+
+
+
+
 public partial class MainWindow : Window {
     readonly ObservableCollection<JobTask> _tasks = new(Storage.LoadTasks());
+
+    /// <summary>
+    /// The live queue. The Settings tracking tab edits these same task objects rather than a second
+    /// copy loaded from disk, so a status change there can never be overwritten by this window's
+    /// next save.
+    /// </summary>
+    public IReadOnlyList<JobTask> Tasks => _tasks;
+
     readonly ClipboardWatcher _watcher = new();
     readonly QueueRunner _queue = new();
     readonly GlobalHotkey _hotkey = new();
@@ -21,6 +35,88 @@ public partial class MainWindow : Window {
     ChatHost? _chat;
     System.Threading.CancellationTokenSource? _sendCancellation;
     string? _activePreparedText;
+
+    IntPtr _previousWorkWindow = IntPtr.Zero;
+
+    void RememberPreviousWorkWindow()
+    {
+        try
+        {
+            var current = GlobalHotkey.CurrentForegroundWindow();
+
+            var resumeBuilder =
+                new System.Windows.Interop.WindowInteropHelper(this).Handle;
+
+            if (current == IntPtr.Zero)
+            {
+                _previousWorkWindow = IntPtr.Zero;
+                PerfLog.Line("WORK WINDOW save skipped - no foreground window");
+                return;
+            }
+
+            if (current == resumeBuilder)
+            {
+                _previousWorkWindow = IntPtr.Zero;
+                PerfLog.Line("WORK WINDOW save skipped - ResumeBuilder already foreground");
+                return;
+            }
+
+            _previousWorkWindow = current;
+
+            PerfLog.Line(
+                $"WORK WINDOW saved hwnd=0x{current.ToInt64():X}");
+        }
+        catch(Exception ex)
+        {
+            _previousWorkWindow = IntPtr.Zero;
+            PerfLog.Line("WORK WINDOW save failed: " + ex.Message);
+        }
+    }
+
+    void RestorePreviousWorkWindow(string reason)
+    {
+        var saved = _previousWorkWindow;
+
+        // Consume it once only.
+        _previousWorkWindow = IntPtr.Zero;
+
+        if (saved == IntPtr.Zero)
+            return;
+
+        try
+        {
+            var current = GlobalHotkey.CurrentForegroundWindow();
+
+            var resumeBuilder =
+                new System.Windows.Interop.WindowInteropHelper(this).Handle;
+
+            // Important:
+            // if the user has already switched somewhere else manually,
+            // do not steal focus from that new window.
+            if (current != resumeBuilder)
+            {
+                PerfLog.Line(
+                    $"WORK WINDOW restore skipped - foreground already changed ({reason})");
+                return;
+            }
+
+            if (GlobalHotkey.TryRestoreForegroundWindow(saved))
+            {
+                PerfLog.Line(
+                    $"WORK WINDOW restored hwnd=0x{saved.ToInt64():X} ({reason})");
+            }
+            else
+            {
+                PerfLog.Line(
+                    $"WORK WINDOW restore skipped - window unavailable or activation failed ({reason})");
+            }
+        }
+        catch(Exception ex)
+        {
+            PerfLog.Line(
+                $"WORK WINDOW restore failed ({reason}): {ex.Message}");
+        }
+    }
 
     public MainWindow() {
         InitializeComponent();
@@ -39,6 +135,7 @@ public partial class MainWindow : Window {
     }
 
     async void MainWindow_Loaded(object sender, RoutedEventArgs e) {
+        PerfLog.Clear();
         PerfLog.Snapshot("startup");
         _watcher.Attach(this);
         RegisterFocusHotkey();
@@ -57,8 +154,49 @@ public partial class MainWindow : Window {
         catch (Exception ex) {
             System.Windows.MessageBox.Show(
                 "ChatGPT browser could not be initialized.\n\n" + ex.Message,
-                "Resume Builder A6.6.13", MessageBoxButton.OK, MessageBoxImage.Error);
+                "Resume Builder v1.0", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    // ---------- job browser ----------
+
+    JobBrowserWindow? _jobBrowser;
+
+    /// <summary>
+    /// Opens the built-in job browser, or brings it forward if it is already open. It runs on its own
+    /// WebView2 profile in its own window, so it is untouched by the ChatGPT browser's recycling and
+    /// takes no part in the queue. Owning it means closing Resume Builder closes it too.
+    /// </summary>
+    void JobBrowser_Click(object sender,RoutedEventArgs e) {
+        if(_jobBrowser is not null) {
+            if(_jobBrowser.WindowState==WindowState.Minimized) _jobBrowser.WindowState=WindowState.Normal;
+            _jobBrowser.Activate();
+            return;
+        }
+
+        _jobBrowser=new JobBrowserWindow { Owner=this, ImportJob=ImportFromBrowser };
+        _jobBrowser.Closed+=(_,_) => _jobBrowser=null;
+        _jobBrowser.Show();
+    }
+
+    /// <summary>
+    /// A job extracted in the job browser joins the queue through the same importer as an Incoming
+    /// JSON file. It runs on a copy of the live list exactly like <see cref="RefreshInput"/>, then
+    /// adds only what is new, so selection and every existing task object are left alone.
+    /// </summary>
+    JobImportOutcome ImportFromBrowser(JobImportData data) {
+        var list=_tasks.ToList();
+        var outcome=JobImporter.ImportOne(data,JobImporter.BrowserSource,list);
+
+        if(outcome.Kind==JobImportKind.Imported) {
+            foreach(var added in list.Where(t => !_tasks.Contains(t))) _tasks.Add(added);
+            UpdateSummary();
+            RefreshButtons();
+            ImportMessage.Text=$"Imported from the job browser: {outcome.Company} — {outcome.Title}";
+            // The Applications dashboard, if open, shows the new job straight away.
+            if(_settings is { IsLoaded: true }) _settings.RefreshTracking();
+        }
+        return outcome;
     }
 
     /// <summary>How long to wait for a browser process to actually exit before reporting a timeout.</summary>
@@ -303,6 +441,11 @@ public partial class MainWindow : Window {
         if(send.Success) {
             QueueStatus.Text=$"{job.Company} — {job.Title}: {send.Message}";
             _ = WatchForAnswerAsync(job,settings);     // A6.6.13: tell the user when it is ready
+            
+            // If the previous completed job temporarily brought ResumeBuilder
+            // forward, return the user to the window they were working in now
+            // that this new job has been successfully sent.
+            RestorePreviousWorkWindow("next job auto-sent");
         }
         else if(send.Outcome!=SendOutcome.Cancelled) PauseForManualAction(send.Message);
         return true;
@@ -337,16 +480,73 @@ public partial class MainWindow : Window {
         // The job may have been captured, stopped, skipped or recycled while we were waiting.
         if(cancellation.IsCancellationRequested || _activeJob!=job) return;
 
-        if(outcome==CompletionOutcome.Ready) {
-            PerfLog.Line("READY "+job.JobId);
-            ShowAnswerReady(job,settings);
-            // A6.6.13 — generation was seen to finish, so the Copy is due now: wait for it, but not forever.
-            if(_watcher.IsArmed) _ = RunCaptureWatchdogAsync(job);
+        if(outcome == CompletionOutcome.Ready)
+        {
+            PerfLog.Line("READY " + job.JobId);
+
+            RememberPreviousWorkWindow();
+
+            GlobalHotkey.BringToFront(this);
+
+            // Allow Windows to finish foreground activation.
+            await Task.Delay(450);
+
+            FocusChatPane();
+
+            // Allow WebView2 to acquire keyboard focus.
+            await Task.Delay(150);
+
+            if (_chatView?.CoreWebView2 != null)
+            {
+                await _chatView.CoreWebView2.ExecuteScriptAsync("""
+                    (() => {
+                        const el = document.activeElement;
+
+                        if (el && typeof el.blur === 'function') {
+                            el.blur();
+                        }
+
+                        document.body.tabIndex = -1;
+                        document.body.focus();
+                    })();
+                """);
+
+                await Task.Delay(150);
+            }
+
+            if (_chatView?.IsFocused == true)
+            {
+                PerfLog.Line("KEY Ctrl+Shift+I " + job.JobId);
+
+                try
+                {
+                    await Task.Delay(350);
+                    KeyboardSimulator.SendCtrlShiftI();
+                }
+                catch(Exception ex)
+                {
+                    PerfLog.Line("KEY Ctrl+Shift+I FAILED " +
+                                job.JobId + ": " + ex.Message);
+                }
+            }
+            else
+            {
+                PerfLog.Line(
+                    "KEY NOT SENT - WebView has no keyboard focus " +
+                    job.JobId);
+            }
+
+            ShowAnswerReady(job, settings);
+
+            if(_watcher.IsArmed)
+                _ = RunCaptureWatchdogAsync(job);
         } else if(outcome==CompletionOutcome.ReadyUnconfirmed) {
-            // Generation was never observed, so "finished" is a guess: notify, but never fail a job on it.
+
             PerfLog.Line($"READY {job.JobId} (generation not observed; no capture watchdog)");
             if(!afterRejection) ShowAnswerReady(job,settings);
+
         } else if(outcome==CompletionOutcome.TimedOut) {
+
             QueueStatus.Text=$"{job.Company} — {job.Title}: no finished answer was detected after " +
                 $"{ChatCompletionWatcher.MaxWaitMs/60000} minutes. Check ChatGPT, then press {ChatCompletionWatcher.ShortcutText} or click Copy on the answer's code block.";
         }
@@ -361,7 +561,9 @@ public partial class MainWindow : Window {
         if(settings.ReadySound) System.Media.SystemSounds.Asterisk.Play();
 
         if(IsActive) FocusChatPane();                          // no focus stealing: only when already in front
-        else if(settings.ReadyFlash) WindowAttention.FlashUntilForeground(this);
+        else if(settings.ReadyFlash) {
+            WindowAttention.FlashUntilForeground(this);
+        }
 
         if(!settings.ReadyToast) return;
         CloseReadyToast();
@@ -377,6 +579,7 @@ public partial class MainWindow : Window {
 
     /// <summary>The user clicked the notification or pressed Ctrl+Shift+': bring ResumeBuilder forward.</summary>
     void BringToFrontForCopy() {
+        // ??? have to confirm
         GlobalHotkey.BringToFront(this);
         FocusChatPane();
     }
@@ -401,9 +604,33 @@ public partial class MainWindow : Window {
         }
     }
 
-    void FocusChatPane() {
-        try { _chatView?.Focus(); } catch { /* focus is a convenience */ }
+    void FocusChatPane()
+    {
+        try
+        {
+            var web = _chatView;
+
+            if (web == null)
+            {
+                PerfLog.Line("FocusChatPane FAILED - _chatView is null");
+                return;
+            }
+
+            var wpfFocus = web.Focus();
+            var keyboardFocus = System.Windows.Input.Keyboard.Focus(web);
+
+            PerfLog.Line(
+                $"FocusChatPane WpfFocus={wpfFocus} " +
+                $"KeyboardFocus={(keyboardFocus != null)} " +
+                $"IsFocused={web.IsFocused} " +
+                $"IsKeyboardFocusWithin={web.IsKeyboardFocusWithin}");
+        }
+        catch(Exception ex)
+        {
+            PerfLog.Line("FocusChatPane ERROR: " + ex.Message);
+        }
     }
+
 
     void CloseReadyToast() {
         var toast=_readyToast;
@@ -712,10 +939,24 @@ public partial class MainWindow : Window {
             GenerationResult generation;
             // PDFsharp/MigraDoc renders off the UI thread; no browser is involved any more.
             using(PerfLog.Measure("documents "+job.JobId))
-            generation=await Task.Run(() => ResumeGenerator.Generate(job.Company,job.Title,profilePath,settings));
+            generation=await Task.Run(() => ResumeGenerator.Generate(
+                job.Company,job.Title,profilePath,settings,ProfileResultStore.EffectiveStylePath(job.JobId),
+                job.JobId,job.Link));
 
             DocumentStatus.Text=generation.Describe();
-            if(generation.AnyFailure) ProfileResultStore.SaveDocGenLog(job.JobId,generation.Describe());
+
+            // Tracking: a document exists, so the application is Ready to send. This is the only
+            // status change Resume Builder makes on its own — everything after it is the user's.
+            if(generation.DocxGenerated || generation.PdfGenerated)
+                if(JobTracker.MarkResumeReady(job,generation.DocxPath ?? generation.PdfPath))
+                    JobTracker.SaveTrackingData(_tasks);
+
+            // Style system: style corrections are recorded next to the job, so a styling surprise can be
+            // explained afterwards without re-running anything.
+            if(generation.AnyFailure || generation.StyleWarnings.Count>0)
+                ProfileResultStore.SaveDocGenLog(job.JobId,
+                    generation.Describe()+(generation.StyleWarnings.Count==0?"":Environment.NewLine+Environment.NewLine+
+                        "Style adjustments:"+Environment.NewLine+"  - "+string.Join(Environment.NewLine+"  - ",generation.StyleWarnings)));
         } catch(Exception ex) {
             DocumentStatus.Text="Documents not generated — "+ResumeGenerator.Explain(ex)+" The tailored JSON is saved.";
             ProfileResultStore.SaveDocGenLog(job.JobId,ex.ToString());
@@ -728,3 +969,6 @@ public partial class MainWindow : Window {
         return job is null ? Task.CompletedTask : GenerateDocumentsAsync(job,ResultCapture.TargetPathFor(jobId));
     }
 }
+
+
+

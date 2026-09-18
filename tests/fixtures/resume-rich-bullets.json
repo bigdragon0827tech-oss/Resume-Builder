@@ -1,0 +1,58 @@
+{
+  "info": {
+    "name": "BILLY LIN",
+    "title": "Senior AI/ML Software Engineer",
+    "location": "Menlo Park, CA",
+    "email": "billy.lin@example.com",
+    "phone": "(650) 555-0142",
+    "linkedin": "linkedin.com/in/billylin"
+  },
+  "summary": "Senior engineer building Generative AI and RAG services in production.",
+  "skills": [
+    {
+      "category": "Machine Learning",
+      "skills": ["PyTorch", "RAG", "LangChain"]
+    }
+  ],
+  "experience": [
+    {
+      "title": "Senior AI Software Engineer",
+      "company": "Caterpillar Inc.",
+      "startDate": "Sep 2025",
+      "endDate": "Present",
+      "location": "Peoria, IL",
+      "employmentType": "Full-time",
+      "workArrangement": "Hybrid",
+      "subtitle": "",
+      "descriptionLines": [
+        {
+          "segments": [
+            { "text": "Architected production ", "bold": false },
+            { "text": "Generative AI and RAG services", "bold": true },
+            { "text": " using Python and AWS, serving 40 million daily requests.", "bold": false }
+          ]
+        },
+        "Reduced model training cost by 38 percent by moving the pipeline to spot instances.",
+        {
+          "segments": [
+            { "text": "Every segment of this line asks to be bold", "bold": true },
+            { "text": " and so none of it is.", "bold": true }
+          ]
+        }
+      ]
+    }
+  ],
+  "certifications": [],
+  "education": [
+    {
+      "degree": "B.S.",
+      "major": "Computer Science",
+      "school": "University of Illinois Urbana-Champaign",
+      "startDate": "2009",
+      "endDate": "2013"
+    }
+  ],
+  "style": {
+    "preset": "promV4.12"
+  }
+}

@@ -128,6 +128,10 @@ public static class ProfileResultStore {
     public static string RawPath(string jobId) => Path.Combine(ResultsDir, Safe(jobId) + ".raw.txt");
     public static string DocGenLogPath(string jobId) => Path.Combine(ResultsDir, Safe(jobId) + ".docgen.txt");
 
+    /// <summary>Style system: the fully resolved style a document was rendered with, for debugging.</summary>
+    public static string EffectiveStylePath(string? jobId) =>
+        Path.Combine(ResultsDir, Safe(string.IsNullOrWhiteSpace(jobId) ? ResultCapture.BaselineJobId : jobId) + ".effective-style.json");
+
     /// <summary>Records why documents could not be produced. Never touches the validated JSON.</summary>
     public static void SaveDocGenLog(string? jobId, string text) {
         try {

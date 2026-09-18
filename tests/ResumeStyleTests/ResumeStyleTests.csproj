@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Re-runnable regression harness for the style system and the document renderers.
+    It compiles the REAL application source files — never copies — so a test can only pass if the
+    shipping code passes. Excluded from the application build by ResumeBuilder.csproj.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>ResumeBuilder</RootNamespace>
+    <AssemblyName>ResumeStyleTests</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="..\..\Models.cs" Link="Models.cs" />
+    <Compile Include="..\..\Diagnostics.cs" Link="Diagnostics.cs" />
+    <Compile Include="..\..\JobTracker.cs" Link="JobTracker.cs" />
+    <Compile Include="..\..\JobBrowser.cs" Link="JobBrowser.cs" />
+    <Compile Include="..\..\JobrightPageExtractor.cs" Link="JobrightPageExtractor.cs" />
+    <Compile Include="..\..\SampleJobs.cs" Link="SampleJobs.cs" />
+    <Compile Include="..\..\ResumeOutputManager.cs" Link="ResumeOutputManager.cs" />
+    <Compile Include="..\..\Services.cs" Link="Services.cs" />
+    <Compile Include="..\..\Normalization.cs" Link="Normalization.cs" />
+    <Compile Include="..\..\ResultCapture.cs" Link="ResultCapture.cs" />
+    <Compile Include="..\..\ResumeStyle.cs" Link="ResumeStyle.cs" />
+    <Compile Include="..\..\ResumeStyleNormalizer.cs" Link="ResumeStyleNormalizer.cs" />
+    <Compile Include="..\..\DocumentGeneration.cs" Link="DocumentGeneration.cs" />
+    <Compile Include="..\..\PdfGeneration.cs" Link="PdfGeneration.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="DocumentFormat.OpenXml" Version="3.5.1" />
+    <PackageReference Include="PDFsharp-MigraDoc" Version="6.2.4" />
+  </ItemGroup>
+
+</Project>
