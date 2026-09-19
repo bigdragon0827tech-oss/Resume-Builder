@@ -3,7 +3,7 @@
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
  xmlns:sys="clr-namespace:System;assembly=mscorlib"
  xmlns:local="clr-namespace:ResumeBuilder"
- Title="Settings / Inspector" Height="700" Width="1000">
+ Title="Settings / Inspector" Height="700" Width="1100">
  <Window.Resources>
   <!-- ===================================================================
        Applications dashboard: light surfaces, one accent, semantic status
@@ -279,6 +279,8 @@
        Unknown (no application link recorded) is hidden, and so is its tooltip. Display only. -->
   <local:PlatformDisplayConverter x:Key="PlatformDisplay"/>
   <local:OpenableUrlConverter x:Key="OpenableUrl"/>
+  <local:CanMarkAppliedConverter x:Key="CanMarkApplied"/>
+  <local:JobDateTextConverter x:Key="JobDateText"/>
   <Style x:Key="PlatformBadgeStyle" TargetType="ContentControl">
    <Setter Property="Focusable" Value="False"/>
    <Setter Property="VerticalAlignment" Value="Center"/>
@@ -683,6 +685,7 @@
 <ContextMenu>
 <MenuItem Header="Open Job Posting" Click="TrackingOpenUrl_Click"/>
 <MenuItem Header="Open Application" Click="TrackingOpenApply_Click"/>
+<MenuItem Header="Mark Applied" Click="TrackingMarkApplied_Click"/>
 <MenuItem Header="Open Resume" Click="TrackingOpenResume_Click"/>
 <MenuItem Header="Open Resume Folder" Click="TrackingOpenResumeFolder_Click"/>
 <Separator/>
@@ -736,10 +739,12 @@
 <Style TargetType="TextBlock">
 <Setter Property="VerticalAlignment" Value="Center"/>
 <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+<!-- Which date this is: every recorded stage (Viewed / Ready / Applied / ...), one per line. -->
+<Setter Property="ToolTip" Value="{Binding Converter={StaticResource JobDateText}, ConverterParameter=Stages}"/>
 </Style>
 </DataGridTextColumn.ElementStyle>
 </DataGridTextColumn>
-<DataGridTemplateColumn Header="Actions" Width="246" MinWidth="246">
+<DataGridTemplateColumn Header="Actions" Width="336" MinWidth="336">
 <DataGridTemplateColumn.CellTemplate>
 <DataTemplate>
 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
@@ -749,6 +754,12 @@
 <Button Content="Apply" Padding="8,2" FontSize="10.5" Margin="5,0,0,0" Click="TrackingOpenApply_Click"
         IsEnabled="{Binding ApplyUrl, Converter={StaticResource OpenableUrl}}"
         ToolTip="{Binding ApplyUrl}" ToolTipService.ShowOnDisabled="False"/>
+<!-- The user's own "I applied" (ApplicationStatus, never the queue Status). Viewed / Ready only; once
+     Applied or later it is disabled and its tooltip shows the recorded stage dates. -->
+<Button Content="Mark Applied" Padding="8,2" FontSize="10.5" Margin="5,0,0,0" Click="TrackingMarkApplied_Click"
+        IsEnabled="{Binding ApplicationStatus, Converter={StaticResource CanMarkApplied}}"
+        ToolTip="{Binding Converter={StaticResource JobDateText}, ConverterParameter=Stages}"
+        ToolTipService.ShowOnDisabled="True"/>
 <Button Content="Resume" Padding="8,2" FontSize="10.5" Margin="5,0,0,0" Click="TrackingOpenResume_Click"
         IsEnabled="{Binding ResumeGenerated}" ToolTip="Open the generated DOCX"/>
 <Button Content="Folder" Padding="8,2" FontSize="10.5" Margin="5,0,0,0" Click="TrackingOpenResumeFolder_Click"
@@ -792,6 +803,7 @@
 <ContextMenu>
 <MenuItem Header="Open Job Posting" Click="TrackingOpenUrl_Click"/>
 <MenuItem Header="Open Application" Click="TrackingOpenApply_Click"/>
+<MenuItem Header="Mark Applied" Click="TrackingMarkApplied_Click"/>
 <MenuItem Header="Open Resume" Click="TrackingOpenResume_Click"/>
 <MenuItem Header="Open Resume Folder" Click="TrackingOpenResumeFolder_Click"/>
 <Separator/>
@@ -814,7 +826,8 @@
            TextTrimming="CharacterEllipsis"/>
 </DockPanel>
 <DockPanel Margin="0,5,0,0">
-<TextBlock Text="{Binding TrackingDateDisplay}" FontSize="9.5" Foreground="{StaticResource Muted}"/>
+<TextBlock Text="{Binding Converter={StaticResource JobDateText}}" FontSize="9.5" Foreground="{StaticResource Muted}"
+           ToolTip="{Binding Converter={StaticResource JobDateText}, ConverterParameter=Stages}"/>
 <TextBlock DockPanel.Dock="Right" HorizontalAlignment="Right" FontSize="9.5"
            Style="{StaticResource ReadinessTextStyle}"/>
 </DockPanel>

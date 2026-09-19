@@ -304,10 +304,11 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
   to `DataGrid.MinColumnWidth` (20 px) *before* it will scroll, so fixed columns with no floor were
   crushed to 57/37/20 px in a narrow window while the extent never exceeded the viewport — the content
   looked clipped and offset, and there was no scrollbar to bring it back. With a floor on each column
-  the grid scrolls honestly instead. Current floors: Job 150, Company 110, Status 140, Resume 116,
-  Date 88, Actions 246 — 850 px total, which fits the ~900 px grid at a 1000 px window with little to
-  spare (Actions grew from 196 when the Apply button was added). Do not add a column without
-  revisiting this.
+  the grid scrolls honestly instead. Current floors: Job 150, Company 110, Status 140, Readiness 116,
+  Date 88, Actions 336 — 940 px total. The Settings window's default width is **1100 px** (raised from
+  1000 when Mark Applied was added), giving a ~983 px grid with no horizontal scroll. Actions grew
+  196 -> 246 (Apply) -> 336 (Mark Applied); its five buttons measure ~309 px. Do not add a column or
+  an Actions button without revisiting this.
 - **The DataGrid is the only horizontal scroll owner.** The dashboard's outer `ScrollViewer` is
   vertical only (its default `HorizontalScrollBarVisibility` is Disabled); do not enable horizontal
   scrolling there, or the two will fight. `TrackingGrid_SizeChanged` clamps the grid's horizontal
@@ -323,6 +324,23 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
   that naming rather than duplicating it, prefers the most recently written file (sorting by name
   would put `Resume.docx` ahead of `Resume (2).docx`), and only writes when something changed. The
   Resume and Folder buttons are disabled while `ResumeGenerated` is false.
+- **Mark Applied** (phase 7) is a one-click shortcut to the existing tracking, not new state: it
+  reuses `ApplicationStatus` and the existing `AppliedAt` (no new fields) and never touches the queue
+  `Status`. `JobTracker.MarkApplied` = `CanMarkApplied` (Viewed or Ready only, so it can never move an
+  Interview/Done job backwards) + `UpdateStatus(job, Applied)` — which stamps `AppliedAt` only if
+  empty (never rewritten) and backfills a skipped `ReadyAt`. UI: a Mark Applied button after Apply in
+  the List's Actions (enabled via `CanMarkAppliedConverter`), and "Mark Applied" under Open
+  Application in both context menus; unavailable -> "… is already <status> (applied <date>)." It goes
+  through `SettingsWindow.ChangeStatus` (optional `change` delegate), so save + refresh are shared.
+  Readiness is unaffected by applying.
+- **Applied date display**: the Board card date is `JobTracker.BoardDateText` ("Applied Sep 18" once
+  `AppliedAt` exists, else the tracking date); the List's Date cell and the Board date carry
+  `StageDatesText` as tooltip (every recorded stage, one per line; "Added …" for an untracked task).
+  Both via `JobDateTextConverter`.
+- **The row status dropdown ignores a "change" to the job's current status.** After a rebuild WPF
+  recycles rows and re-binds each dropdown to its new job's current value; answering that as a choice
+  overwrote the real confirmation with "… is already <status>". Keep that guard in
+  `TrackingStatusBox_Changed`.
 - Diagnostics: `TRACKING status <jobId> <old> -> <new>`, `TRACKING open URL <jobId>`,
   `TRACKING dashboard refreshed total=… applied=… interview=… done=…`. One line per refresh, never
   per UI frame.

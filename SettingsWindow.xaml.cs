@@ -503,13 +503,35 @@ public partial class SettingsWindow : Window {
     void TrackingStatusBox_Changed(object s,System.Windows.Controls.SelectionChangedEventArgs e) {
         if(_refreshingTracking) return;
         if(s is not System.Windows.Controls.ComboBox box || box.SelectedItem is not string status) return;
-        ChangeStatus(JobOf(s),status);
+        // A recycled row re-binds its dropdown to its new job's CURRENT status after a rebuild; that is
+        // not a choice, and answering it would overwrite the real confirmation with "already <status>".
+        if(JobOf(s) is not JobTask job || job.ApplicationStatus==status) return;
+        ChangeStatus(job,status);
     }
 
-    void ChangeStatus(JobTask? job,string status) {
+    /// <summary>
+    /// Mark Applied: the user's own record that they applied. Offered from Viewed and Ready only; on a
+    /// job already Applied or later it says so instead of changing anything.
+    /// </summary>
+    void TrackingMarkApplied_Click(object s,RoutedEventArgs e) {
+        var job=JobOf(s) ?? TrackingGrid.SelectedItem as JobTask;
+        if(job is null){ TrackingStatus.Text="Select a job first."; return; }
+        if(!JobTracker.CanMarkApplied(job)) {
+            TrackingStatus.Text=$"{job.Company} — {job.Title} is already {job.ApplicationStatus}"+
+                                (job.AppliedAt is DateTime at ? $" (applied {at:MMM d, yyyy})." : ".");
+            return;
+        }
+        ChangeStatus(job,ApplicationStatus.Applied,j => JobTracker.MarkApplied(j));
+    }
+
+    /// <summary>
+    /// Every status change from this window: apply, save the live list, rebuild the dashboard. The
+    /// default change is JobTracker.UpdateStatus; Mark Applied passes JobTracker.MarkApplied.
+    /// </summary>
+    void ChangeStatus(JobTask? job,string status,Func<JobTask,bool>? change=null) {
         if(job is null){ TrackingStatus.Text="Select a job first."; return; }
 
-        if(!JobTracker.UpdateStatus(job,status)) {
+        if(!(change ?? (j => JobTracker.UpdateStatus(j,status)))(job)) {
             TrackingStatus.Text=$"{job.Company} — {job.Title} is already {status}.";
             return;
         }
@@ -745,6 +767,29 @@ public sealed class PlatformDisplayConverter : System.Windows.Data.IValueConvert
 public sealed class OpenableUrlConverter : System.Windows.Data.IValueConverter {
     public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
         JobTracker.IsOpenableUrl(value as string);
+
+    public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
+        System.Windows.Data.Binding.DoNothing;
+}
+
+/// <summary>Enables Mark Applied from the row's ApplicationStatus: Viewed or Ready only. One-way.</summary>
+public sealed class CanMarkAppliedConverter : System.Windows.Data.IValueConverter {
+    public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
+        JobTracker.CanMarkApplied(value as string);
+
+    public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
+        System.Windows.Data.Binding.DoNothing;
+}
+
+/// <summary>
+/// A job's date text for display: ConverterParameter "Stages" gives every recorded stage date (the
+/// List's Date tooltip); anything else gives the Board card date ("Applied Sep 18" once applied). One-way.
+/// </summary>
+public sealed class JobDateTextConverter : System.Windows.Data.IValueConverter {
+    public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
+        value is not JobTask job ? ""
+        : parameter as string == "Stages" ? JobTracker.StageDatesText(job)
+        : JobTracker.BoardDateText(job);
 
     public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
         System.Windows.Data.Binding.DoNothing;

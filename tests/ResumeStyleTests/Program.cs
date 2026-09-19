@@ -140,6 +140,10 @@ static class Program {
             Test("readiness: needs resume / needs apply link / ready to apply", ReadinessStates);
             Test("an unusable ApplyUrl never counts as ready", ReadinessRejectsInvalidApplyUrl);
             Test("readiness is derived: never saved and never changes a status", ReadinessIsDisplayOnly);
+            Test("Mark Applied from Viewed and Ready, backfilling ReadyAt", MarkAppliedFromViewedAndReady);
+            Test("Mark Applied never rewrites AppliedAt or moves a job backwards", MarkAppliedPreservesHistory);
+            Test("Mark Applied leaves the queue status and readiness alone", MarkAppliedTouchesNothingElse);
+            Test("stage dates and the Board date label", AppliedDateDisplay);
 
             Console.WriteLine();
             Console.WriteLine("Job browser");
@@ -1982,6 +1986,95 @@ static class Program {
         job.NotifyTrackingChanged();
         Check(raised.Contains(nameof(JobTask.ReadinessDisplay)) && raised.Contains(nameof(JobTask.Readiness)),
               "NotifyTrackingChanged raises the readiness properties");
+    }
+
+    // ---------- mark applied ----------
+
+    static void MarkAppliedFromViewedAndReady() {
+        var viewedAt = new DateTime(2026, 9, 17, 9, 0, 0);
+        var appliedAt = new DateTime(2026, 9, 18, 15, 40, 0);
+
+        // Viewed -> Applied: ReadyAt was skipped, so it is backfilled with the same time.
+        var viewed = Job("MA-1");
+        viewed.ViewedAt = viewedAt;
+        Check(JobTracker.CanMarkApplied(viewed), "offered from Viewed");
+        Check(JobTracker.MarkApplied(viewed, appliedAt), "Viewed -> Applied changes the job");
+        Equal(ApplicationStatus.Applied, viewed.ApplicationStatus, "now Applied");
+        Equal(appliedAt, viewed.AppliedAt, "AppliedAt stamped");
+        Equal(appliedAt, viewed.ReadyAt, "skipped ReadyAt backfilled");
+        Equal(viewedAt, viewed.ViewedAt, "ViewedAt kept");
+
+        // Ready -> Applied: ReadyAt already set, kept as it was.
+        var readyAt = new DateTime(2026, 9, 18, 10, 0, 0);
+        var ready = Job("MA-2");
+        JobTracker.UpdateStatus(ready, ApplicationStatus.Ready, readyAt);
+        Check(JobTracker.CanMarkApplied(ready), "offered from Ready");
+        Check(JobTracker.MarkApplied(ready, appliedAt), "Ready -> Applied changes the job");
+        Equal(ApplicationStatus.Applied, ready.ApplicationStatus, "now Applied");
+        Equal(appliedAt, ready.AppliedAt, "AppliedAt stamped");
+        Equal(readyAt, ready.ReadyAt, "ReadyAt not rewritten");
+    }
+
+    static void MarkAppliedPreservesHistory() {
+        var first = new DateTime(2026, 9, 1, 12, 0, 0);
+        var later = new DateTime(2026, 9, 18, 12, 0, 0);
+
+        // Already Applied / Interview / Done: not offered, no change, no timestamp touched.
+        foreach (var stage in new[] { ApplicationStatus.Applied, ApplicationStatus.Interview, ApplicationStatus.Done }) {
+            var job = Job("MA-" + stage);
+            JobTracker.UpdateStatus(job, stage, first);
+            var before = (job.ReadyAt, job.AppliedAt, job.InterviewAt, job.DoneAt, job.UpdatedAt);
+            Check(!JobTracker.CanMarkApplied(job), stage + " is not offered Mark Applied");
+            Check(!JobTracker.MarkApplied(job, later), stage + ": Mark Applied changes nothing");
+            Equal(stage, job.ApplicationStatus, stage + " is not moved backwards");
+            Equal(before, (job.ReadyAt, job.AppliedAt, job.InterviewAt, job.DoneAt, job.UpdatedAt), stage + ": timestamps untouched");
+        }
+
+        // Moved back to Ready by hand after applying, then Mark Applied again: the original AppliedAt stays.
+        var corrected = Job("MA-BACK");
+        JobTracker.MarkApplied(corrected, first);
+        JobTracker.UpdateStatus(corrected, ApplicationStatus.Ready, later);
+        Check(JobTracker.MarkApplied(corrected, later), "re-applied after a correction");
+        Equal(first, corrected.AppliedAt, "AppliedAt is never rewritten");
+
+        Check(JobTracker.CanMarkApplied((string?)null), "missing status reads as Viewed, so it is offered");
+        Check(!JobTracker.CanMarkApplied("Interview"), "by status string too");
+    }
+
+    static void MarkAppliedTouchesNothingElse() {
+        foreach (var queue in new[] { "Queued", "Processing", "Completed", "Failed" }) {
+            var job = ReadinessJob(@"C:\Resumes\Resume.docx", "https://jobs.lever.co/acme/1");
+            job.Status = queue;
+            var readiness = job.Readiness;
+            var platform = job.ApplicationPlatform;
+            JobTracker.MarkApplied(job);
+            Equal(queue, job.Status, "queue status " + queue + " untouched");
+            Equal(readiness, job.Readiness, "readiness unchanged for " + queue);
+            Equal(platform, job.ApplicationPlatform, "platform unchanged");
+            Equal("https://jobs.lever.co/acme/1", job.ApplyUrl, "ApplyUrl unchanged");
+        }
+        var notReady = ReadinessJob(null, "");
+        JobTracker.MarkApplied(notReady);
+        Equal(ApplicationReadiness.NeedsResume, notReady.Readiness, "applying does not make a job 'ready'");
+    }
+
+    static void AppliedDateDisplay() {
+        var job = Job("MA-DATES");
+        job.CreatedAt = new DateTime(2026, 9, 10, 8, 5, 0);
+        job.ViewedAt = null;
+        Equal("Added Sep 10, 2026, 8:05 AM", JobTracker.StageDatesText(job), "a task with no stage dates falls back to Added");
+        Equal(job.TrackingDateDisplay, JobTracker.BoardDateText(job), "Board shows the tracking date before applying");
+
+        job.ViewedAt = new DateTime(2026, 9, 17, 9, 0, 0);
+        JobTracker.MarkApplied(job, new DateTime(2026, 9, 18, 15, 40, 0));
+        Equal(string.Join(Environment.NewLine, "Viewed Sep 17, 2026, 9:00 AM", "Ready Sep 18, 2026, 3:40 PM", "Applied Sep 18, 2026, 3:40 PM"),
+              JobTracker.StageDatesText(job), "every recorded stage, in order");
+        Equal("Applied Sep 18", JobTracker.BoardDateText(job), "Board labels the applied date");
+
+        // Moving on to Interview keeps the Board showing the applied date.
+        JobTracker.UpdateStatus(job, ApplicationStatus.Interview, new DateTime(2026, 9, 25, 11, 0, 0));
+        Equal("Applied Sep 18", JobTracker.BoardDateText(job), "still the applied date at Interview");
+        Check(JobTracker.StageDatesText(job).EndsWith("Interview Sep 25, 2026, 11:00 AM"), "Interview appended");
     }
 
     // ---------- platform filter ----------

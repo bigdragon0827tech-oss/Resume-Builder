@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 
 namespace ResumeBuilder;
@@ -175,6 +176,46 @@ public static class JobTracker {
         job.NotifyTrackingChanged();
         return true;
     }
+
+    /// <summary>
+    /// Mark Applied is offered only before Applied (Viewed or Ready), so a one-click action can never
+    /// move an Interview or Done job backwards. The status dropdown remains for deliberate corrections.
+    /// </summary>
+    public static bool CanMarkApplied(string? applicationStatus) =>
+        ApplicationStatus.Index(ApplicationStatus.Normalize(applicationStatus)) < ApplicationStatus.Index(ApplicationStatus.Applied);
+
+    public static bool CanMarkApplied(JobTask job) => CanMarkApplied(job.ApplicationStatus);
+
+    /// <summary>
+    /// The user's own "I applied" — never inferred. Goes through <see cref="UpdateStatus"/>, so AppliedAt
+    /// is stamped only if it has none (never rewritten), a skipped ReadyAt is backfilled, and the queue
+    /// Status is not touched. Returns false (no change) from Applied, Interview or Done.
+    /// </summary>
+    public static bool MarkApplied(JobTask job, DateTime? at = null) =>
+        CanMarkApplied(job) && UpdateStatus(job, ApplicationStatus.Applied, at);
+
+    /// <summary>
+    /// Every stage date recorded for a job, one per line ("Applied Sep 18, 2026, 3:40 PM"), for the
+    /// List's Date tooltip. A task saved before tracking existed falls back to when it was added.
+    /// </summary>
+    public static string StageDatesText(JobTask job) {
+        static string When(DateTime at) => at.ToString("MMM d, yyyy, h:mm tt", CultureInfo.InvariantCulture);
+        var lines = new List<string>();
+        void Add(string stage, DateTime? at) { if (at is DateTime t) lines.Add($"{stage} {When(t)}"); }
+        Add(ApplicationStatus.Viewed, job.ViewedAt);
+        Add(ApplicationStatus.Ready, job.ReadyAt);
+        Add(ApplicationStatus.Applied, job.AppliedAt);
+        Add(ApplicationStatus.Interview, job.InterviewAt);
+        Add(ApplicationStatus.Done, job.DoneAt);
+        if (lines.Count == 0 && job.CreatedAt != default) lines.Add($"Added {When(job.CreatedAt)}");
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    /// <summary>The Board card's date: "Applied Sep 18" once AppliedAt exists, else the tracking date.</summary>
+    public static string BoardDateText(JobTask job) =>
+        job.AppliedAt is DateTime applied
+            ? "Applied " + applied.ToString("MMM d", CultureInfo.InvariantCulture)
+            : job.TrackingDateDisplay;
 
     /// <summary>
     /// Records when a stage was reached. An existing stamp always wins, and any earlier stage that was
