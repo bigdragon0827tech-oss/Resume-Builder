@@ -183,10 +183,18 @@ public static class JobImporter {
             $"jobId: {existing.JobId}\n" +
             $"title: {existing.Title}"
         );
-        
+
+            // An existing job may gain an application address it lacks — never lose or replace one.
+            var filled = ApplyCapture.FillIfEmpty(existing, data.ApplyUrl, DateTime.Now);
+            if (filled) {
+                Storage.SaveTasks(tasks);
+                PerfLog.Line($"IMPORT apply link added {existing.JobId} {existing.ApplicationPlatform}");
+            }
+
             return new JobImportOutcome {
                 Kind = JobImportKind.Duplicate, JobId = existing.JobId, Title = existing.Title,
-                Company = existing.Company, ApplicationStatus = existing.ApplicationStatus
+                Company = existing.Company, ApplicationStatus = existing.ApplicationStatus,
+                ApplyUrlRecorded = filled
             };
         }
         var task = new JobTask {
@@ -202,13 +210,18 @@ public static class JobImporter {
             About = "",
             Status = "Queued"
         };
+        // Optional, like CompanyUrl: a missing or invalid application address leaves it empty and
+        // never fails the import. The Apply-click capture stays the fallback.
+        var applyRecorded = ApplyCapture.FillIfEmpty(task, data.ApplyUrl, DateTime.Now);
 
         tasks.Add(task);
         Storage.SaveTasks(tasks);
+        if (applyRecorded) PerfLog.Line($"IMPORT apply link found {task.JobId} {task.ApplicationPlatform}");
 
         return new JobImportOutcome {
             Kind = JobImportKind.Imported, JobId = task.JobId, Title = task.Title,
-            Company = task.Company, ApplicationStatus = task.ApplicationStatus
+            Company = task.Company, ApplicationStatus = task.ApplicationStatus,
+            ApplyUrlRecorded = applyRecorded
         };
     }
 

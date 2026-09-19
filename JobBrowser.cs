@@ -70,6 +70,12 @@ public sealed class JobImportData {
     [JsonPropertyName("companyUrl")] public string? CompanyUrl { get; set; }
 
     [JsonPropertyName("description")] public string Description { get; set; } = "";
+
+    /// <summary>
+    /// The real application address, when the source knows it (Jobright's signed-in page data). Optional
+    /// and additive — never required, never a duplicate key; an invalid one is ignored, not an error.
+    /// </summary>
+    [JsonPropertyName("applyUrl")] public string? ApplyUrl { get; set; }
 }
 
 public enum JobImportKind { Imported, Duplicate, Invalid }
@@ -86,6 +92,9 @@ public sealed class JobImportOutcome {
 
     /// <summary>Why an Invalid import was refused, in plain words.</summary>
     public string Reason { get; init; } = "";
+
+    /// <summary>True when this import saved an application address on the task (new or previously empty).</summary>
+    public bool ApplyUrlRecorded { get; init; }
 }
 
 /// <summary>

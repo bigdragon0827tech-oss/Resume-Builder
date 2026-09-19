@@ -60,7 +60,10 @@ public sealed class JobrightPageExtractor : IJobPageExtractor {
           required: list(q.mustHave),
           preferred: list(q.preferredHave),
           company: c.companyName || null,
-          companyUrl: c.companyURL || null
+          companyUrl: c.companyURL || null,
+          // The application address the page's own Apply button opens (signed-in page data only).
+          applyLink: typeof j.applyLink === 'string' ? j.applyLink : null,
+          originalUrl: typeof j.originalUrl === 'string' ? j.originalUrl : null
         };
       };
 
@@ -201,9 +204,19 @@ public sealed class JobrightPageExtractor : IJobPageExtractor {
             JobUrl = JobUrl(Text(payload["canonical"]), href, urlId),
             CompanyUrl = CompanyUrl(fromNext, fromPosting),
             // The full original posting when it is published; otherwise the job's own sections.
-            Description = FirstNonEmpty(HtmlToText(Text(fromPosting?["description"])), Compose(fromNext))
+            Description = FirstNonEmpty(HtmlToText(Text(fromPosting?["description"])), Compose(fromNext)),
+            ApplyUrl = ApplyUrl(fromNext)
         };
     }
+
+    /// <summary>
+    /// The application address, as Jobright's Apply button chooses it: applyLink, else originalUrl —
+    /// each taken only if it passes <see cref="ApplyCapture.IsApplicationUrl"/>. Only from page data
+    /// that describes this job (fromNext is null when stale). Signed-out pages carry neither: null.
+    /// </summary>
+    static string? ApplyUrl(JsonObject? fromNext) =>
+        new[] { Text(fromNext?["applyLink"]).Trim(), Text(fromNext?["originalUrl"]).Trim() }
+            .FirstOrDefault(ApplyCapture.IsApplicationUrl);
 
     // ---------- the five fields ----------
 

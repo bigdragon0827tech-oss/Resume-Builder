@@ -378,6 +378,29 @@ the user clicks them, and every job still goes through `JobrightPageExtractor` a
 - Diagnostics: `JOBBROWSER apply seen <scheme+host+path> via <navigation|new-window> -> <result>`.
 - Tests: `ResumeStyleTests` "Job browser: application link capture" (4 checks).
 
+### Application link discovered at import
+
+- **Correction to the note above:** signed-OUT page data has no application address, but **signed-in
+  page data does** — `jobResult.applyLink` and `jobResult.originalUrl`, in both
+  `jobright-helper-job-detail-info` and `__NEXT_DATA__` (verified read-only on the user's signed-in
+  profile: 60 `jobResult` keys vs 53 signed out). Jobright's own Apply handler is
+  `window.open(applyLink ?? originalUrl)`; no API call produces the link.
+- `JobrightPageExtractor.ReadScript` returns those two named fields; `Parse` sets
+  `JobImportData.ApplyUrl` to `applyLink`, else `originalUrl` — each only if it passes
+  `ApplyCapture.IsApplicationUrl`, and only from page data that describes this job (stale data gives
+  none). Still one script per Import click: no fetch, no click, no navigation.
+- `JobImporter.ImportOne` calls `ApplyCapture.FillIfEmpty`: a new task gets `ApplyUrl` (normalized),
+  `ApplyUrlCapturedAt` and its `ApplicationPlatform`; a missing/invalid link leaves them empty and
+  never fails the import. A **duplicate** import fills an EMPTY `ApplyUrl` (and saves, and
+  `MainWindow` refreshes the dashboard) but **never replaces** an existing one. The outcome's
+  `ApplyUrlRecorded` says whether it wrote. Log: `IMPORT apply link found|added <jobId> <platform>`
+  (no URL).
+- Auto Import skips jobs already in the queue before opening them, so only a manual Import Current
+  Job fills an existing job's empty link. The Apply-click capture (`ApplyCapture.Record`) stays as the
+  fallback for pages without the fields.
+- Tests: 5 checks in that group (extractor fields + fallback, missing/invalid, import records,
+  import without link, fill-only-empty).
+
 ### Application platform detection (phase 2)
 
 - `JobTask.ApplicationPlatform` is an `ApplicationPlatform` enum — Unknown, Greenhouse, Workday,
@@ -521,7 +544,9 @@ Do not implement these without the user starting the work; they record intent, n
 - **`JobImportData` is the canonical input** and both sources produce it: an Incoming JSON file
   deserializes straight into it, and the job browser's extractor returns it. Required: company,
   title, jobUrl (an absolute http/https address), description. Optional: companyUrl (kept only if it
-  is a real web address; a bad one is dropped, it never fails the job). There is **no external jobId
+  is a real web address; a bad one is dropped, it never fails the job) and **applyUrl** (added for
+  import-time link discovery; kept only if it passes `ApplyCapture.IsApplicationUrl`, never a
+  duplicate key, never fails the job). There is **no external jobId
   and no location** — neither is required, read or invented.
 - **One job per input, always.** No batches, arrays, lists, pages or crawling. An Incoming file that
   is an array — even an array of one — or an object with a `jobs` list (the retired batch format) is

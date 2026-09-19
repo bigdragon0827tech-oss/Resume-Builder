@@ -215,6 +215,9 @@ public partial class MainWindow : Window {
             ImportMessage.Text=$"Imported from the job browser: {outcome.Company} — {outcome.Title}";
             // The Applications dashboard, if open, shows the new job straight away.
             RefreshDashboardIfOpen();
+        } else if(outcome.Kind==JobImportKind.Duplicate && outcome.ApplyUrlRecorded) {
+            // An existing job just gained its application link (saved by the importer): update its row.
+            RefreshDashboardIfOpen();
         }
         return outcome;
     }

@@ -58,6 +58,21 @@ public static class ApplyCapture {
 
     static bool HostIs(string host, string domain) => host == domain || host.EndsWith("." + domain, StringComparison.Ordinal);
 
+    /// <summary>
+    /// Import-time discovery: gives a task an application address only when it has none. Same rules as
+    /// a click capture (<see cref="IsApplicationUrl"/>, stored normalized, platform detected), but it
+    /// never replaces an address already recorded. Returns true when it wrote something; the caller saves.
+    /// </summary>
+    public static bool FillIfEmpty(JobTask task, string? applyUrl, DateTime now) {
+        if (!string.IsNullOrWhiteSpace(task.ApplyUrl) || !IsApplicationUrl(applyUrl)) return false;
+
+        var url = JobUrls.Normalize(applyUrl) ?? applyUrl!.Trim();
+        task.ApplyUrl = url;
+        task.ApplyUrlCapturedAt = now;
+        task.ApplicationPlatform = ApplicationPlatformDetector.Detect(url);
+        return true;
+    }
+
     /// <summary>The task whose job link is the same Jobright job (by Jobright job id), or null.</summary>
     public static JobTask? FindTask(IEnumerable<JobTask> tasks, string jobrightJobId) =>
         tasks.FirstOrDefault(t => JobrightPageExtractor.JobIdFromUrl(t.Link) == jobrightJobId);

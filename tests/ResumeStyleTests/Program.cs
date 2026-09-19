@@ -176,6 +176,11 @@ static class Program {
             Test("ApplyUrl and ApplyUrlCapturedAt survive save and reload", ApplyUrlSurvivesReload);
             Test("only an outside http(s) application address is captured", ApplyUrlCaptureRule);
             Test("the address is recorded on the matching Jobright job only", ApplyUrlMatchesJob);
+            Test("the extractor reads applyLink, falling back to originalUrl", ExtractorReadsApplyLink);
+            Test("a missing or invalid page link leaves ApplyUrl empty", ExtractorApplyLinkMissingOrInvalid);
+            Test("import saves a discovered ApplyUrl with its time and platform", ImportRecordsApplyUrl);
+            Test("import without a usable link still succeeds, link empty", ImportWithoutApplyUrl);
+            Test("an existing ApplyUrl is never overwritten; an empty one is filled", ImportFillsOnlyEmptyApplyUrl);
 
             Console.WriteLine();
             Console.WriteLine("Application platform detection");
@@ -1535,14 +1540,17 @@ static class Program {
     }
 
     static void JobImportDataIsNotATask() {
-        // The canonical input: five fields, no external id, no location. It is not a JobTask, so a
-        // file or a page reader can never write to storage or the queue itself.
+        // The canonical input: the five fields plus the optional applyUrl (added for import-time apply
+        // link discovery), no external id, no location. It is not a JobTask, so a file or a page reader
+        // can never write to storage or the queue itself.
         var names = typeof(JobImportData).GetProperties().Select(p => p.Name).OrderBy(n => n).ToArray();
-        Equal("Company,CompanyUrl,Description,JobUrl,Title", string.Join(",", names), "the five canonical fields");
+        Equal("ApplyUrl,Company,CompanyUrl,Description,JobUrl,Title", string.Join(",", names),
+              "the five canonical fields plus the optional ApplyUrl");
 
         var data = new JobImportData();
         Equal("", data.Company, "company defaults empty");
         Check(data.CompanyUrl is null, "companyUrl defaults to none");
+        Check(data.ApplyUrl is null, "applyUrl defaults to none");
         Check(!typeof(JobTask).IsAssignableFrom(typeof(JobImportData)), "JobImportData must not be a JobTask");
         Check(typeof(IJobPageExtractor).GetMethods().Length == 1, "the extractor interface stays minimal");
 
@@ -2191,6 +2199,137 @@ static class Program {
         Equal("A, C", JobTracker.MultiSelectLabel(new[] { "c", "a" }, order, s => s.ToUpperInvariant(), "All", "things"), "names via displayName");
         Equal("All", JobTracker.MultiSelectLabel(order, order, s => s, "All", "things"), "every choice");
     }
+
+    // ---------- apply link discovered at import ----------
+
+    static string PayloadWithLinks(string? applyLink, string? originalUrl) => ScriptResultWith(p => {
+        var next = p["next"]!.AsObject();
+        next["applyLink"] = applyLink is null ? null : JsonValue.Create(applyLink);
+        next["originalUrl"] = originalUrl is null ? null : JsonValue.Create(originalUrl);
+    });
+
+    static void ExtractorReadsApplyLink() {
+        // The script asks for exactly these two named fields, from the same page-data object.
+        Check(JobrightPageExtractor.ReadScript.Contains("applyLink: typeof j.applyLink === 'string'"), "script reads applyLink");
+        Check(JobrightPageExtractor.ReadScript.Contains("originalUrl: typeof j.originalUrl === 'string'"), "script reads originalUrl");
+
+        Equal("https://app.dover.com/apply/Cogniify/1e3fc78f?jr_id=6aada17f",
+              JobrightPageExtractor.Parse(PayloadWithLinks("https://app.dover.com/apply/Cogniify/1e3fc78f?jr_id=6aada17f",
+                                                           "https://boards.greenhouse.io/other/jobs/1")).ApplyUrl,
+              "applyLink wins, as on Jobright's own Apply button");
+        Equal("https://boards.greenhouse.io/acme/jobs/7",
+              JobrightPageExtractor.Parse(PayloadWithLinks(null, "https://boards.greenhouse.io/acme/jobs/7")).ApplyUrl,
+              "originalUrl when applyLink is absent");
+        Equal("https://jobs.lever.co/acme/9",
+              JobrightPageExtractor.Parse(PayloadWithLinks("https://jobright.ai/redirect/9", "https://jobs.lever.co/acme/9")).ApplyUrl,
+              "originalUrl when applyLink is not an application address");
+
+        // Stale page data (another job's) is not used, so its link is not either.
+        var stale = JobrightPageExtractor.Parse(ScriptResultWith(p => {
+            p["next"]!["jobId"] = "aaaaaaaaaaaaaaaaaaaaaaaa";
+            p["next"]!["applyLink"] = "https://jobs.lever.co/someone-else/1";
+        }));
+        Check(stale.ApplyUrl is null, "a link from stale page data is never attributed to this job");
+    }
+
+    static void ExtractorApplyLinkMissingOrInvalid() {
+        Check(JobrightPageExtractor.Parse(ScriptResult()).ApplyUrl is null, "signed-out shape: no link fields at all");
+        Check(JobrightPageExtractor.Parse(ScriptResult("jobright-page-payload-no-jsonld.json")).ApplyUrl is null, "no link fields, no JSON-LD");
+        Check(JobrightPageExtractor.Parse(PayloadWithLinks("", "")).ApplyUrl is null, "empty strings");
+        foreach (var bad in new[] { "javascript:alert(1)", "file:///C:/x.html", "/apply/1", "not a url",
+                                    "https://jobright.ai/jobs/info/6aac7fec95c707f49dff195f", "https://www.linkedin.com/company/1028" })
+            Check(JobrightPageExtractor.Parse(PayloadWithLinks(bad, bad)).ApplyUrl is null, "refused: " + bad);
+        Equal("ClearlyRated", JobrightPageExtractor.Parse(PayloadWithLinks("javascript:alert(1)", null)).Company,
+              "a bad link never stops the job being read");
+    }
+
+    static JobImportData ImportData(string url, string? applyUrl) => new() {
+        Company = "Cogniify", Title = "Senior Generative AI Engineer", JobUrl = url,
+        Description = "Build things.", ApplyUrl = applyUrl
+    };
+
+    static void ImportRecordsApplyUrl() => WithLiveTasksFile(() => {
+        var tasks = new List<JobTask>();
+        var before = DateTime.Now;
+        var outcome = JobImporter.ImportOne(ImportData("https://jobright.ai/jobs/info/6aada17fde327d3e210d3913",
+                                                       "https://app.dover.com/apply/Cogniify/1e3fc78f?utm_source=jr"),
+                                            JobImporter.BrowserSource, tasks);
+        Equal(JobImportKind.Imported, outcome.Kind, "imported");
+        Check(outcome.ApplyUrlRecorded, "the outcome says a link was recorded");
+        var task = tasks.Single();
+        Equal("https://app.dover.com/apply/Cogniify/1e3fc78f", task.ApplyUrl, "saved, normalized (tracking dropped)");
+        Check(task.ApplyUrlCapturedAt is DateTime at && at >= before, "capture time stamped");
+        Equal(ApplicationPlatform.Other, task.ApplicationPlatform, "Dover is detected as Other");
+        Equal("https://jobright.ai/jobs/info/6aada17fde327d3e210d3913", task.Link, "Link keeps the Jobright posting");
+
+        // Recognised platforms are detected at import too.
+        var gh = JobImporter.ImportOne(ImportData("https://jobright.ai/jobs/info/6aac7fec95c707f49dff195f",
+                                                  "https://boards.greenhouse.io/acme/jobs/7"), JobImporter.BrowserSource, tasks);
+        Equal(ApplicationPlatform.Greenhouse, tasks.Single(t => t.JobId == gh.JobId).ApplicationPlatform, "Greenhouse detected at import");
+
+        // And it is all in the saved file.
+        var saved = Storage.LoadTasks().Single(t => t.JobId == outcome.JobId);
+        Equal(task.ApplyUrl, saved.ApplyUrl, "ApplyUrl saved");
+        Equal(ApplicationPlatform.Other, saved.ApplicationPlatform, "platform saved");
+        Check(saved.ApplyUrlCapturedAt is not null, "time saved");
+    });
+
+    static void ImportWithoutApplyUrl() => WithLiveTasksFile(() => {
+        var tasks = new List<JobTask>();
+        foreach (var (i, link) in new[] { null, "", "javascript:alert(1)", "https://jobright.ai/jobs/info/abc", "not a url" }.Select((l, i) => (i, l))) {
+            var outcome = JobImporter.ImportOne(ImportData($"https://example.com/job/{i}", link), JobImporter.IncomingSource, tasks);
+            Equal(JobImportKind.Imported, outcome.Kind, $"imported despite link '{link}'");
+            Check(!outcome.ApplyUrlRecorded, "nothing recorded");
+            var task = tasks.Last();
+            Equal("", task.ApplyUrl, "ApplyUrl stays empty");
+            Check(task.ApplyUrlCapturedAt is null, "no capture time");
+            Equal(ApplicationPlatform.Unknown, task.ApplicationPlatform, "platform Unknown");
+        }
+
+        // An Incoming file written before applyUrl existed still deserializes and imports.
+        var old = JsonSerializer.Deserialize<JobImportData>(
+            """{ "company": "Acme", "title": "Engineer", "jobUrl": "https://example.com/job/old", "description": "x" }""")!;
+        Check(old.ApplyUrl is null, "older input has no applyUrl");
+        Equal(JobImportKind.Imported, JobImporter.ImportOne(old, JobImporter.IncomingSource, tasks).Kind, "older input imports");
+    });
+
+    static void ImportFillsOnlyEmptyApplyUrl() => WithLiveTasksFile(() => {
+        const string page = "https://jobright.ai/jobs/info/6aada17fde327d3e210d3913";
+        var capturedAt = new DateTime(2026, 9, 18, 14, 35, 43);
+
+        // Already has a link (e.g. from an Apply click): a re-import never replaces it.
+        var existing = Job("RB-KEEP", "Cogniify", "Engineer", page);
+        existing.ApplyUrl = "https://app.dover.com/apply/Cogniify/original";
+        existing.ApplyUrlCapturedAt = capturedAt;
+        existing.ApplicationPlatform = ApplicationPlatform.Other;
+        var tasks = new List<JobTask> { existing };
+        var outcome = JobImporter.ImportOne(ImportData(page, "https://boards.greenhouse.io/acme/jobs/7"), JobImporter.BrowserSource, tasks);
+        Equal(JobImportKind.Duplicate, outcome.Kind, "still a duplicate");
+        Check(!outcome.ApplyUrlRecorded, "nothing recorded");
+        Equal("https://app.dover.com/apply/Cogniify/original", existing.ApplyUrl, "ApplyUrl not overwritten");
+        Equal(capturedAt, existing.ApplyUrlCapturedAt, "capture time not overwritten");
+        Equal(ApplicationPlatform.Other, existing.ApplicationPlatform, "platform not overwritten");
+        Equal(1, tasks.Count, "no task added");
+
+        // Has no link yet: the re-import fills it, and saves.
+        var empty = Job("RB-FILL", "Acme", "Engineer", "https://jobright.ai/jobs/info/6aac7fec95c707f49dff195f");
+        empty.ApplicationStatus = ApplicationStatus.Applied;
+        tasks = new List<JobTask> { empty };
+        outcome = JobImporter.ImportOne(ImportData(empty.Link, "https://jobs.lever.co/acme/1"), JobImporter.BrowserSource, tasks);
+        Equal(JobImportKind.Duplicate, outcome.Kind, "duplicate");
+        Check(outcome.ApplyUrlRecorded, "the empty link was filled");
+        Equal("https://jobs.lever.co/acme/1", empty.ApplyUrl, "filled");
+        Equal(ApplicationPlatform.Lever, empty.ApplicationPlatform, "platform detected");
+        Equal(ApplicationStatus.Applied, empty.ApplicationStatus, "application status untouched");
+        Equal("https://jobs.lever.co/acme/1", Storage.LoadTasks().Single().ApplyUrl, "and saved");
+
+        // A duplicate with no usable link changes and saves nothing.
+        File.Delete(Storage.TasksPath);
+        var none = Job("RB-NONE", "Acme", "Engineer", "https://jobright.ai/jobs/info/bbbbbbbbbbbbbbbbbbbbbbbb");
+        JobImporter.ImportOne(ImportData(none.Link, "javascript:alert(1)"), JobImporter.BrowserSource, new List<JobTask> { none });
+        Equal("", none.ApplyUrl, "still empty");
+        Check(!File.Exists(Storage.TasksPath), "a duplicate with nothing new is not saved");
+    });
 
     // ---------- application platform detection ----------
 
