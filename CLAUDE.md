@@ -399,10 +399,21 @@ the user clicks them, and every job still goes through `JobrightPageExtractor` a
 
 ### Application platform filter (phase 3)
 
-- **Same pipeline, one extra optional parameter**: `JobTracker.ApplyFilters(..., exactDate, platforms)`.
-  Order: status -> search -> platforms (`FilterByPlatforms`) -> date. Null or empty = every platform;
-  otherwise **OR** — a job passes when its platform is any ticked one. List and Board both use the one
-  `filtered` result, so they cannot disagree. Cards, pipeline and chart still describe ALL jobs.
+- **Same pipeline, optional trailing parameters**: `JobTracker.ApplyFilters(..., exactDate, platforms,
+  readiness)`. Order: status -> search -> platforms (`FilterByPlatforms`) -> readiness
+  (`FilterByReadiness`) -> date. Null or empty = no restriction; otherwise **OR** within each filter
+  (and AND between filters). Readiness is evaluated with `GetReadiness` at filter time — it is never
+  stored. List and Board both use the one `filtered` result, so they cannot disagree. Cards, pipeline
+  and chart still describe ALL jobs.
+- **Readiness filter** (phase 6B): `ReadinessFilterButton` + popup, LEFT of Platforms. Choices in
+  `JobTracker.ReadinessFilterOrder` (Ready to apply, Needs apply link, Needs resume); label via
+  `ReadinessFilterLabel` — "All readiness" for none or all three, else one or two names.
+- **Both multi-select filters are one component**: `SettingsWindow.MultiSelectFilter<T>` builds the
+  checkboxes, wires button/popup/Clear and holds the selection (`_platformFilter`, `_readinessFilter`);
+  there are no per-filter click handlers in XAML. Labels share `JobTracker.MultiSelectLabel`. A third
+  multi-select filter should reuse both rather than copy them.
+- The toolbar now reads `[Search] [Readiness] [Platforms] [Status] [Date] [List|Board]`; at a
+  1000 px window the search box keeps ~220 px. Another toolbar control needs that revisited.
 - **Choice order is `JobTracker.PlatformFilterOrder`**, explicit and never the enum's declaration
   order: Greenhouse, Workday, Lever, LinkedIn, Ashby, SmartRecruiters, iCIMS, Other, Unknown.
   `PlatformDisplayName` shows `ICims` as "iCIMS". A new enum value must be added there too (a test
@@ -420,6 +431,15 @@ the user clicks them, and every job still goes through `JobrightPageExtractor` a
   **Unknown is hidden and carries no tooltip**; Other and every recognised platform show, with the
   `ApplyUrl` as tooltip. `RecordApplyUrlFromBrowser` calls `RefreshDashboardIfOpen()` after a
   successful record, so a new badge appears without a manual refresh.
+- **Application readiness** (display only): `JobTracker.GetReadiness` -> `ApplicationReadiness`
+  NeedsResume (no `ResumeGenerated`) / NeedsApplyLink (resume, but `ApplyUrl` fails `IsOpenableUrl` —
+  `Link` never counts) / ReadyToApply. Shown as "Needs resume" / "Needs apply link" / "Ready to apply"
+  — never the bare word "Ready", which is an application status. `JobTask.Readiness`,
+  `ReadinessDisplay` and `ReadinessHint` are `[JsonIgnore]` and raised by `NotifyTrackingChanged`.
+  It replaced the old resume text: the List column is now **Readiness** (same 116 px) and the Board
+  card's bottom-right "Resume: …" is the readiness text. One shared `ReadinessTextStyle`: coloured
+  TEXT, not a badge (`StatusAppliedFg` green / `StatusInterviewFg` amber / `Muted` grey), tooltip =
+  what is missing. It never changes `Status`, `ApplicationStatus` or any timestamp.
 - **Open Application** (`JobTracker.OpenApplyUrl`): opens the recorded `ApplyUrl` through the same
   `IsOpenableUrl` (http/https only) and `Launch` as Open Job, and logs `TRACKING open apply URL <jobId>`
   (id only). `ApplyUrlToOpen` **never falls back to `Link`** — the Jobright posting is Open Job's. UI:

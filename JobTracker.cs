@@ -127,7 +127,35 @@ public static class DateFilter {
     }
 }
 
+/// <summary>
+/// Whether a job is ready to be applied for. Derived from ResumeGenerated and ApplyUrl only — display
+/// only, never stored, and independent of both the queue status and the application status.
+/// </summary>
+public enum ApplicationReadiness { NeedsResume, NeedsApplyLink, ReadyToApply }
+
 public static class JobTracker {
+    /// <summary>
+    /// No resume -> NeedsResume; resume but no usable (http/https) ApplyUrl -> NeedsApplyLink;
+    /// both -> ReadyToApply. "Usable" is <see cref="IsOpenableUrl"/>, the Apply button's own test.
+    /// </summary>
+    public static ApplicationReadiness GetReadiness(JobTask job) =>
+        !job.ResumeGenerated ? ApplicationReadiness.NeedsResume
+        : IsOpenableUrl(job.ApplyUrl) ? ApplicationReadiness.ReadyToApply
+        : ApplicationReadiness.NeedsApplyLink;
+
+    /// <summary>Wording avoids "Ready" alone, which is already an application status.</summary>
+    public static string ReadinessText(ApplicationReadiness readiness) => readiness switch {
+        ApplicationReadiness.ReadyToApply => "Ready to apply",
+        ApplicationReadiness.NeedsApplyLink => "Needs apply link",
+        _ => "Needs resume"
+    };
+
+    public static string ReadinessHint(ApplicationReadiness readiness) => readiness switch {
+        ApplicationReadiness.ReadyToApply => "A resume and an application link are both recorded.",
+        ApplicationReadiness.NeedsApplyLink => "Click Apply on this job in the Job Browser to record its application link.",
+        _ => "Generate this job's resume first."
+    };
+
     /// <summary>
     /// Sets the application status by hand. Returns false when nothing changed, so a caller can skip
     /// a pointless save. Entering a stage stamps its time if it has none; a stamp already set is never
@@ -270,14 +298,17 @@ public static class JobTracker {
     }
 
     /// <summary>
-    /// The list and board share one filter path: free text, then the status filter, then the platform
-    /// filter, then either one exact date or a quick range over each job's tracking date. Order is
-    /// never changed. <paramref name="platforms"/> is optional: null or empty means every platform.
+    /// The list and board share one filter path: the status filter, free text, platforms, readiness,
+    /// then either one exact date or a quick range over each job's tracking date. Order is never
+    /// changed. <paramref name="platforms"/> and <paramref name="readiness"/> are optional: null or
+    /// empty means no restriction.
     /// </summary>
     public static List<JobTask> ApplyFilters(IEnumerable<JobTask> tasks, string? search, string? status,
                                              string? dateFilter, DateTime? now = null, DateTime? exactDate = null,
-                                             IReadOnlyCollection<ApplicationPlatform>? platforms = null) {
-        IEnumerable<JobTask> result = FilterByPlatforms(Search(GetTasksByStatus(tasks, status), search), platforms);
+                                             IReadOnlyCollection<ApplicationPlatform>? platforms = null,
+                                             IReadOnlyCollection<ApplicationReadiness>? readiness = null) {
+        IEnumerable<JobTask> result =
+            FilterByReadiness(FilterByPlatforms(Search(GetTasksByStatus(tasks, status), search), platforms), readiness);
 
         if (exactDate is DateTime day) return result.Where(t => t.TrackingDate.Date == day.Date).ToList();
 
@@ -332,13 +363,42 @@ public static class JobTracker {
     /// "All platforms" for none or every choice; one or two names in <see cref="PlatformFilterOrder"/>;
     /// "N platforms" for three or more.
     /// </summary>
-    public static string PlatformFilterLabel(IReadOnlyCollection<ApplicationPlatform>? selected) {
-        var chosen = PlatformFilterOrder.Where(p => selected?.Contains(p) == true).ToList();
-        if (chosen.Count == 0 || chosen.Count == PlatformFilterOrder.Count) return "All platforms";
+    public static string PlatformFilterLabel(IReadOnlyCollection<ApplicationPlatform>? selected) =>
+        MultiSelectLabel(selected, PlatformFilterOrder, PlatformDisplayName, "All platforms", "platforms");
+
+    /// <summary>
+    /// The label of a multi-select filter button: <paramref name="allText"/> when nothing or every
+    /// choice is selected (both mean "no restriction"); one or two names in <paramref name="order"/>;
+    /// otherwise "N <paramref name="noun"/>". Shared by the platform and readiness filters.
+    /// </summary>
+    public static string MultiSelectLabel<T>(IReadOnlyCollection<T>? selected, IReadOnlyList<T> order,
+                                             Func<T, string> displayName, string allText, string noun) {
+        var chosen = order.Where(choice => selected?.Contains(choice) == true).ToList();
+        if (chosen.Count == 0 || chosen.Count == order.Count) return allText;
         return chosen.Count <= 2
-            ? string.Join(", ", chosen.Select(PlatformDisplayName))
-            : $"{chosen.Count} platforms";
+            ? string.Join(", ", chosen.Select(displayName))
+            : $"{chosen.Count} {noun}";
     }
+
+    // ---------- readiness filter ----------
+
+    /// <summary>The readiness filter's choices, in an explicit order independent of the enum.</summary>
+    public static readonly IReadOnlyList<ApplicationReadiness> ReadinessFilterOrder = new[] {
+        ApplicationReadiness.ReadyToApply, ApplicationReadiness.NeedsApplyLink, ApplicationReadiness.NeedsResume
+    };
+
+    /// <summary>
+    /// OR matching on <see cref="GetReadiness"/>, evaluated now — readiness is never stored. Null or
+    /// empty selects all.
+    /// </summary>
+    public static List<JobTask> FilterByReadiness(IEnumerable<JobTask> tasks, IReadOnlyCollection<ApplicationReadiness>? readiness) {
+        var all = (tasks ?? Enumerable.Empty<JobTask>()).ToList();
+        if (readiness is null || readiness.Count == 0) return all;
+        return all.Where(task => readiness.Contains(GetReadiness(task))).ToList();
+    }
+
+    public static string ReadinessFilterLabel(IReadOnlyCollection<ApplicationReadiness>? selected) =>
+        MultiSelectLabel(selected, ReadinessFilterOrder, ReadinessText, "All readiness", "states");
 
     /// <summary>Jobs that reached Applied — they all carry an AppliedAt, so activity can be counted.</summary>
     static IEnumerable<JobTask> AppliedJobs(IEnumerable<JobTask> tasks) =>

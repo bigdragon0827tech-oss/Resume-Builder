@@ -80,22 +80,20 @@ public partial class SettingsWindow : Window {
     string _dateFilter=DateFilter.AllDates;
 
     /// <summary>
-    /// The ticked application platforms. Empty means all. Lives only in this window: never saved to
-    /// tasks.json, settings or a task — each JobTask keeps its one detected ApplicationPlatform.
+    /// The ticked application platforms and readiness states. Empty means all. They live only in this
+    /// window: never saved to tasks.json, settings or a task.
     /// </summary>
-    readonly HashSet<ApplicationPlatform> _platformFilter=new();
+    MultiSelectFilter<ApplicationPlatform>? _platformFilter;
+    MultiSelectFilter<ApplicationReadiness>? _readinessFilter;
 
     void InitTracking() {
         foreach(var filter in ApplicationStatus.Filters) TrackingFilterBox.Items.Add(filter);
-        foreach(var platform in JobTracker.PlatformFilterOrder) {
-            var box=new System.Windows.Controls.CheckBox {
-                Content=JobTracker.PlatformDisplayName(platform), Tag=platform,
-                FontSize=11.5, Margin=new Thickness(0,3,0,3)
-            };
-            box.Checked+=PlatformCheck_Changed;
-            box.Unchecked+=PlatformCheck_Changed;
-            PlatformCheckList.Children.Add(box);
-        }
+        _platformFilter=new(PlatformFilterButton,PlatformFilterPopup,PlatformCheckList,PlatformClearButton,
+                            JobTracker.PlatformFilterOrder,JobTracker.PlatformDisplayName,
+                            JobTracker.PlatformFilterLabel,RefreshTracking);
+        _readinessFilter=new(ReadinessFilterButton,ReadinessFilterPopup,ReadinessCheckList,ReadinessClearButton,
+                             JobTracker.ReadinessFilterOrder,JobTracker.ReadinessText,
+                             JobTracker.ReadinessFilterLabel,RefreshTracking);
         foreach(var range in DateFilter.Options) QuickDateList.Items.Add(range);
         foreach(var range in new[]{ActivityLast7,ActivityLast30,ActivityAllTime}) ActivityRangeBox.Items.Add(range);
 
@@ -149,29 +147,60 @@ public partial class SettingsWindow : Window {
         RefreshTracking();
     }
 
-    // ---------- platform filter: multi-select checkboxes, OR matching ----------
+    // ---------- multi-select filters (Platforms, Readiness): checkbox popup, OR matching ----------
 
-    void PlatformFilterButton_Click(object s,RoutedEventArgs e) =>
-        PlatformFilterPopup.IsOpen=PlatformFilterButton.IsChecked==true;
+    /// <summary>
+    /// One checkbox-popup filter: a toggle button, its popup, a checkbox per choice and a Clear link.
+    /// Each tick filters at once; the popup stays open until an outside click; Clear unticks everything
+    /// with a single refresh. The selection lives here only — never in tasks.json, settings or a task.
+    /// </summary>
+    sealed class MultiSelectFilter<T> where T : struct {
+        readonly HashSet<T> _selected=new();
+        readonly System.Windows.Controls.Primitives.ToggleButton _button;
+        readonly System.Windows.Controls.Panel _list;
+        readonly Func<IReadOnlyCollection<T>,string> _label;
+        readonly Action _changed;
+        bool _clearing;
 
-    void PlatformFilterPopup_Closed(object? s,EventArgs e) => PlatformFilterButton.IsChecked=false;
+        public IReadOnlyCollection<T> Selected => _selected;
 
-    /// <summary>Each tick filters at once; the popup stays open until the user clicks outside it.</summary>
-    void PlatformCheck_Changed(object s,RoutedEventArgs e) {
-        if(_refreshingTracking || s is not System.Windows.Controls.CheckBox { Tag: ApplicationPlatform platform } box) return;
-        if(box.IsChecked==true) _platformFilter.Add(platform); else _platformFilter.Remove(platform);
-        PlatformFilterButton.Content=JobTracker.PlatformFilterLabel(_platformFilter);
-        RefreshTracking();
-    }
+        public MultiSelectFilter(System.Windows.Controls.Primitives.ToggleButton button,
+                                 System.Windows.Controls.Primitives.Popup popup,
+                                 System.Windows.Controls.Panel list, System.Windows.Controls.Button clear,
+                                 IEnumerable<T> order, Func<T,string> displayName,
+                                 Func<IReadOnlyCollection<T>,string> label, Action changed) {
+            _button=button; _list=list; _label=label; _changed=changed;
 
-    void PlatformClear_Click(object s,RoutedEventArgs e) {
-        if(_platformFilter.Count==0) return;
-        _refreshingTracking=true;       // untick without refreshing once per box
-        foreach(var box in PlatformCheckList.Children.OfType<System.Windows.Controls.CheckBox>()) box.IsChecked=false;
-        _refreshingTracking=false;
-        _platformFilter.Clear();
-        PlatformFilterButton.Content=JobTracker.PlatformFilterLabel(_platformFilter);
-        RefreshTracking();
+            foreach(var choice in order) {
+                var box=new System.Windows.Controls.CheckBox {
+                    Content=displayName(choice), Tag=choice, FontSize=11.5, Margin=new Thickness(0,3,0,3)
+                };
+                box.Checked+=Check_Changed;
+                box.Unchecked+=Check_Changed;
+                list.Children.Add(box);
+            }
+            button.Click+=(_,_) => popup.IsOpen=button.IsChecked==true;
+            popup.Closed+=(_,_) => button.IsChecked=false;
+            clear.Click+=(_,_) => Clear();
+            button.Content=label(_selected);
+        }
+
+        void Check_Changed(object s,RoutedEventArgs e) {
+            if(_clearing || s is not System.Windows.Controls.CheckBox { Tag: T choice } box) return;
+            if(box.IsChecked==true) _selected.Add(choice); else _selected.Remove(choice);
+            _button.Content=_label(_selected);
+            _changed();
+        }
+
+        void Clear() {
+            if(_selected.Count==0) return;
+            _clearing=true;             // untick without refreshing once per box
+            foreach(var box in _list.Children.OfType<System.Windows.Controls.CheckBox>()) box.IsChecked=false;
+            _clearing=false;
+            _selected.Clear();
+            _button.Content=_label(_selected);
+            _changed();
+        }
     }
 
     void TrackingFilter_Changed(object s,System.Windows.Controls.SelectionChangedEventArgs e) {
@@ -226,7 +255,8 @@ public partial class SettingsWindow : Window {
 
             var filtered=JobTracker.ApplyFilters(tasks,TrackingSearchBox.Text,
                                                  TrackingFilterBox.SelectedItem as string,
-                                                 _dateFilter,null,_exactDate,_platformFilter);
+                                                 _dateFilter,null,_exactDate,
+                                                 _platformFilter?.Selected,_readinessFilter?.Selected);
 
             var selected=TrackingGrid.SelectedItem as JobTask;
             TrackingGrid.ItemsSource=filtered;

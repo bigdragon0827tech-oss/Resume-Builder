@@ -130,9 +130,16 @@ static class Program {
             Test("several selected platforms match with OR", PlatformFilterOrMatching);
             Test("the platform filter combines with search, status and dates", PlatformFilterCombined);
             Test("the platform filter label and choice order", PlatformFilterLabelAndOrder);
+            Test("each readiness state filters on its own; none selected shows all", ReadinessFilterSingleStates);
+            Test("several readiness states match with OR", ReadinessFilterOrMatching);
+            Test("readiness combines with status, search, platforms and dates; Board = List", ReadinessFilterCombined);
+            Test("the readiness filter label and choice order", ReadinessFilterLabelAndOrder);
             Test("resume actions are safe when no resume exists", ResumeActionsAreSafe);
             Test("a resume already on disk is relinked to its job", ResumeRelinking);
             Test("Open Application uses only a usable ApplyUrl, never the job link", OpenApplicationIsSafe);
+            Test("readiness: needs resume / needs apply link / ready to apply", ReadinessStates);
+            Test("an unusable ApplyUrl never counts as ready", ReadinessRejectsInvalidApplyUrl);
+            Test("readiness is derived: never saved and never changes a status", ReadinessIsDisplayOnly);
 
             Console.WriteLine();
             Console.WriteLine("Job browser");
@@ -1894,6 +1901,81 @@ static class Program {
         Check(JobTracker.IsOpenableUrl("http://careers.example.com/apply"), "plain http is allowed, as for Open Job");
     }
 
+    // ---------- application readiness ----------
+
+    static JobTask ReadinessJob(string? resumePath, string applyUrl) {
+        var job = Job("RD-1", "Cogniify", "Engineer", "https://jobright.ai/jobs/info/6aada17fde327d3e210d3913");
+        job.ResumePath = resumePath ?? "";
+        job.ApplyUrl = applyUrl;
+        return job;
+    }
+
+    static void ReadinessStates() {
+        const string resume = @"C:\Resumes\2026-09-18\Cogniify - Engineer\Resume.docx";
+        const string dover = "https://app.dover.com/apply/Cogniify/1e3fc78f";
+
+        var none = ReadinessJob(null, "");
+        Equal(ApplicationReadiness.NeedsResume, JobTracker.GetReadiness(none), "no resume, no link");
+        Equal("Needs resume", none.ReadinessDisplay, "its text");
+
+        var linkOnly = ReadinessJob(null, dover);
+        Equal(ApplicationReadiness.NeedsResume, JobTracker.GetReadiness(linkOnly), "a link without a resume still needs the resume");
+
+        var resumeOnly = ReadinessJob(resume, "");
+        Equal(ApplicationReadiness.NeedsApplyLink, JobTracker.GetReadiness(resumeOnly), "resume, no link");
+        Equal("Needs apply link", resumeOnly.ReadinessDisplay, "its text");
+
+        var both = ReadinessJob(resume, dover);
+        Equal(ApplicationReadiness.ReadyToApply, JobTracker.GetReadiness(both), "resume and link");
+        Equal("Ready to apply", both.ReadinessDisplay, "its text");
+        Equal(ApplicationReadiness.ReadyToApply, both.Readiness, "the task property agrees with JobTracker");
+
+        // The wording never reuses the bare application-status word.
+        foreach (var r in Enum.GetValues<ApplicationReadiness>()) {
+            Check(!ApplicationStatus.Ordered.Contains(JobTracker.ReadinessText(r)), r + " text is not a status name");
+            Check(JobTracker.ReadinessHint(r).Length > 0, r + " has a hint");
+        }
+    }
+
+    static void ReadinessRejectsInvalidApplyUrl() {
+        const string resume = @"C:\Resumes\Resume.docx";
+        foreach (var bad in new[] { " ", "not a url", "/apply/1", "file:///C:/apply.html", "javascript:alert(1)",
+                                    "mailto:jobs@example.com", "ftp://example.com/apply", "about:blank" })
+            Equal(ApplicationReadiness.NeedsApplyLink, JobTracker.GetReadiness(ReadinessJob(resume, bad)), "unusable: " + bad);
+
+        // The job link is not an application link.
+        var jobright = ReadinessJob(resume, "");
+        Check(JobTracker.IsOpenableUrl(jobright.Link), "the Jobright link itself is valid");
+        Equal(ApplicationReadiness.NeedsApplyLink, JobTracker.GetReadiness(jobright), "but Link never makes a job ready");
+        Equal(ApplicationReadiness.ReadyToApply, JobTracker.GetReadiness(ReadinessJob(resume, "http://careers.example.com/a")), "plain http counts");
+    }
+
+    static void ReadinessIsDisplayOnly() {
+        var job = ReadinessJob(@"C:\Resumes\Resume.docx", "https://jobs.lever.co/acme/1");
+        job.Status = "Completed";
+        JobTracker.UpdateStatus(job, ApplicationStatus.Applied, new DateTime(2026, 9, 18, 10, 0, 0));
+        var appliedAt = job.AppliedAt;
+
+        Equal(ApplicationReadiness.ReadyToApply, job.Readiness, "ready");
+        _ = job.ReadinessDisplay; _ = job.ReadinessHint;
+        Equal("Completed", job.Status, "queue status untouched");
+        Equal(ApplicationStatus.Applied, job.ApplicationStatus, "application status untouched");
+        Equal(appliedAt, job.AppliedAt, "timestamps untouched");
+
+        // Not in the saved JSON, under any name.
+        var json = JsonSerializer.Serialize(new[] { job });
+        foreach (var name in new[] { "Readiness", "ReadinessDisplay", "ReadinessHint", "Ready to apply" })
+            Check(!json.Contains(name, StringComparison.Ordinal), "tasks.json must not carry " + name);
+        Check(json.Contains("\"ApplyUrl\""), "the stored fields are still written");
+
+        // Change notification covers the readiness text, so an open dashboard row updates live.
+        var raised = new List<string>();
+        job.PropertyChanged += (_, e) => raised.Add(e.PropertyName ?? "");
+        job.NotifyTrackingChanged();
+        Check(raised.Contains(nameof(JobTask.ReadinessDisplay)) && raised.Contains(nameof(JobTask.Readiness)),
+              "NotifyTrackingChanged raises the readiness properties");
+    }
+
     // ---------- platform filter ----------
 
     static JobTask PlatformJob(string id, ApplicationPlatform platform, string status = ApplicationStatus.Viewed,
@@ -2004,6 +2086,110 @@ static class Program {
         Equal("SmartRecruiters", JobTracker.PlatformDisplayName(ApplicationPlatform.SmartRecruiters), "SmartRecruiters badge text");
         foreach (var platform in JobTracker.PlatformFilterOrder)
             Check(JobTracker.PlatformDisplayName(platform).Length > 0, platform + " has display text");
+    }
+
+    // ---------- readiness filter ----------
+
+    const string RfResume = @"C:\Resumes\Resume.docx";
+
+    static JobTask RfJob(string id, bool resume, string applyUrl, ApplicationPlatform platform = ApplicationPlatform.Unknown,
+                         string company = "Acme", string status = ApplicationStatus.Viewed, DateTime? created = null) {
+        var job = PlatformJob(id, platform, status, company, "Engineer", created);
+        job.ResumePath = resume ? RfResume : "";
+        job.ApplyUrl = applyUrl;
+        return job;
+    }
+
+    static List<JobTask> ReadinessSet() => new() {
+        RfJob("R-READY", true, "https://jobs.lever.co/acme/1"),
+        RfJob("R-LINK", true, ""),
+        RfJob("R-BAD", true, "javascript:alert(1)"),          // an unusable link still needs one
+        RfJob("R-RESUME", false, "https://jobs.lever.co/acme/2"),
+        RfJob("R-NONE", false, ""),
+    };
+
+    static void ReadinessFilterSingleStates() {
+        var tasks = ReadinessSet();
+        Equal("R-READY", Ids(JobTracker.ApplyFilters(tasks, null, null, null, readiness: new[] { ApplicationReadiness.ReadyToApply })), "ready to apply");
+        Equal("R-LINK,R-BAD", Ids(JobTracker.ApplyFilters(tasks, null, null, null, readiness: new[] { ApplicationReadiness.NeedsApplyLink })), "needs apply link");
+        Equal("R-RESUME,R-NONE", Ids(JobTracker.ApplyFilters(tasks, null, null, null, readiness: new[] { ApplicationReadiness.NeedsResume })), "needs resume");
+
+        Equal(5, JobTracker.ApplyFilters(tasks, null, null, null).Count, "parameter left out");
+        Equal(5, JobTracker.ApplyFilters(tasks, null, null, null, readiness: null).Count, "null");
+        Equal(5, JobTracker.ApplyFilters(tasks, null, null, null, readiness: new HashSet<ApplicationReadiness>()).Count, "empty");
+        Equal(5, JobTracker.ApplyFilters(tasks, null, null, null, readiness: JobTracker.ReadinessFilterOrder.ToList()).Count, "all three");
+
+        // Evaluated now, never stored: gaining a resume moves a job between states.
+        tasks[1].ResumePath = "";
+        Equal("R-LINK,R-RESUME,R-NONE",
+              Ids(JobTracker.ApplyFilters(tasks, null, null, null, readiness: new[] { ApplicationReadiness.NeedsResume })),
+              "readiness follows the job's current data");
+    }
+
+    static void ReadinessFilterOrMatching() {
+        var tasks = ReadinessSet();
+        Equal("R-READY,R-LINK,R-BAD",
+              Ids(JobTracker.ApplyFilters(tasks, null, null, null,
+                  readiness: new HashSet<ApplicationReadiness> { ApplicationReadiness.NeedsApplyLink, ApplicationReadiness.ReadyToApply })),
+              "ready OR needs link, in list order");
+        Equal("R-READY,R-RESUME,R-NONE",
+              Ids(JobTracker.ApplyFilters(tasks, null, null, null,
+                  readiness: new[] { ApplicationReadiness.NeedsResume, ApplicationReadiness.ReadyToApply })),
+              "ready OR needs resume");
+    }
+
+    static void ReadinessFilterCombined() {
+        var now = new DateTime(2026, 9, 18, 12, 0, 0);
+        var tasks = new List<JobTask> {
+            RfJob("X-1", true, "https://jobs.lever.co/a/1", ApplicationPlatform.Lever, "Caterpillar", ApplicationStatus.Ready, now),
+            RfJob("X-2", true, "https://boards.greenhouse.io/b/1", ApplicationPlatform.Greenhouse, "Stripe", ApplicationStatus.Ready, now),
+            RfJob("X-3", true, "", ApplicationPlatform.Unknown, "Caterpillar", ApplicationStatus.Ready, now),
+            RfJob("X-4", true, "https://jobs.lever.co/a/2", ApplicationPlatform.Lever, "Caterpillar", ApplicationStatus.Applied, now.AddDays(-20)),
+            RfJob("X-5", false, "https://jobs.lever.co/a/3", ApplicationPlatform.Lever, "Caterpillar", ApplicationStatus.Viewed, now),
+        };
+        var ready = new[] { ApplicationReadiness.ReadyToApply };
+
+        Equal("X-1,X-2,X-4", Ids(JobTracker.ApplyFilters(tasks, null, null, null, now, null, null, ready)), "readiness alone");
+        Equal("X-1,X-2", Ids(JobTracker.ApplyFilters(tasks, null, ApplicationStatus.Ready, null, now, null, null, ready)), "AND status");
+        Equal("X-1,X-4", Ids(JobTracker.ApplyFilters(tasks, "caterpillar", null, null, now, null, null, ready)), "AND search");
+        Equal("X-1,X-4", Ids(JobTracker.ApplyFilters(tasks, null, null, null, now, null, new[] { ApplicationPlatform.Lever }, ready)), "AND platform");
+        Equal("X-1,X-2", Ids(JobTracker.ApplyFilters(tasks, null, null, DateFilter.Last7, now, null, null, ready)), "AND date range");
+        Equal("X-4", Ids(JobTracker.ApplyFilters(tasks, null, null, DateFilter.AllDates, now, now.AddDays(-20).Date, null, ready)), "AND exact day");
+        Equal("X-1", Ids(JobTracker.ApplyFilters(tasks, "caterpillar", ApplicationStatus.Ready, DateFilter.Last7, now, null,
+                                                 new[] { ApplicationPlatform.Lever, ApplicationPlatform.Greenhouse }, ready)), "all five together");
+
+        // List and Board come from the same filtered list.
+        var filtered = JobTracker.ApplyFilters(tasks, null, null, null, now, null, null,
+                                               new[] { ApplicationReadiness.ReadyToApply, ApplicationReadiness.NeedsApplyLink });
+        var board = ApplicationStatus.Ordered.SelectMany(s => JobTracker.GetTasksByStatus(filtered, s)).Select(t => t.JobId).OrderBy(x => x);
+        Equal(string.Join(",", filtered.Select(t => t.JobId).OrderBy(x => x)), string.Join(",", board), "Board shows exactly the List's jobs");
+        Equal("X-1,X-2,X-3,X-4", string.Join(",", board), "and they are the right ones");
+
+        // Filtering changes nothing on a task.
+        Equal(ApplicationStatus.Ready, tasks[0].ApplicationStatus, "status untouched");
+        Equal(RfResume, tasks[0].ResumePath, "resume untouched");
+    }
+
+    static void ReadinessFilterLabelAndOrder() {
+        Equal("ReadyToApply,NeedsApplyLink,NeedsResume", string.Join(",", JobTracker.ReadinessFilterOrder), "explicit order");
+        Equal(Enum.GetValues<ApplicationReadiness>().Length, JobTracker.ReadinessFilterOrder.Count, "every state is a choice");
+        Equal(JobTracker.ReadinessFilterOrder.Count, JobTracker.ReadinessFilterOrder.Distinct().Count(), "no state twice");
+
+        Equal("All readiness", JobTracker.ReadinessFilterLabel(null), "null");
+        Equal("All readiness", JobTracker.ReadinessFilterLabel(new HashSet<ApplicationReadiness>()), "nothing ticked");
+        Equal("All readiness", JobTracker.ReadinessFilterLabel(JobTracker.ReadinessFilterOrder.ToList()), "all three ticked");
+        Equal("Ready to apply", JobTracker.ReadinessFilterLabel(new[] { ApplicationReadiness.ReadyToApply }), "one");
+        Equal("Ready to apply, Needs apply link",
+              JobTracker.ReadinessFilterLabel(new[] { ApplicationReadiness.NeedsApplyLink, ApplicationReadiness.ReadyToApply }),
+              "two, in the fixed order whatever the tick order");
+        Equal("Needs apply link, Needs resume",
+              JobTracker.ReadinessFilterLabel(new[] { ApplicationReadiness.NeedsResume, ApplicationReadiness.NeedsApplyLink }), "another pair");
+
+        // The shared helper directly: its "N noun" branch, which three states never reach.
+        var order = new[] { "a", "b", "c", "d" };
+        Equal("3 things", JobTracker.MultiSelectLabel(new[] { "a", "c", "d" }, order, s => s.ToUpperInvariant(), "All", "things"), "N noun");
+        Equal("A, C", JobTracker.MultiSelectLabel(new[] { "c", "a" }, order, s => s.ToUpperInvariant(), "All", "things"), "names via displayName");
+        Equal("All", JobTracker.MultiSelectLabel(order, order, s => s, "All", "things"), "every choice");
     }
 
     // ---------- application platform detection ----------

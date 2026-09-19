@@ -121,6 +121,18 @@ public sealed class JobTask : System.ComponentModel.INotifyPropertyChanged {
     /// <summary>Resume column and board card text, so neither needs a value converter.</summary>
     [JsonIgnore] public string ResumeStateDisplay => ResumeGenerated ? "Ready" : "No resume";
 
+    /// <summary>
+    /// Whether this job can be applied for now (resume + usable application link). Derived by
+    /// <see cref="JobTracker.GetReadiness"/>; display only, never saved, never a status.
+    /// </summary>
+    [JsonIgnore] public ApplicationReadiness Readiness => JobTracker.GetReadiness(this);
+
+    /// <summary>Readiness column and board card text.</summary>
+    [JsonIgnore] public string ReadinessDisplay => JobTracker.ReadinessText(Readiness);
+
+    /// <summary>Readiness tooltip: what is missing, or that nothing is.</summary>
+    [JsonIgnore] public string ReadinessHint => JobTracker.ReadinessHint(Readiness);
+
     [JsonIgnore] public string CreatedDisplay => CreatedAt == default ? "" : CreatedAt.ToString("yyyy-MM-dd");
 
     public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
@@ -129,6 +141,7 @@ public sealed class JobTask : System.ComponentModel.INotifyPropertyChanged {
     public void NotifyTrackingChanged() {
         foreach (var name in new[] { nameof(ApplicationStatus), nameof(UpdatedAt), nameof(ResumePath),
                                      nameof(ResumeGenerated), nameof(ResumeStateDisplay),
+                                     nameof(Readiness), nameof(ReadinessDisplay), nameof(ReadinessHint),
                                      nameof(TrackingDate), nameof(TrackingDateDisplay) })
             PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(name));
     }

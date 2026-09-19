@@ -302,6 +302,23 @@
    </Style.Triggers>
   </Style>
 
+  <!-- Application readiness: coloured TEXT (never a badge, so it cannot pass for the Status badge),
+       reusing the status foreground brushes. Display only; the value is JobTracker.GetReadiness. -->
+  <Style x:Key="ReadinessTextStyle" TargetType="TextBlock">
+   <Setter Property="Text" Value="{Binding ReadinessDisplay}"/>
+   <Setter Property="ToolTip" Value="{Binding ReadinessHint}"/>
+   <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+   <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+   <Style.Triggers>
+    <DataTrigger Binding="{Binding Readiness}" Value="{x:Static local:ApplicationReadiness.ReadyToApply}">
+     <Setter Property="Foreground" Value="{StaticResource StatusAppliedFg}"/>
+    </DataTrigger>
+    <DataTrigger Binding="{Binding Readiness}" Value="{x:Static local:ApplicationReadiness.NeedsApplyLink}">
+     <Setter Property="Foreground" Value="{StaticResource StatusInterviewFg}"/>
+    </DataTrigger>
+   </Style.Triggers>
+  </Style>
+
   <Style x:Key="BoardCardStyle" TargetType="Border">
    <Setter Property="Background" Value="{StaticResource CardFill}"/>
    <Setter Property="BorderBrush" Value="{StaticResource CardBorder}"/>
@@ -565,16 +582,18 @@
 </Grid>
 <ComboBox DockPanel.Dock="Right" x:Name="TrackingFilterBox" Width="104" Margin="8,0,0,0"
           Style="{StaticResource FilterControlStyle}" SelectionChanged="TrackingFilter_Changed"/>
-<!-- Platforms: multi-select, OR matching. Built like the date filter; the checkboxes are added in code
-     in JobTracker.PlatformFilterOrder. The selection lives only in this window. -->
+<!-- Platforms and Readiness: multi-select, OR matching, built like the date filter. The button, popup,
+     checkboxes and Clear are wired by SettingsWindow.MultiSelectFilter from JobTracker's explicit
+     choice orders. The selections live only in this window. Right-docked, so Readiness sits LEFT of
+     Platforms. -->
 <Grid DockPanel.Dock="Right" Margin="8,0,0,0">
 <ToggleButton x:Name="PlatformFilterButton" Width="132" Height="26" FontSize="11.5" HorizontalContentAlignment="Left"
-              Padding="8,0" Content="All platforms" Click="PlatformFilterButton_Click"
+              Padding="8,0" Content="All platforms"
               ToolTip="Show jobs from any of the ticked application platforms"/>
 <Path Data="M 0 0 L 8 0 L 4 5 Z" Fill="{StaticResource Muted}" HorizontalAlignment="Right" VerticalAlignment="Center"
       Margin="0,0,8,0" IsHitTestVisible="False"/>
 <Popup x:Name="PlatformFilterPopup" PlacementTarget="{Binding ElementName=PlatformFilterButton}" Placement="Bottom"
-       StaysOpen="False" AllowsTransparency="True" Closed="PlatformFilterPopup_Closed">
+       StaysOpen="False" AllowsTransparency="True">
 <Border Background="{StaticResource CardFill}" BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
         CornerRadius="8" Padding="10,8" Margin="0,4,8,8" MinWidth="160">
 <Border.Effect><DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.18" Color="#4A5568"/></Border.Effect>
@@ -582,8 +601,27 @@
 <StackPanel x:Name="PlatformCheckList"/>
 <Border Height="1" Background="{StaticResource GridLine}" Margin="0,6,0,4"/>
 <Button x:Name="PlatformClearButton" Content="Clear" HorizontalAlignment="Left" Padding="2,1" FontSize="11.5"
-        Background="Transparent" BorderThickness="0" Foreground="{StaticResource AccentSoft}" Cursor="Hand"
-        Click="PlatformClear_Click"/>
+        Background="Transparent" BorderThickness="0" Foreground="{StaticResource AccentSoft}" Cursor="Hand"/>
+</StackPanel>
+</Border>
+</Popup>
+</Grid>
+<Grid DockPanel.Dock="Right" Margin="8,0,0,0">
+<ToggleButton x:Name="ReadinessFilterButton" Width="132" Height="26" FontSize="11.5" HorizontalContentAlignment="Left"
+              Padding="8,0" Content="All readiness"
+              ToolTip="Show jobs in any of the ticked readiness states"/>
+<Path Data="M 0 0 L 8 0 L 4 5 Z" Fill="{StaticResource Muted}" HorizontalAlignment="Right" VerticalAlignment="Center"
+      Margin="0,0,8,0" IsHitTestVisible="False"/>
+<Popup x:Name="ReadinessFilterPopup" PlacementTarget="{Binding ElementName=ReadinessFilterButton}" Placement="Bottom"
+       StaysOpen="False" AllowsTransparency="True">
+<Border Background="{StaticResource CardFill}" BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+        CornerRadius="8" Padding="10,8" Margin="0,4,8,8" MinWidth="160">
+<Border.Effect><DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.18" Color="#4A5568"/></Border.Effect>
+<StackPanel>
+<StackPanel x:Name="ReadinessCheckList"/>
+<Border Height="1" Background="{StaticResource GridLine}" Margin="0,6,0,4"/>
+<Button x:Name="ReadinessClearButton" Content="Clear" HorizontalAlignment="Left" Padding="2,1" FontSize="11.5"
+        Background="Transparent" BorderThickness="0" Foreground="{StaticResource AccentSoft}" Cursor="Hand"/>
 </StackPanel>
 </Border>
 </Popup>
@@ -686,11 +724,10 @@
 </DataTemplate>
 </DataGridTemplateColumn.CellTemplate>
 </DataGridTemplateColumn>
-<DataGridTemplateColumn Header="Resume" Width="116" MinWidth="116">
+<DataGridTemplateColumn Header="Readiness" Width="116" MinWidth="116">
 <DataGridTemplateColumn.CellTemplate>
 <DataTemplate>
-<TextBlock Text="{Binding ResumeStateDisplay}" VerticalAlignment="Center" FontSize="11"
-           Foreground="{StaticResource Muted}"/>
+<TextBlock Style="{StaticResource ReadinessTextStyle}" VerticalAlignment="Center" FontSize="11"/>
 </DataTemplate>
 </DataGridTemplateColumn.CellTemplate>
 </DataGridTemplateColumn>
@@ -779,8 +816,7 @@
 <DockPanel Margin="0,5,0,0">
 <TextBlock Text="{Binding TrackingDateDisplay}" FontSize="9.5" Foreground="{StaticResource Muted}"/>
 <TextBlock DockPanel.Dock="Right" HorizontalAlignment="Right" FontSize="9.5"
-           Foreground="{StaticResource AccentSoft}"
-           Text="{Binding ResumeStateDisplay, StringFormat=Resume: {0}}"/>
+           Style="{StaticResource ReadinessTextStyle}"/>
 </DockPanel>
 </StackPanel>
 </Border>
