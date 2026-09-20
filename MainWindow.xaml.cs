@@ -222,6 +222,37 @@ public partial class MainWindow : Window {
         return outcome;
     }
 
+    /// <summary>Settings asks before offering a reset; a running queue refuses it.</summary>
+    public bool IsQueueRunning => _queue.IsRunning;
+
+    /// <summary>
+    /// Clears the job history in the ONE live collection, on the UI thread, then saves an empty
+    /// tasks.json. Everything else follows from that: the Active/History view, its counts, the
+    /// selection and buttons, the summary, the dashboard, and the job browser's duplicate check,
+    /// which closes over this same list. No restart. Artifacts are deleted by the caller first.
+    /// </summary>
+    public void ClearJobHistoryInPlace() {
+        CancelCaptureWatchdog("job history cleared");
+        _activeJob=null;
+        _activePreparedText=null;
+        _watcher.Disarm();
+
+        _tasks.Clear();                     // CollectionChanged -> Active/History counts
+        Storage.SaveTasks(_tasks);          // []
+
+        TaskList.SelectedItem=null;
+        ShowTaskView(history:false);
+        UpdateSummary();
+        UpdateViewSwitch();
+        RefreshButtons();
+        RefreshDashboardIfOpen();
+        _settings?.RefreshInspector();
+        ImportMessage.Text="Job history cleared.";
+        CaptureStatus.Text="";
+        DocumentStatus.Text="";
+        PerfLog.Line("RESET job history cleared from the live queue");
+    }
+
     /// <summary>
     /// The user clicked Apply on a job page in the job browser. ApplyCapture decides whether this is
     /// an application address for a task already in the queue; only then is the live list saved.

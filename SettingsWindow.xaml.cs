@@ -723,9 +723,72 @@ public partial class SettingsWindow : Window {
         System.Windows.MessageBox.Show(message+Environment.NewLine+Environment.NewLine+"Click Refresh Input on the main screen to import them.");
     }
 
+    /// <summary>The narrow one: synthetic sample/stress jobs only. Kept distinct from Clear Job History.</summary>
     void ClearTestQueue_Click(object s, RoutedEventArgs e) {
         var tasks=Storage.LoadTasks(); var n=tasks.RemoveAll(SampleJobs.IsTestJob); Storage.SaveTasks(tasks);
-        System.Windows.MessageBox.Show($"Removed {n} sample/stress task(s). Restart A to refresh the visible queue.");
+        System.Windows.MessageBox.Show($"Removed {n} sample/stress task(s)."+
+            (Owner is MainWindow ? " Click Refresh Input on the main screen to reload the queue." : ""));
+    }
+
+    /// <summary>
+    /// Clear Job History: plan -> confirm -> delete artifacts -> clear the live list -> save []. The
+    /// plan is built first and is exactly what the confirmation describes. Nothing outside Resume
+    /// Builder's own folders is ever in it (JobHistoryReset).
+    /// </summary>
+    void ClearJobHistory_Click(object s, RoutedEventArgs e) {
+        var main=Owner as MainWindow;
+        var tasks=(main?.Tasks ?? Storage.LoadTasks()).ToList();
+
+        if(main?.IsQueueRunning==true || JobHistoryReset.IsProcessing(tasks)) {
+            System.Windows.MessageBox.Show(
+                "The queue is still running, or a job is being processed.\n\nStop the queue and let the current job finish, then try again. Nothing was changed.",
+                "Clear Job History");
+            return;
+        }
+        if(tasks.Count==0) {
+            System.Windows.MessageBox.Show("There are no jobs to clear.","Clear Job History");
+            return;
+        }
+
+        var withDocuments=ClearDocumentsBox.IsChecked==true;
+        var plan=JobHistoryReset.Plan(tasks,Storage.LoadSettings(),withDocuments);
+
+        var message=$"This will permanently remove:\n\n"+
+                    $"    • {plan.JobSummary()}\n"+
+                    $"    • {plan.Files.Count} saved result and prepared-request file(s)\n"+
+                    (withDocuments
+                        ? $"    • {plan.Folders.Count} generated resume folder(s) (DOCX/PDF)\n"
+                        : "\nGenerated resume documents are NOT included.\n")+
+                    "\nYour settings, prompt files, candidate profile, Job Browser sign-in, diagnostics log and Incoming/Imported files are not touched.\n\n"+
+                    "This cannot be undone. Continue?";
+
+        if(System.Windows.MessageBox.Show(message,"Clear all job history?",MessageBoxButton.YesNo,
+                                          MessageBoxImage.Warning,MessageBoxResult.No)!=MessageBoxResult.Yes) return;
+
+        // Deleting documents reaches into a folder of the user's own, so it is confirmed separately.
+        if(withDocuments && plan.Folders.Count>0 &&
+           System.Windows.MessageBox.Show(
+               $"{plan.Folders.Count} resume folder(s) will be deleted from:\n\n    {plan.ResumeRoot}\n\n"+
+               "Only folders whose own resume-info.json matches one of these jobs are removed. Continue?",
+               "Delete generated resumes?",MessageBoxButton.YesNo,MessageBoxImage.Warning,
+               MessageBoxResult.No)!=MessageBoxResult.Yes) return;
+
+        var report=JobHistoryReset.Execute(plan);
+
+        // Only now is the live list emptied and tasks.json saved.
+        if(main is not null) main.ClearJobHistoryInPlace();
+        else { _standaloneTasks=new List<JobTask>(); Storage.SaveTasks(_standaloneTasks); }
+
+        RefreshTracking();
+        RefreshInspector();
+        TrackingStatus.Text=$"Cleared {plan.JobCount} job(s). "+report.Describe();
+        PerfLog.Line($"RESET cleared {plan.JobCount} jobs, {report.FilesDeleted} files, "+
+                     $"{report.FoldersDeleted} folders, {report.Failures.Count} failure(s)");
+
+        System.Windows.MessageBox.Show(
+            $"Cleared {plan.JobCount} job(s).\n\n{report.Describe()}",
+            report.AnyFailure ? "Cleared, with problems" : "Job history cleared",
+            MessageBoxButton.OK, report.AnyFailure ? MessageBoxImage.Warning : MessageBoxImage.Information);
     }
 
 

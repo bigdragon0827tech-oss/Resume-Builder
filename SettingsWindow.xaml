@@ -902,7 +902,18 @@
 <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" Foreground="#666" Text="&quot;Load 50 Sample Jobs&quot; writes 50 synthetic jobs (invented companies and descriptions) to the Incoming folder for queue stress testing. Nothing is written until you click it."/>
 <TextBlock Margin="0,18,0,4" Text="Test Data" FontWeight="Bold"/>
 <TextBlock Text="Google — Senior Software Engineer&#10;Stripe — Backend Engineer&#10;Amazon — Software Engineer II"/>
-<Button Content="Clear Test Queue" Width="160" Height="34" HorizontalAlignment="Left" Margin="0,18,0,0" Click="ClearTestQueue_Click"/>
+<Button Content="Remove Sample Jobs" Width="170" Height="34" HorizontalAlignment="Left" Margin="0,18,0,0" Click="ClearTestQueue_Click"
+        ToolTip="Removes only the synthetic sample/stress jobs, leaving your real jobs alone"/>
+<TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="#666"
+           Text="Removes only the synthetic sample and stress jobs. Your real jobs, their results and their documents are untouched."/>
+
+<!-- Clear Job History: the full testing reset. Settings, prompts, the candidate profile, the Job
+     Browser sign-in, diagnostics.log and the Incoming/Imported files are never touched. -->
+<TextBlock Margin="0,22,0,4" Text="Reset For Testing" FontWeight="Bold"/>
+<TextBlock TextWrapping="Wrap" Foreground="#666"
+           Text="Clear Job History removes every job (Active and History) with its application tracking, and the result files Resume Builder saved for those jobs. Your settings, prompt files, candidate profile, Job Browser sign-in, diagnostics log and Incoming/Imported files are not touched."/>
+<CheckBox x:Name="ClearDocumentsBox" Margin="0,10,0,0" Content="Also delete generated resume folders (DOCX/PDF) for these jobs"/>
+<Button Content="Clear Job History…" Width="170" Height="34" HorizontalAlignment="Left" Margin="0,10,0,0" Click="ClearJobHistory_Click"/>
 </StackPanel></TabItem>
  </TabControl></Grid>
 </Window>

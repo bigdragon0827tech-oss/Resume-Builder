@@ -103,6 +103,18 @@ static class Program {
             Test("canonical JSON serialization round-trips", JsonSerialization);
 
             Console.WriteLine();
+            Console.WriteLine("Clear job history");
+            Test("only this app's own job files are planned", ResetPlansOnlyOwnedFiles);
+            Test("BASELINE files and other jobs' files are never planned", ResetNeverPlansBaseline);
+            Test("an unsafe ResumePath is ignored; ownership decides", ResetIgnoresUnsafeResumePath);
+            Test("a folder is deleted only when resume-info.json matches", ResetFolderNeedsMatchingInfo);
+            Test("two jobs with the same company and role are handled", ResetHandlesDuplicateJobFolders);
+            Test("documents are untouched when the box is off", ResetWithoutDocuments);
+            Test("a locked file is reported, not hidden", ResetReportsFailures);
+            Test("settings, profile, prompts and inputs survive byte-for-byte", ResetLeavesEverythingElseAlone);
+            Test("a reset is refused while a job is Processing", ResetRefusedWhileProcessing);
+
+            Console.WriteLine();
             Console.WriteLine("Prompt modes");
             Test("the Resume prompt is byte-for-byte what it was", ResumePromptUnchanged);
             Test("a Normal prompt comes first, unchanged, with the same payload", NormalPromptAssembly);
@@ -575,6 +587,267 @@ static class Program {
             PdfWriter.Write(resume, pdf);
             Check(File.Exists(pdf) && new FileInfo(pdf).Length > 1000, preset + ": no usable PDF was produced");
         }
+    }
+
+    // ---------- clear job history ----------
+
+    /// <summary>A throwaway world: results folder, prepared-request pair, resume root with real folders.</summary>
+    sealed class ResetWorld {
+        public string Dir = "", Results = "", Prepared = "", PreparedText = "", Root = "";
+        public AppSettings Settings = new();
+        public ResetPaths Paths = new();
+        public List<JobTask> Tasks = new();
+
+        public string JobFolder(JobTask job, string date) =>
+            Path.Combine(Root, date, ResumeOutputManager.JobFolderName(job.Company, job.Title));
+    }
+
+    static ResetWorld NewResetWorld(string name) {
+        var dir = NewDir("reset-" + name);
+        var w = new ResetWorld {
+            Dir = dir,
+            Results = Path.Combine(dir, "results"),
+            Prepared = Path.Combine(dir, "prepared-request.json"),
+            PreparedText = Path.Combine(dir, "prepared-request.txt"),
+            Root = Path.Combine(dir, "Resumes")
+        };
+        Directory.CreateDirectory(w.Results);
+        Directory.CreateDirectory(w.Root);
+        w.Paths = new ResetPaths { ResultsDir = w.Results, PreparedRequestPath = w.Prepared, PreparedRequestTextPath = w.PreparedText };
+        w.Settings = new AppSettings { ResumeRootFolder = w.Root };
+        File.WriteAllText(w.Prepared, "{}");
+        File.WriteAllText(w.PreparedText, "prompt");
+        return w;
+    }
+
+    /// <summary>Gives a job its four result files and, optionally, a generated folder for a date.</summary>
+    static JobTask ResetJob(ResetWorld w, string id, string company = "Acme", string title = "Engineer",
+                            string status = "Completed", string? documentsOn = null, string? infoJobId = null) {
+        var job = new JobTask { JobId = id, Company = company, Title = title, Jd = "...", Status = status };
+        foreach (var suffix in new[] { ".json", ".raw.txt", ".docgen.txt", ".effective-style.json" })
+            File.WriteAllText(Path.Combine(w.Results, id + suffix), "x");
+
+        if (documentsOn is string date) {
+            var folder = w.JobFolder(job, date);
+            Directory.CreateDirectory(folder);
+            File.WriteAllText(Path.Combine(folder, "Resume.docx"), "docx");
+            File.WriteAllText(Path.Combine(folder, "Resume.pdf"), "pdf");
+            File.WriteAllText(Path.Combine(folder, "resume-info.json"),
+                $$"""{ "jobId": "{{infoJobId ?? id}}", "company": "{{company}}", "role": "{{title}}" }""");
+            job.ResumePath = Path.Combine(folder, "Resume.docx");
+        }
+        w.Tasks.Add(job);
+        return job;
+    }
+
+    static void ResetPlansOnlyOwnedFiles() {
+        var w = NewResetWorld("owned");
+        var a = ResetJob(w, "RB-1", status: "Completed");
+        var b = ResetJob(w, "RB-2", "Stripe", "Backend Engineer", "Queued");
+        File.WriteAllText(Path.Combine(w.Results, "RB-STRANGER.json"), "someone else's");
+
+        var plan = JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: false, w.Paths);
+        Equal(2, plan.JobCount, "both jobs are in the plan");
+        Equal("2 jobs (1 queued, 1 completed)", plan.JobSummary(), "the summary the dialog shows");
+        Equal(10, plan.Files.Count, "4 files per job plus the two prepared-request files");
+        Check(plan.Files.All(f => JobHistoryReset.IsUnderRoot(f, w.Results) || f == w.Prepared || f == w.PreparedText),
+              "every planned file is inside this app's own folders");
+        Check(!plan.Files.Any(f => f.Contains("STRANGER")), "another job's result file is never planned");
+        Equal(0, plan.Folders.Count, "no documents were requested");
+
+        var report = JobHistoryReset.Execute(plan, w.Paths);
+        Equal(10, report.FilesDeleted, "all planned files deleted");
+        Check(!report.AnyFailure, "no failures");
+        Check(File.Exists(Path.Combine(w.Results, "RB-STRANGER.json")), "the stranger's file survives");
+        Check(!File.Exists(w.Prepared) && !File.Exists(w.PreparedText), "prepared-request files are gone");
+        foreach (var job in new[] { a, b })
+            Check(!Directory.GetFiles(w.Results, job.JobId + "*").Any(), job.JobId + "'s results are gone");
+    }
+
+    static void ResetNeverPlansBaseline() {
+        var w = NewResetWorld("baseline");
+        ResetJob(w, "RB-1");
+        foreach (var suffix in new[] { ".json", ".raw.txt", ".effective-style.json" })
+            File.WriteAllText(Path.Combine(w.Results, ResultCapture.BaselineJobId + suffix), "baseline");
+
+        // Even a task carrying the reserved id must not pull the baseline files in.
+        w.Tasks.Add(new JobTask { JobId = ResultCapture.BaselineJobId, Company = "X", Title = "Y" });
+        w.Tasks.Add(new JobTask { JobId = "   ", Company = "X", Title = "Y" });
+
+        var plan = JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: false, w.Paths);
+        Check(!plan.Files.Any(f => Path.GetFileName(f).StartsWith(ResultCapture.BaselineJobId, StringComparison.OrdinalIgnoreCase)),
+              "BASELINE.* is never planned");
+        JobHistoryReset.Execute(plan, w.Paths);
+        foreach (var suffix in new[] { ".json", ".raw.txt", ".effective-style.json" })
+            Check(File.Exists(Path.Combine(w.Results, ResultCapture.BaselineJobId + suffix)), "BASELINE" + suffix + " survives");
+    }
+
+    static void ResetIgnoresUnsafeResumePath() {
+        var w = NewResetWorld("unsafe");
+        var outside = NewDir("reset-unsafe-outside");
+        File.WriteAllText(Path.Combine(outside, "precious.docx"), "not ours");
+
+        // The task claims a document far outside the Resume Root; it must count for nothing.
+        var job = ResetJob(w, "RB-1");
+        job.ResumePath = Path.Combine(outside, "precious.docx");
+
+        var plan = JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: true, w.Paths);
+        Equal(0, plan.Folders.Count, "a ResumePath outside the root plans no folder");
+        Check(!plan.Files.Any(f => f.Contains("precious")), "and no file");
+        JobHistoryReset.Execute(plan, w.Paths);
+        Check(File.Exists(Path.Combine(outside, "precious.docx")), "the outside file is untouched");
+
+        // The guard itself.
+        Check(JobHistoryReset.IsUnderRoot(Path.Combine(w.Root, "2026-09-19", "Acme - Engineer"), w.Root), "a real child is under the root");
+        Check(!JobHistoryReset.IsUnderRoot(w.Root, w.Root), "the root itself is not 'under' the root");
+        Check(!JobHistoryReset.IsUnderRoot(Path.Combine(w.Root, "..", "elsewhere"), w.Root), "a path that climbs out is refused");
+        Check(!JobHistoryReset.IsUnderRoot(@"C:\Windows\System32", w.Root), "an unrelated path is refused");
+        Check(!JobHistoryReset.IsUnderRoot("", w.Root) && !JobHistoryReset.IsUnderRoot(w.Root, ""), "empty paths are refused");
+    }
+
+    static void ResetFolderNeedsMatchingInfo() {
+        var w = NewResetWorld("folders");
+        const string date = "2026-09-19";
+        var mine = ResetJob(w, "RB-MINE", "Cogniify", "AI Engineer", documentsOn: date);
+        var wrongId = ResetJob(w, "RB-WRONG", "Stripe", "Backend Engineer", documentsOn: date, infoJobId: "RB-SOMEONE-ELSE");
+        var noInfo = ResetJob(w, "RB-NOINFO", "Acme", "Engineer", documentsOn: date);
+        File.Delete(Path.Combine(w.JobFolder(noInfo, date), "resume-info.json"));
+
+        // A folder under a NON-date parent, and a stranger's folder, must both be ignored.
+        var notDated = Path.Combine(w.Root, "Archive", ResumeOutputManager.JobFolderName("Cogniify", "AI Engineer"));
+        Directory.CreateDirectory(notDated);
+        File.WriteAllText(Path.Combine(notDated, "resume-info.json"), """{ "jobId": "RB-MINE" }""");
+        var stranger = Path.Combine(w.Root, date, "Someone Else - Role");
+        Directory.CreateDirectory(stranger);
+        File.WriteAllText(Path.Combine(stranger, "Resume.docx"), "theirs");
+
+        var plan = JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: true, w.Paths);
+        Equal(1, plan.Folders.Count, "only the folder whose resume-info.json matches");
+        Equal(w.JobFolder(mine, date), plan.Folders[0], "and it is the right one");
+
+        var report = JobHistoryReset.Execute(plan, w.Paths);
+        Equal(1, report.FoldersDeleted, "one folder deleted");
+        Check(!Directory.Exists(w.JobFolder(mine, date)), "the matching folder is gone");
+        Check(Directory.Exists(w.JobFolder(wrongId, date)), "a folder whose info names another job survives");
+        Check(Directory.Exists(w.JobFolder(noInfo, date)), "a folder with no resume-info.json survives");
+        Check(Directory.Exists(notDated), "a folder outside a yyyy-MM-dd parent survives");
+        Check(Directory.Exists(stranger), "a stranger's folder survives");
+        Equal(0, report.DateFoldersRemoved, "the date folder still holds other folders, so it stays");
+        Check(Directory.Exists(Path.Combine(w.Root, date)), "the date folder survives");
+
+        // With nothing left in it, the date folder is tidied away.
+        var solo = NewResetWorld("folders-solo");
+        var only = ResetJob(solo, "RB-ONLY", documentsOn: date);
+        var soloReport = JobHistoryReset.Execute(JobHistoryReset.Plan(solo.Tasks, solo.Settings, true, solo.Paths), solo.Paths);
+        Equal(1, soloReport.DateFoldersRemoved, "an empty date folder is removed");
+        Check(!Directory.Exists(Path.Combine(solo.Root, date)), "and it is gone");
+        Check(Directory.Exists(solo.Root), "the Resume Root itself is never deleted");
+    }
+
+    /// <summary>Re-imported jobs share a company and role, so one folder name maps to several job ids.</summary>
+    static void ResetHandlesDuplicateJobFolders() {
+        var w = NewResetWorld("duplicates");
+        const string company = "Caterpillar Inc.", title = "Senior AI Software Engineer";
+        var first = ResetJob(w, "RB-DUP-1", company, title, documentsOn: "2026-09-18");
+        var second = ResetJob(w, "RB-DUP-2", company, title, documentsOn: "2026-09-19");
+        Equal(ResumeOutputManager.JobFolderName(company, title),
+              ResumeOutputManager.JobFolderName(company, title), "both jobs map to one folder name");
+
+        var plan = JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: true, w.Paths);   // must not throw
+        Equal(2, plan.Folders.Count, "both dated folders are planned");
+        Equal(8, plan.Files.Count - 2, "and both jobs' result files (plus the prepared pair)");
+        var report = JobHistoryReset.Execute(plan, w.Paths);
+        Check(!report.AnyFailure && report.FoldersDeleted == 2, "both folders deleted: " + report.Describe());
+        Check(!Directory.Exists(w.JobFolder(first, "2026-09-18")) && !Directory.Exists(w.JobFolder(second, "2026-09-19")), "gone");
+
+        // One folder holding revisions of a CLEARED job and a KEPT job is left alone.
+        var mixed = NewResetWorld("duplicates-mixed");
+        var cleared = ResetJob(mixed, "RB-KEEP-A", company, title, documentsOn: "2026-09-19");
+        var folder = mixed.JobFolder(cleared, "2026-09-19");
+        File.WriteAllText(Path.Combine(folder, "resume-info (2).json"), """{ "jobId": "RB-NOT-CLEARED" }""");
+        var mixedPlan = JobHistoryReset.Plan(mixed.Tasks, mixed.Settings, includeDocuments: true, mixed.Paths);
+        Equal(0, mixedPlan.Folders.Count, "a folder shared with a job that stays is never deleted");
+        JobHistoryReset.Execute(mixedPlan, mixed.Paths);
+        Check(Directory.Exists(folder), "and it survives");
+    }
+
+    static void ResetWithoutDocuments() {
+        var w = NewResetWorld("nodocs");
+        var job = ResetJob(w, "RB-1", documentsOn: "2026-09-19");
+
+        var plan = JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: false, w.Paths);
+        Check(!plan.IncludesDocuments && plan.Folders.Count == 0 && plan.DateFolders.Count == 0, "no folders planned");
+        var report = JobHistoryReset.Execute(plan, w.Paths);
+        Equal(0, report.FoldersDeleted, "no folder deleted");
+        Check(File.Exists(job.ResumePath), "the DOCX is still there");
+        Check(File.Exists(Path.ChangeExtension(job.ResumePath, ".pdf")), "the PDF is still there");
+        Equal(6, report.FilesDeleted, "results and prepared-request files were still cleared");
+    }
+
+    static void ResetReportsFailures() {
+        var w = NewResetWorld("failures");
+        ResetJob(w, "RB-1");
+        var locked = Path.Combine(w.Results, "RB-1.json");
+        var plan = JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: false, w.Paths);
+
+        ResetReport report;
+        using (File.Open(locked, FileMode.Open, FileAccess.Read, FileShare.None))
+            report = JobHistoryReset.Execute(plan, w.Paths);
+
+        Check(report.AnyFailure, "the locked file is reported as a failure");
+        Equal(1, report.Failures.Count, "exactly one failure");
+        Equal(locked, report.Failures[0].Path, "and it names the file");
+        Check(report.Failures[0].Reason.Length > 0, "with a reason: " + report.Failures[0].Reason);
+        Check(report.Describe().Contains("could NOT be deleted", StringComparison.Ordinal), "the message says so plainly");
+        Check(report.FilesDeleted == plan.Files.Count - 1, "the others were still deleted");
+        Check(File.Exists(locked), "and the locked file is still there");
+    }
+
+    static void ResetLeavesEverythingElseAlone() {
+        var w = NewResetWorld("survivors");
+        ResetJob(w, "RB-1", documentsOn: "2026-09-19");
+
+        // Files that must never be involved, written next to the ones that are.
+        var survivors = new Dictionary<string, string> {
+            [Path.Combine(w.Dir, "settings.json")] = """{ "PromptMode": "Normal", "NormalPrompt": "C:\\mine.txt" }""",
+            [Path.Combine(w.Dir, "candidate-profile.json")] = """{ "info": {} }""",
+            [Path.Combine(w.Dir, "baseline-profile.json")] = "baseline",
+            [Path.Combine(w.Dir, "diagnostics.log")] = "log line",
+            [Path.Combine(w.Dir, "my-master-prompt.txt")] = "master",
+            [Path.Combine(w.Dir, "my-normal-prompt.txt")] = "normal",
+        };
+        var browser = Path.Combine(w.Dir, "JobBrowserWebView2");
+        Directory.CreateDirectory(browser);
+        survivors[Path.Combine(browser, "Cookies")] = "session";
+        var incoming = Path.Combine(w.Dir, "Incoming"); Directory.CreateDirectory(incoming);
+        survivors[Path.Combine(incoming, "job-1.json")] = "{}";
+        var imported = Path.Combine(w.Dir, "Imported"); Directory.CreateDirectory(imported);
+        survivors[Path.Combine(imported, "job-0.json")] = "{}";
+        foreach (var (path, text) in survivors) File.WriteAllText(path, text);
+        var before = survivors.Keys.ToDictionary(p => p, File.ReadAllBytes);
+
+        JobHistoryReset.Execute(JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: true, w.Paths), w.Paths);
+
+        foreach (var (path, bytes) in before) {
+            Check(File.Exists(path), "still exists: " + Path.GetFileName(path));
+            Check(File.ReadAllBytes(path).SequenceEqual(bytes), "byte-identical: " + Path.GetFileName(path));
+        }
+        Check(Directory.Exists(browser) && Directory.Exists(incoming) && Directory.Exists(imported),
+              "the browser profile and the input folders survive");
+    }
+
+    static void ResetRefusedWhileProcessing() {
+        var w = NewResetWorld("processing");
+        ResetJob(w, "RB-1", status: "Completed");
+        Check(!JobHistoryReset.IsProcessing(w.Tasks), "no job in flight");
+
+        ResetJob(w, "RB-2", status: "Processing");
+        Check(JobHistoryReset.IsProcessing(w.Tasks), "a Processing job blocks the reset");
+        Check(JobHistoryReset.IsProcessing(new List<JobTask>()) == false, "an empty list is fine");
+
+        // The plan itself stays honest about what it would cover.
+        var plan = JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: false, w.Paths);
+        Check(plan.JobSummary().Contains("1 processing", StringComparison.Ordinal), "the summary names it: " + plan.JobSummary());
     }
 
     // ---------- prompt modes ----------

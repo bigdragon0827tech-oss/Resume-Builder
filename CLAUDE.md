@@ -182,11 +182,44 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 | `ReadyToast.cs` | `ReadyToast` (right-side, non-activating "answer ready" notification), `WindowAttention` (taskbar flash) |
 | `CaptureWatchdog.cs` | `CaptureWatchdog` — 30 s bounded wait for the Copy after a confirmed READY (no I/O, injectable delay) |
 | `GlobalHotkey.cs` | `GlobalHotkey` — system-wide Ctrl+Shift+' that only brings Resume Builder forward |
+| `JobHistoryReset.cs` | `JobHistoryReset`, `ResetPlan`, `ResetReport`, `ResetPaths` — the testing reset: plan, guards, execute, per-path failures |
 | `PromptContract.cs` | `PromptModes` (Resume / Normal, tolerant), `PromptContract` — the one output contract and job payload both modes send |
 | `ApplyCapture.cs` | `ApplyCapture`, `ApplyCaptureResult` — decides whether a user's Apply destination is recorded, and on which task |
 | `ApplicationPlatformDetector.cs` | `ApplicationPlatform` enum, `ApplicationPlatformDetector` (ApplyUrl -> platform), `TolerantPlatformConverter` |
 | `TaskViews.cs` | `TaskViews` — the Active / History display filter over the one task collection |
 | `Models.cs` | `JobBatch`, `JobInput`, `JobTask`, `AppSettings`, `PreparedRequest` |
+
+## Clear Job History (testing reset)
+
+- **Settings → Development → "Clear Job History…"**, with an opt-in checkbox *"Also delete generated
+  resume folders (DOCX/PDF) for these jobs"* (default OFF). The narrow old action stays beside it,
+  relabelled **"Remove Sample Jobs"** (synthetic jobs only) so the two cannot be confused.
+- **Always cleared**: every `JobTask` (Active and History, with all tracking and timestamps, since
+  they live on the task), `results\<jobId>.{json,raw.txt,docgen.txt,effective-style.json}` for those
+  jobs, and `prepared-request.json` / `.txt`.
+- **Never touched**: `settings.json` (PromptMode and both prompt paths included), the prompt files
+  themselves, `candidate-profile.json`, `baseline-profile.json`, `results\BASELINE.*`, the style
+  presets, the Job Browser WebView2 profile, **`diagnostics.log`** (kept deliberately: it is the
+  record of what the reset did), and the Incoming/Imported input files.
+- **Two guards make it safe.** `IsUnderRoot` checks every path at plan time AND again at delete time,
+  and a generated folder is identified by **its own `resume-info.json`** — `JobTask.ResumePath` is
+  never authority, because a task is data that could name any path. A folder qualifies only when it
+  sits under `<ResumeRoot>\<yyyy-MM-dd>\`, its name equals `ResumeOutputManager.JobFolderName`, and
+  **every** `resume-info*.json` in it names a job being cleared (so a folder shared with a job that
+  stays is left alone). A date folder is removed only if it is empty afterwards; the Resume Root never is.
+- **Several jobs can share one company + role** (a re-imported job), so folder name -> **set** of job
+  ids. Keying a dictionary by folder name alone throws on the duplicate — that bug was found against
+  real data and is covered by a test.
+- **Sequence**: build the immutable `ResetPlan` -> confirm (No is default; a second confirmation names
+  the Resume Root when documents are included) -> `Execute` deletes and collects per-path failures ->
+  only then `MainWindow.ClearJobHistoryInPlace()` clears the ONE live collection on the UI thread and
+  saves `[]`. No restart: the Active/History view, counts, selection, buttons, summary, dashboard and
+  the job browser's duplicate check all follow from that collection.
+- **Refused while the queue is running or any task is Processing**; a running job is never cancelled.
+- A failure is always reported (`ResetReport.Describe`), never hidden behind a success message.
+- `ResetPaths` makes the results folder and prepared-request paths injectable, so tests run entirely
+  in temporary folders. Tests: `ResumeStyleTests` "Clear job history" (9 checks).
+- Orphaned artifacts from jobs deleted earlier are deliberately **left** — ownership must be proven.
 
 ## Prompt modes — Resume and Normal
 
