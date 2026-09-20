@@ -452,7 +452,27 @@ the user clicks them, and every job still goes through `JobrightPageExtractor` a
 - **Both multi-select filters are one component**: `SettingsWindow.MultiSelectFilter<T>` builds the
   checkboxes, wires button/popup/Clear and holds the selection (`_platformFilter`, `_readinessFilter`);
   there are no per-filter click handlers in XAML. Labels share `JobTracker.MultiSelectLabel`. A third
-  multi-select filter should reuse both rather than copy them.
+  multi-select filter should reuse both rather than copy them. **`SelectOnly(choices, refresh)` is the
+  one way to set a selection from code** (ticks exactly those boxes, refreshes once or not at all);
+  Clear is `SelectOnly(nothing)`.
+- **"Ready to apply" card** (phase 8A/8B): the fourth summary card (`ReadyToApplyCard`, a real `Button`
+  templated with `DashboardCardStyle`, so it is focusable and Enter/Space work). It is an **action
+  queue**: its number is `JobTracker.CountNeedsAction` over ALL jobs — `NeedsAction` = ReadyToApply
+  **and** not applied for yet (Viewed or Ready). Hint: "Ready, not applied yet".
+  Click (`ReadyToApplyCard_Click`): List view; search, platforms and date cleared; **Status = the
+  "Not applied yet" group**; Readiness = only Ready to apply; ONE `RefreshTracking` (the controls'
+  handlers are inert under `_refreshingTracking`). Both filters stay **visible**, so the user can undo
+  them — there is deliberately no hidden "queue mode" flag. Nothing is stored.
+- **`ApplicationStatus.Filter` holds filter-ONLY values**, kept apart from the five real statuses:
+  `NotAppliedYet` ("Not applied yet" = Viewed or Ready), `Options` (the dropdown: All, the group, then
+  the five). `ApplicationStatus.Ordered`, `Filters`, the pipeline, the board columns, the statistics
+  and stored data are unchanged. `GetTasksByStatus` answers the group **before** `Normalize`, which
+  would otherwise read an unknown value as Viewed; `UpdateStatus` refuses a group value, so it can
+  never be written to a task. A future status group belongs here too.
+- **After Mark Applied in the queue** the job leaves the list and the count drops on the existing
+  single refresh; its readiness stays ReadyToApply (it still has a resume and a link) and it is still
+  shown by the Readiness filter alone. Applying changes no readiness and no timestamp beyond the
+  usual `AppliedAt ??=`.
 - The toolbar now reads `[Search] [Readiness] [Platforms] [Status] [Date] [List|Board]`; at a
   1000 px window the search box keeps ~220 px. Another toolbar control needs that revisited.
 - **Choice order is `JobTracker.PlatformFilterOrder`**, explicit and never the enum's declaration

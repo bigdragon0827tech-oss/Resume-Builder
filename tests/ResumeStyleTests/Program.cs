@@ -134,6 +134,11 @@ static class Program {
             Test("several readiness states match with OR", ReadinessFilterOrMatching);
             Test("readiness combines with status, search, platforms and dates; Board = List", ReadinessFilterCombined);
             Test("the readiness filter label and choice order", ReadinessFilterLabelAndOrder);
+            Test("the Ready to apply card counts exactly what the filter shows", CountReadyToApplyMatchesFilter);
+            Test("NeedsAction is ready to apply and not applied for yet", NeedsActionRule);
+            Test("the Not applied yet group filters to Viewed and Ready only", NotAppliedYetGroupFilter);
+            Test("the card count equals its own two filters", ActionQueueCardMatchesItsFilters);
+            Test("Mark Applied removes a job from the action queue only", MarkAppliedLeavesActionQueue);
             Test("resume actions are safe when no resume exists", ResumeActionsAreSafe);
             Test("a resume already on disk is relinked to its job", ResumeRelinking);
             Test("Open Application uses only a usable ApplyUrl, never the job link", OpenApplicationIsSafe);
@@ -2269,6 +2274,136 @@ static class Program {
         // Filtering changes nothing on a task.
         Equal(ApplicationStatus.Ready, tasks[0].ApplicationStatus, "status untouched");
         Equal(RfResume, tasks[0].ResumePath, "resume untouched");
+    }
+
+    static void CountReadyToApplyMatchesFilter() {
+        Equal(0, JobTracker.CountReadyToApply(new List<JobTask>()), "no jobs");
+        Equal(0, JobTracker.CountReadyToApply(null!), "null list");
+
+        var tasks = ReadinessSet();                             // 1 ready, 2 need a link, 2 need a resume
+        Equal(1, JobTracker.CountReadyToApply(tasks), "one ready to apply");
+
+        // Every application status counts alike: readiness ignores status, as the filter does.
+        var statuses = new List<JobTask>();
+        foreach (var status in ApplicationStatus.Ordered)
+            statuses.Add(RfJob("S-" + status, true, "https://jobs.lever.co/acme/" + status, status: status));
+        statuses.Add(RfJob("S-NOLINK", true, ""));
+        Equal(5, JobTracker.CountReadyToApply(statuses), "ready at every status, not the one without a link");
+
+        foreach (var set in new[] { tasks, statuses }) {
+            var shown = JobTracker.ApplyFilters(set, null, null, null, readiness: new[] { ApplicationReadiness.ReadyToApply });
+            Equal(JobTracker.CountReadyToApply(set), shown.Count, "card count == Readiness filter result");
+        }
+
+        // Computed now: gaining a link or losing a resume changes the count; nothing is stored.
+        tasks[1].ApplyUrl = "https://jobs.lever.co/acme/new";
+        Equal(2, JobTracker.CountReadyToApply(tasks), "a new link makes a job ready");
+        tasks[0].ResumePath = "";
+        Equal(1, JobTracker.CountReadyToApply(tasks), "no resume, not ready");
+    }
+
+    /// <summary>Ready to apply (resume + link) at each application status, plus two that are not ready.</summary>
+    static List<JobTask> ActionQueueSet() {
+        var tasks = ApplicationStatus.Ordered
+            .Select(status => RfJob("AQ-" + status, true, "https://jobs.lever.co/acme/" + status, status: status)).ToList();
+        tasks.Add(RfJob("AQ-NOLINK", true, ""));                            // Viewed, needs a link
+        tasks.Add(RfJob("AQ-NORESUME", false, "https://jobs.lever.co/acme/x"));   // Viewed, needs a resume
+        return tasks;
+    }
+
+    static void NeedsActionRule() {
+        foreach (var job in ActionQueueSet()) {
+            var ready = JobTracker.GetReadiness(job) == ApplicationReadiness.ReadyToApply;
+            var notApplied = job.ApplicationStatus is ApplicationStatus.Viewed or ApplicationStatus.Ready;
+            Equal(ready && notApplied, JobTracker.NeedsAction(job), $"{job.JobId} ({job.ApplicationStatus})");
+        }
+
+        // Exactly the two early stages, and only when ready.
+        var set = ActionQueueSet();
+        Equal("AQ-Viewed,AQ-Ready", string.Join(",", set.Where(JobTracker.NeedsAction).Select(t => t.JobId)), "the action queue");
+        Equal(2, JobTracker.CountNeedsAction(set), "count");
+        Equal(0, JobTracker.CountNeedsAction(new List<JobTask>()), "no jobs");
+        Equal(0, JobTracker.CountNeedsAction(null!), "null list");
+
+        // Readiness itself is untouched by status: all five stages stay ReadyToApply.
+        Equal(5, JobTracker.CountReadyToApply(set), "CountReadyToApply still ignores status");
+    }
+
+    static void NotAppliedYetGroupFilter() {
+        const string group = ApplicationStatus.Filter.NotAppliedYet;
+        var set = ActionQueueSet();
+
+        Equal("AQ-Viewed,AQ-Ready,AQ-NOLINK,AQ-NORESUME",
+              Ids(JobTracker.GetTasksByStatus(set, group)), "Viewed and Ready only, ready or not");
+        Check(ApplicationStatus.Filter.IsGroup(group) && ApplicationStatus.Filter.IsGroup(" not applied YET "), "recognised, trimmed and case-insensitive");
+        Check(!ApplicationStatus.Filter.IsGroup(ApplicationStatus.All) && !ApplicationStatus.Filter.IsGroup(ApplicationStatus.Viewed), "a real status is not the group");
+
+        // It is a filter value only: never stored, never produced by Normalize, never written by UpdateStatus.
+        Equal(ApplicationStatus.Viewed, ApplicationStatus.Normalize(group), "Normalize never returns the group");
+        Check(!ApplicationStatus.Ordered.Contains(group), "not a real status");
+        Check(!ApplicationStatus.Filters.Contains(group), "the original filter list is untouched");
+        var job = RfJob("AQ-WRITE", true, "https://jobs.lever.co/acme/1", status: ApplicationStatus.Ready);
+        Check(!JobTracker.UpdateStatus(job, group), "UpdateStatus refuses the group");
+        Equal(ApplicationStatus.Ready, job.ApplicationStatus, "and stores nothing");
+
+        // Every existing status filter behaves exactly as before.
+        Equal(7, ApplicationStatus.Filter.Options.Length, "All + the group + five statuses");
+        Equal(6, ApplicationStatus.Filters.Length, "the pre-existing filter list is unchanged");
+        Equal(5, ApplicationStatus.Ordered.Length, "Ordered is unchanged");
+        Equal(set.Count, JobTracker.GetTasksByStatus(set, ApplicationStatus.All).Count, "All");
+        foreach (var status in ApplicationStatus.Ordered)
+            Equal(set.Count(t => t.ApplicationStatus == status), JobTracker.GetTasksByStatus(set, status).Count, "filter " + status);
+
+        // The pipeline and the statistics still see the five real stages only.
+        var stages = JobTracker.GetPipelineCounts(set);
+        Equal("Viewed,Ready,Applied,Interview,Done", string.Join(",", stages.Select(s => s.Status)), "pipeline stages");
+        Equal(set.Count, stages.Sum(s => s.Count), "every job in exactly one stage");
+        var stats = JobTracker.GetStatistics(set);
+        Equal(set.Count, stats.Total, "statistics total");
+        Equal(3, stats.Viewed, "statistics count real statuses only");
+    }
+
+    static void ActionQueueCardMatchesItsFilters() {
+        foreach (var set in new[] { ActionQueueSet(), ReadinessSet(), new List<JobTask>() }) {
+            var shown = JobTracker.ApplyFilters(set, null, ApplicationStatus.Filter.NotAppliedYet, null,
+                                                readiness: new[] { ApplicationReadiness.ReadyToApply });
+            Equal(JobTracker.CountNeedsAction(set), shown.Count, "card count == the card's own filters");
+            Check(shown.All(JobTracker.NeedsAction), "and every shown job needs action");
+        }
+
+        // The Readiness filter on its own is unchanged: it still shows applied jobs too.
+        var tasks = ActionQueueSet();
+        Equal(5, JobTracker.ApplyFilters(tasks, null, null, null, readiness: new[] { ApplicationReadiness.ReadyToApply }).Count,
+              "readiness filter alone ignores status");
+    }
+
+    static void MarkAppliedLeavesActionQueue() {
+        var applied = new DateTime(2026, 9, 19, 9, 30, 0);
+        var tasks = ActionQueueSet();
+        var job = tasks.Single(t => t.JobId == "AQ-Ready");
+        var before = JobTracker.CountNeedsAction(tasks);
+
+        Check(JobTracker.NeedsAction(job), "in the queue first");
+        Check(JobTracker.MarkApplied(job, applied), "marked applied");
+
+        Equal(before - 1, JobTracker.CountNeedsAction(tasks), "the count drops by one");
+        Check(!JobTracker.NeedsAction(job), "the job leaves the queue");
+        Check(!JobTracker.ApplyFilters(tasks, null, ApplicationStatus.Filter.NotAppliedYet, null,
+                                       readiness: new[] { ApplicationReadiness.ReadyToApply }).Contains(job),
+              "and leaves the card's list");
+
+        // What must NOT change.
+        Equal(ApplicationReadiness.ReadyToApply, JobTracker.GetReadiness(job), "readiness stays ReadyToApply");
+        Equal("Ready to apply", job.ReadinessDisplay, "and so does its text");
+        Equal("Queued", job.Status, "queue status untouched");
+        Equal(applied, job.AppliedAt, "AppliedAt stamped once");
+        Check(JobTracker.ApplyFilters(tasks, null, null, null, readiness: new[] { ApplicationReadiness.ReadyToApply }).Contains(job),
+              "the readiness filter alone still shows it");
+
+        // A second Mark Applied changes nothing, including the timestamp.
+        Check(!JobTracker.MarkApplied(job, applied.AddDays(1)), "already applied");
+        Equal(applied, job.AppliedAt, "AppliedAt is never rewritten");
+        Equal(before - 1, JobTracker.CountNeedsAction(tasks), "count unchanged by the second click");
     }
 
     static void ReadinessFilterLabelAndOrder() {

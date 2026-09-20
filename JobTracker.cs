@@ -28,6 +28,29 @@ public static class ApplicationStatus {
 
     public static readonly string[] Filters = { All, Viewed, Ready, Applied, Interview, Done };
 
+    /// <summary>
+    /// Values the STATUS FILTER may take that are not statuses. They are never stored on a task and are
+    /// never produced by <see cref="Normalize"/>; <see cref="Ordered"/>, the pipeline, the board columns
+    /// and the statistics keep exactly the five real statuses.
+    /// </summary>
+    public static class Filter {
+        /// <summary>A group, not a status: Viewed or Ready — the stages before an application exists.</summary>
+        public const string NotAppliedYet = "Not applied yet";
+
+        /// <summary>The statuses the group covers.</summary>
+        public static readonly string[] NotAppliedYetStatuses = { Viewed, Ready };
+
+        /// <summary>The status dropdown's choices: All, the group, then the five real statuses.</summary>
+        public static readonly string[] Options = { All, NotAppliedYet, Viewed, Ready, Applied, Interview, Done };
+
+        public static bool IsGroup(string? value) =>
+            NotAppliedYet.Equals((value ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>True when a job's stored status falls inside the group.</summary>
+        public static bool Covers(string? group, string? applicationStatus) =>
+            IsGroup(group) && NotAppliedYetStatuses.Contains(Normalize(applicationStatus));
+    }
+
     public static bool IsKnown(string? value) =>
         value is not null && Ordered.Any(s => s.Equals(value, StringComparison.OrdinalIgnoreCase));
 
@@ -144,6 +167,25 @@ public static class JobTracker {
         : IsOpenableUrl(job.ApplyUrl) ? ApplicationReadiness.ReadyToApply
         : ApplicationReadiness.NeedsApplyLink;
 
+    /// <summary>
+    /// The "Ready to apply" card: every job whose readiness is ReadyToApply, computed now — exactly the
+    /// set the Readiness filter shows for that one state, so the card and the list always agree.
+    /// </summary>
+    public static int CountReadyToApply(IEnumerable<JobTask> tasks) =>
+        (tasks ?? Enumerable.Empty<JobTask>()).Count(t => GetReadiness(t) == ApplicationReadiness.ReadyToApply);
+
+    /// <summary>
+    /// The action queue: ready to apply AND not applied for yet (Viewed or Ready). Readiness itself is
+    /// unchanged — an applied job stays ReadyToApply, it simply has nothing left to do here.
+    /// </summary>
+    public static bool NeedsAction(JobTask job) =>
+        GetReadiness(job) == ApplicationReadiness.ReadyToApply &&
+        ApplicationStatus.Filter.Covers(ApplicationStatus.Filter.NotAppliedYet, job.ApplicationStatus);
+
+    /// <summary>The "Ready to apply" card's number: exactly what the card's own filters show.</summary>
+    public static int CountNeedsAction(IEnumerable<JobTask> tasks) =>
+        (tasks ?? Enumerable.Empty<JobTask>()).Count(NeedsAction);
+
     /// <summary>Wording avoids "Ready" alone, which is already an application status.</summary>
     public static string ReadinessText(ApplicationReadiness readiness) => readiness switch {
         ApplicationReadiness.ReadyToApply => "Ready to apply",
@@ -163,6 +205,9 @@ public static class JobTracker {
     /// rewritten or cleared, so moving a task back and forward keeps the real history.
     /// </summary>
     public static bool UpdateStatus(JobTask job, string status, DateTime? at = null) {
+        // A filter-only value is not a status: refuse it rather than let Normalize store it as Viewed.
+        if (ApplicationStatus.Filter.IsGroup(status)) return false;
+
         var target = ApplicationStatus.Normalize(status);
         var previous = job.ApplicationStatus;
         if (previous == target) return false;
@@ -264,6 +309,11 @@ public static class JobTracker {
     public static List<JobTask> GetTasksByStatus(IEnumerable<JobTask> tasks, string? status) {
         var all = tasks ?? Enumerable.Empty<JobTask>();
         if (string.IsNullOrWhiteSpace(status) || status == ApplicationStatus.All) return all.ToList();
+
+        // The filter-only group is answered before Normalize, which would otherwise read an unknown
+        // value as Viewed and silently filter to the wrong thing.
+        if (ApplicationStatus.Filter.IsGroup(status))
+            return all.Where(t => ApplicationStatus.Filter.Covers(status, t.ApplicationStatus)).ToList();
 
         var wanted = ApplicationStatus.Normalize(status);
         return all.Where(t => ApplicationStatus.Normalize(t.ApplicationStatus) == wanted).ToList();

@@ -87,7 +87,8 @@ public partial class SettingsWindow : Window {
     MultiSelectFilter<ApplicationReadiness>? _readinessFilter;
 
     void InitTracking() {
-        foreach(var filter in ApplicationStatus.Filters) TrackingFilterBox.Items.Add(filter);
+        // All, the filter-only "Not applied yet" group, then the five real statuses.
+        foreach(var filter in ApplicationStatus.Filter.Options) TrackingFilterBox.Items.Add(filter);
         _platformFilter=new(PlatformFilterButton,PlatformFilterPopup,PlatformCheckList,PlatformClearButton,
                             JobTracker.PlatformFilterOrder,JobTracker.PlatformDisplayName,
                             JobTracker.PlatformFilterLabel,RefreshTracking);
@@ -160,7 +161,7 @@ public partial class SettingsWindow : Window {
         readonly System.Windows.Controls.Panel _list;
         readonly Func<IReadOnlyCollection<T>,string> _label;
         readonly Action _changed;
-        bool _clearing;
+        bool _setting;
 
         public IReadOnlyCollection<T> Selected => _selected;
 
@@ -186,25 +187,65 @@ public partial class SettingsWindow : Window {
         }
 
         void Check_Changed(object s,RoutedEventArgs e) {
-            if(_clearing || s is not System.Windows.Controls.CheckBox { Tag: T choice } box) return;
+            if(_setting || s is not System.Windows.Controls.CheckBox { Tag: T choice } box) return;
             if(box.IsChecked==true) _selected.Add(choice); else _selected.Remove(choice);
             _button.Content=_label(_selected);
             _changed();
         }
 
+        /// <summary>
+        /// Makes exactly <paramref name="choices"/> the selection: ticks those boxes, unticks the rest,
+        /// updates the label, and refreshes ONCE (not per box). With <paramref name="refresh"/> false the
+        /// caller refreshes, e.g. when it resets several filters in one go. Clear is SelectOnly(nothing).
+        /// </summary>
+        public void SelectOnly(IEnumerable<T> choices,bool refresh=true) {
+            var wanted=new HashSet<T>(choices);
+            _setting=true;              // setting boxes must not refresh once per box
+            foreach(var box in _list.Children.OfType<System.Windows.Controls.CheckBox>())
+                box.IsChecked=box.Tag is T choice && wanted.Contains(choice);
+            _setting=false;
+            _selected.Clear();
+            foreach(var box in _list.Children.OfType<System.Windows.Controls.CheckBox>())
+                if(box.IsChecked==true && box.Tag is T choice) _selected.Add(choice);   // only real choices
+            _button.Content=_label(_selected);
+            if(refresh) _changed();
+        }
+
         void Clear() {
             if(_selected.Count==0) return;
-            _clearing=true;             // untick without refreshing once per box
-            foreach(var box in _list.Children.OfType<System.Windows.Controls.CheckBox>()) box.IsChecked=false;
-            _clearing=false;
-            _selected.Clear();
-            _button.Content=_label(_selected);
-            _changed();
+            SelectOnly(Array.Empty<T>());
         }
     }
 
     void TrackingFilter_Changed(object s,System.Windows.Controls.SelectionChangedEventArgs e) {
         if(!_refreshingTracking) RefreshTracking();
+    }
+
+    /// <summary>
+    /// The "Ready to apply" card: show exactly the jobs it counts — the action queue. Switches to List,
+    /// clears search, platforms and date, sets Status to the "Not applied yet" group and Readiness to
+    /// only Ready to apply, then refreshes once. Both filters stay visible, so the user can undo them.
+    /// The controls' own change handlers are inert while _refreshingTracking is set.
+    /// </summary>
+    void ReadyToApplyCard_Click(object s,RoutedEventArgs e) {
+        _refreshingTracking=true;
+        try {
+            ListToggle.IsChecked=true;
+            _boardView=false; UpdateViewToggle();
+            TrackingSearchBox.Text="";
+            TrackingFilterBox.SelectedItem=ApplicationStatus.Filter.NotAppliedYet;
+            _dateFilter=DateFilter.AllDates;
+            _exactDate=null;
+            QuickDateList.SelectedItem=null;
+            DateFilterCalendar.SelectedDate=null;
+            DateFilterButton.Content=DateFilter.AllDates;
+            _platformFilter?.SelectOnly(Array.Empty<ApplicationPlatform>(),refresh:false);
+            _readinessFilter?.SelectOnly(new[]{ApplicationReadiness.ReadyToApply},refresh:false);
+        } finally {
+            _refreshingTracking=false;
+        }
+        RefreshTracking();
+        TrackingStatus.Text=$"Showing the {ReadyToApplyCountText.Text} job(s) ready to apply and not applied for yet.";
     }
 
     void TrackingSearch_Changed(object s,System.Windows.Controls.TextChangedEventArgs e) {
@@ -281,6 +322,7 @@ public partial class SettingsWindow : Window {
             TodayCountText.Text=activity.Today.ToString();
             MonthCountText.Text=activity.Last30Days.ToString();
             TotalCountText.Text=activity.Total.ToString();
+            ReadyToApplyCountText.Text=JobTracker.CountNeedsAction(tasks).ToString();
 
             var stats=JobTracker.GetStatistics(tasks);
             var stages=JobTracker.GetPipelineCounts(tasks);

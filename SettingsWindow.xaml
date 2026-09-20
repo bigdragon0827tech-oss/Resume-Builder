@@ -420,7 +420,7 @@
 </DockPanel>
 
 <!-- ===== summary cards ===== -->
-<UniformGrid Columns="3" Rows="1">
+<UniformGrid Columns="4" Rows="1">
 <Border Style="{StaticResource DashboardCardStyle}" Margin="0,0,5,0">
 <StackPanel>
 <TextBlock Text="Today's Applications" Style="{StaticResource CardLabelStyle}"/>
@@ -435,13 +435,41 @@
 <TextBlock x:Name="MonthHintText" Text="Applications submitted" Style="{StaticResource MutedTextStyle}"/>
 </StackPanel>
 </Border>
-<Border Style="{StaticResource DashboardCardStyle}" Margin="5,0,0,0">
+<Border Style="{StaticResource DashboardCardStyle}" Margin="5,0">
 <StackPanel>
 <TextBlock Text="Total Applications" Style="{StaticResource CardLabelStyle}"/>
 <TextBlock x:Name="TotalCountText" Text="0" Style="{StaticResource CardValueStyle}"/>
 <TextBlock Text="Applied, Interview and Done" Style="{StaticResource MutedTextStyle}"/>
 </StackPanel>
 </Border>
+<!-- Ready to apply: the one clickable card. A real Button (focusable, Enter/Space work) drawn with the
+     same DashboardCardStyle; it shows exactly the counted jobs (ReadyToApplyCard_Click). -->
+<Button x:Name="ReadyToApplyCard" Margin="5,0,0,0" Click="ReadyToApplyCard_Click" Cursor="Hand"
+        HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"
+        ToolTip="Show the jobs ready to apply that you have not marked Applied yet"
+        AutomationProperties.Name="Ready to apply">
+<Button.Template>
+<ControlTemplate TargetType="Button">
+<Border x:Name="Card" Style="{StaticResource DashboardCardStyle}">
+<ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Top"/>
+</Border>
+<ControlTemplate.Triggers>
+<Trigger Property="IsMouseOver" Value="True">
+<Setter TargetName="Card" Property="BorderBrush" Value="{StaticResource AccentSoft}"/>
+</Trigger>
+<Trigger Property="IsKeyboardFocused" Value="True">
+<Setter TargetName="Card" Property="BorderBrush" Value="{StaticResource Accent}"/>
+<Setter TargetName="Card" Property="BorderThickness" Value="2"/>
+</Trigger>
+</ControlTemplate.Triggers>
+</ControlTemplate>
+</Button.Template>
+<StackPanel>
+<TextBlock Text="Ready to apply" Style="{StaticResource CardLabelStyle}"/>
+<TextBlock x:Name="ReadyToApplyCountText" Text="0" Style="{StaticResource CardValueStyle}"/>
+<TextBlock Text="Ready, not applied yet" Style="{StaticResource MutedTextStyle}"/>
+</StackPanel>
+</Button>
 </UniformGrid>
 
 <!-- ===== pipeline flow graph (Board mode) ===== -->
