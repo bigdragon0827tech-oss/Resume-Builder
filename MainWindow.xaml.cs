@@ -40,6 +40,15 @@ public partial class MainWindow : Window {
     System.Threading.CancellationTokenSource? _sendCancellation;
     string? _activePreparedText;
 
+    /// <summary>The active job's prepared request. Built ONCE; every retry re-sends this same text.</summary>
+    PreparedRequest? _activePrepared;
+
+    /// <summary>Which ChatGPT attempt (1..GptAttempts.MaxAttempts) the active job is on; 0 when idle.</summary>
+    int _attempt;
+
+    /// <summary>One copy keystroke per attempt, whether it was asked for at ReadyUnconfirmed or Ready.</summary>
+    readonly CaptureRequestGate _copyRequest=new();
+
     IntPtr _previousWorkWindow = IntPtr.Zero;
 
     void RememberPreviousWorkWindow()
@@ -234,7 +243,9 @@ public partial class MainWindow : Window {
     public void ClearJobHistoryInPlace() {
         CancelCaptureWatchdog("job history cleared");
         _activeJob=null;
+        _activePrepared=null;
         _activePreparedText=null;
+        _attempt=0;
         _watcher.Disarm();
 
         _tasks.Clear();                     // CollectionChanged -> Active/History counts
@@ -500,12 +511,27 @@ public partial class MainWindow : Window {
         job.Status="Processing";
         _activeJob=job;
         _activePreparedText=prepared.Text;      // used to refuse copies of our own prompt
+        _activePrepared=prepared;               // reused unchanged by every retry; Prepare runs once
+        _attempt=1;
         Storage.SaveTasks(_tasks);
         UpdateSummary();
         RefreshButtons();
         _settings?.RefreshInspector();
         TaskList.SelectedItem=job;
         TaskList.ScrollIntoView(job);
+
+        await SendAttemptAsync(job,prepared,settings);
+        return true;
+    }
+
+    /// <summary>
+    /// One ChatGPT attempt for an already-prepared job: arm the capture, make sure a browser exists,
+    /// open a FRESH conversation, type the SAME prepared text and send it. Every send-side problem
+    /// goes to <see cref="HandleGptFailureAsync"/>, which retries or gives up — the queue is never
+    /// left waiting on a job that cannot be sent. Nothing here re-prepares or rewrites a file.
+    /// </summary>
+    async Task SendAttemptAsync(JobTask job,PreparedRequest prepared,AppSettings settings) {
+        _copyRequest.ResetForAttempt();          // this attempt gets its own single copy request
 
         // Clipboard: a clipboard problem never marks the preparation as failed.
         ClipboardResult clip;
@@ -525,24 +551,28 @@ public partial class MainWindow : Window {
 
         // Type it into ChatGPT. Convenience only: failure leaves the clipboard fallback.
         await EnsureChatAsync();                // lazily rebuilt after the previous job recycled it
-        if(Chat is null) return true;
+        // A missing browser used to leave the job Processing for ever: it is a retryable send failure.
+        if(Chat is null) { await HandleGptFailureAsync(job,GptFailure.SendSide); return; }
 
         // A6.6.12 — every job starts a FRESH conversation. Previously the app only navigated when the
         // host was not chatgpt.com, so every job appended another 35 KB prompt and a long answer to
         // one page; an empty ChatGPT tab already costs ~700 MB, so that grew without bound. The
         // WebView2 user-data folder is untouched, so the signed-in session carries over.
-        using(PerfLog.Measure("navigate fresh chat")) await NavigateFreshChatAsync();
+        bool navigated;
+        using(PerfLog.Measure("navigate fresh chat")) navigated=await NavigateFreshChatAsync();
+        if(!navigated) { await HandleGptFailureAsync(job,GptFailure.SendSide); return; }
 
-        if(!settings.AutoFillComposer) return true;
+        // With auto-fill off the user types it themselves: not an attempt this code can retry.
+        if(!settings.AutoFillComposer) return;
 
         ComposerResult fill;
         using(PerfLog.Measure("composer fill"))
             fill=await ChatComposer.FillAsync(Chat,prepared.Text);
         ImportMessage.Text=$"Prepared {job.Company} — {job.Title}. "+fill.Message;
-        if(!fill.Success || !settings.AutoSend) {
-            if(!settings.AutoSend) QueueStatus.Text="Auto-Send is off — press Enter in ChatGPT to send the prompt.";
-            else PauseForManualAction("The prompt could not be typed in automatically.");
-            return true;
+        if(!fill.Success) { await HandleGptFailureAsync(job,GptFailure.SendSide); return; }
+        if(!settings.AutoSend) {
+            QueueStatus.Text="Auto-Send is off — press Enter in ChatGPT to send the prompt.";
+            return;
         }
 
         // A6.6.12 — click Send. Copying the answer stays manual by design.
@@ -553,16 +583,88 @@ public partial class MainWindow : Window {
             send=await ChatSender.SendAsync(new WebViewChatProbe(Chat),_sendCancellation.Token);
 
         if(send.Success) {
-            QueueStatus.Text=$"{job.Company} — {job.Title}: {send.Message}";
+            QueueStatus.Text=$"{GptAttempts.AttemptStatus(_attempt)} — {job.Company} — {job.Title}: {send.Message}";
             _ = WatchForAnswerAsync(job,settings);     // A6.6.13: tell the user when it is ready
-            
+
             // If the previous completed job temporarily brought ResumeBuilder
             // forward, return the user to the window they were working in now
             // that this new job has been successfully sent.
             RestorePreviousWorkWindow("next job auto-sent");
         }
-        else if(send.Outcome!=SendOutcome.Cancelled) PauseForManualAction(send.Message);
-        return true;
+        // A cancelled send is our own doing (a retry or a stop), never a failure of this attempt.
+        else if(send.Outcome!=SendOutcome.Cancelled) await HandleGptFailureAsync(job,GptFailure.SendSide);
+    }
+
+    // ---------- ChatGPT retry policy (GptAttempts decides; this performs the effects) ----------
+
+    /// <summary>
+    /// One place every retryable ChatGPT failure arrives at. It retries the SAME prepared request in a
+    /// fresh conversation while attempts remain, and otherwise marks only the QUEUE status Failed and
+    /// advances. Application tracking — status, stage timestamps, ApplyUrl, platform, readiness — is
+    /// never touched here.
+    /// </summary>
+    async Task HandleGptFailureAsync(JobTask job,GptFailure failure) {
+        // A failure from a job that is no longer the active one can never affect the job running now.
+        if(_activeJob!=job || job.Status!="Processing") {
+            PerfLog.Line($"GPT {GptAttempts.Reason(failure)} ignored for {job.JobId}: no longer the active attempt");
+            return;
+        }
+
+        PerfLog.Line(GptAttempts.AttemptLog(_attempt,failure,job.JobId));
+
+        if(GptAttempts.CanRetry(_attempt) && _activePrepared is PreparedRequest prepared) {
+            _attempt++;
+            QueueStatus.Text=$"{job.Company} — {job.Title}: {GptAttempts.RetryMessage(_attempt,failure)}";
+            await ResetForRetryAsync();
+            await SendAttemptAsync(job,prepared,Storage.LoadSettings());
+            return;
+        }
+
+        PerfLog.Line(GptAttempts.ExhaustedLog(job.JobId));
+        await FailActiveJobAsync(job,GptAttempts.FailureReason(failure),GptAttempts.ExhaustedMessage(failure));
+    }
+
+    /// <summary>
+    /// Clears everything that belongs to ONE attempt and rebuilds the browser, so a retry starts from
+    /// a known state. The job, its prepared text and all its tracking data are left exactly as they are.
+    /// </summary>
+    async Task ResetForRetryAsync() {
+        _sendCancellation?.Cancel();
+        _readyCancellation?.Cancel();
+        CancelCaptureWatchdog("GPT retry");
+        _readyJobId=null;
+        DismissAnswerReady("GPT retry");
+        _watcher.Disarm();
+        await RecycleChatAsync();               // a broken page must not survive into the next attempt
+    }
+
+    /// <summary>
+    /// Gives up on the active job: QUEUE status only, with a reason, then recycle and move on. Nothing
+    /// about the application (status, timestamps, ApplyUrl, platform) is changed.
+    /// </summary>
+    async Task FailActiveJobAsync(JobTask job,string failureReason,string message) {
+        _sendCancellation?.Cancel();
+        _readyCancellation?.Cancel();
+        CancelCaptureWatchdog("job failed");
+        _readyJobId=null;
+        DismissAnswerReady("job failed");
+        _watcher.Disarm();
+
+        job.Status="Failed";
+        job.FailureReason=failureReason;
+        _queue.AbandonActive();
+        _activeJob=null;
+        _activePrepared=null;
+        _activePreparedText=null;
+        _attempt=0;
+        Storage.SaveTasks(_tasks);
+        UpdateSummary();
+        RefreshButtons();
+        QueueStatus.Text=$"{job.Company} — {job.Title}: {message}";
+        PerfLog.Snapshot("after job "+job.JobId);
+
+        await RecycleChatAsync();
+        if(_queue.IsRunning) await AdvanceQueueAsync();
     }
 
     // ---------- A6.6.13 "answer ready" notification ----------
@@ -585,7 +687,11 @@ public partial class MainWindow : Window {
         CompletionOutcome outcome;
         var waited=System.Diagnostics.Stopwatch.StartNew();
         using(PerfLog.Measure("await answer "+job.JobId)) {
-            do outcome=await ChatCompletionWatcher.WaitForAnswerAsync(new WebViewCompletionProbe(web),cancellation.Token);
+            // The ambiguous "idle but generation never seen" state notifies the user and keeps watching:
+            // a capture cancels this watch, and nothing at all becomes NoResponseStart.
+            do outcome=await ChatCompletionWatcher.WaitForAnswerAsync(
+                   new WebViewCompletionProbe(web),cancellation.Token,null,
+                   () => OnUnconfirmedReady(job,settings,afterRejection));
             // After a rejected answer the user still has to ask for a correction: keep watching until it is generated.
             while(afterRejection && outcome==CompletionOutcome.ReadyUnconfirmed && !cancellation.IsCancellationRequested &&
                   _activeJob==job && waited.ElapsedMilliseconds<ChatCompletionWatcher.MaxWaitMs);
@@ -598,72 +704,104 @@ public partial class MainWindow : Window {
         {
             PerfLog.Line("READY " + job.JobId);
 
-            RememberPreviousWorkWindow();
-
-            GlobalHotkey.BringToFront(this);
-
-            // Allow Windows to finish foreground activation.
-            await Task.Delay(450);
-
-            FocusChatPane();
-
-            // Allow WebView2 to acquire keyboard focus.
-            await Task.Delay(150);
-
-            if (_chatView?.CoreWebView2 != null)
-            {
-                await _chatView.CoreWebView2.ExecuteScriptAsync("""
-                    (() => {
-                        const el = document.activeElement;
-
-                        if (el && typeof el.blur === 'function') {
-                            el.blur();
-                        }
-
-                        document.body.tabIndex = -1;
-                        document.body.focus();
-                    })();
-                """);
-
-                await Task.Delay(150);
-            }
-
-            if (_chatView?.IsFocused == true)
-            {
-                PerfLog.Line("KEY Ctrl+Shift+I " + job.JobId);
-
-                try
-                {
-                    await Task.Delay(350);
-                    KeyboardSimulator.SendCtrlShiftI();
-                }
-                catch(Exception ex)
-                {
-                    PerfLog.Line("KEY Ctrl+Shift+I FAILED " +
-                                job.JobId + ": " + ex.Message);
-                }
-            }
-            else
-            {
-                PerfLog.Line(
-                    "KEY NOT SENT - WebView has no keyboard focus " +
-                    job.JobId);
-            }
+            // One keystroke per attempt: if the ambiguous state already asked for the copy, asking
+            // again here would send a second Ctrl+Shift+I for the same answer.
+            if(_copyRequest.TryRequest()) await RequestCopyAsync(job);
+            else PerfLog.Line("KEY already requested for this attempt " + job.JobId);
 
             ShowAnswerReady(job, settings);
 
             if(_watcher.IsArmed)
                 _ = RunCaptureWatchdogAsync(job);
-        } else if(outcome==CompletionOutcome.ReadyUnconfirmed) {
+        } else if(outcome==CompletionOutcome.NoResponseStart) {
 
-            PerfLog.Line($"READY {job.JobId} (generation not observed; no capture watchdog)");
-            if(!afterRejection) ShowAnswerReady(job,settings);
+            // A confirmed Send produced no generation, and no answer was captured, within the budget.
+            await HandleGptFailureAsync(job,GptFailure.ResponseStartTimeout);
+
+        } else if(outcome==CompletionOutcome.Stalled) {
+
+            await HandleGptFailureAsync(job,GptFailure.ResponseStalled);
 
         } else if(outcome==CompletionOutcome.TimedOut) {
 
             QueueStatus.Text=$"{job.Company} — {job.Title}: no finished answer was detected after " +
                 $"{ChatCompletionWatcher.MaxWaitMs/60000} minutes. Check ChatGPT, then press {ChatCompletionWatcher.ShortcutText} or click Copy on the answer's code block.";
+            await HandleGptFailureAsync(job,GptFailure.ResponseCeiling);
         }
+    }
+
+    /// <summary>
+    /// Brings the window forward, focuses the ChatGPT pane and presses ChatGPT's own copy shortcut —
+    /// the existing behaviour, now shared by the confirmed Ready path and the ambiguous one. It reads
+    /// nothing from the page; the answer still arrives only through the clipboard.
+    /// </summary>
+    async Task RequestCopyAsync(JobTask job) {
+        RememberPreviousWorkWindow();
+
+        GlobalHotkey.BringToFront(this);
+
+        // Allow Windows to finish foreground activation.
+        await Task.Delay(450);
+
+        FocusChatPane();
+
+        // Allow WebView2 to acquire keyboard focus.
+        await Task.Delay(150);
+
+        if (_chatView?.CoreWebView2 != null)
+        {
+            await _chatView.CoreWebView2.ExecuteScriptAsync("""
+                (() => {
+                    const el = document.activeElement;
+
+                    if (el && typeof el.blur === 'function') {
+                        el.blur();
+                    }
+
+                    document.body.tabIndex = -1;
+                    document.body.focus();
+                })();
+            """);
+
+            await Task.Delay(150);
+        }
+
+        if (_chatView?.IsFocused == true)
+        {
+            PerfLog.Line("KEY Ctrl+Shift+I " + job.JobId);
+
+            try
+            {
+                await Task.Delay(350);
+                KeyboardSimulator.SendCtrlShiftI();
+            }
+            catch(Exception ex)
+            {
+                PerfLog.Line("KEY Ctrl+Shift+I FAILED " +
+                            job.JobId + ": " + ex.Message);
+            }
+        }
+        else
+        {
+            PerfLog.Line(
+                "KEY NOT SENT - WebView has no keyboard focus " +
+                job.JobId);
+        }
+    }
+
+    /// <summary>
+    /// The ambiguous state: the page looks idle but generation was never observed, which may be an
+    /// answer that finished before the first poll. It is NOT confirmed: no Ready, no capture watchdog,
+    /// no queue advance. It does get ONE copy opportunity — the same keystroke the confirmed path
+    /// sends — so a fast answer can be captured instead of being re-sent at the 180 s budget. The
+    /// watch continues: a capture cancels it, and silence still ends as NoResponseStart.
+    /// Every existing capture rule still applies (prompt echo, non-profile, wrong or late job).
+    /// </summary>
+    void OnUnconfirmedReady(JobTask job,AppSettings settings,bool afterRejection) {
+        if(_activeJob!=job) return;
+        PerfLog.Line($"READY {job.JobId} (unconfirmed: generation not observed; one copy request, no watchdog)");
+        if(!afterRejection) ShowAnswerReady(job,settings);
+        if(_copyRequest.TryRequest()) _ = RequestCopyAsync(job);
     }
 
     void ShowAnswerReady(JobTask job,AppSettings settings) {
@@ -789,6 +927,9 @@ public partial class MainWindow : Window {
     async Task FailOnCaptureTimeoutAsync(JobTask job,int seconds) {
         PerfLog.Line($"CAPTURE TIMEOUT {job.JobId} after {seconds}s");
         PerfLog.Line(CaptureWatchdog.TimeoutMessage);
+        // v1: ChatGPT may well have answered — only the Copy/capture failed. The job is failed and the
+        // queue moves on, but the request is NOT re-sent.
+        PerfLog.Line(GptAttempts.CaptureTimeoutLog(job.JobId));
 
         // Nothing more is accepted for this job.
         _watcher.Disarm();
@@ -805,7 +946,9 @@ public partial class MainWindow : Window {
         job.Status="Failed";
         job.FailureReason=CaptureWatchdog.FailureReason;
         _activeJob=null;
+        _activePrepared=null;
         _activePreparedText=null;
+        _attempt=0;
         Storage.SaveTasks(_tasks);
         UpdateSummary();
         RefreshButtons();
@@ -822,18 +965,26 @@ public partial class MainWindow : Window {
     /// Navigates to a brand-new ChatGPT conversation and waits for it to load. Cookies and the
     /// signed-in session live in the WebView2 user-data folder, so nothing is lost by navigating.
     /// </summary>
-    async Task NavigateFreshChatAsync() {
+    /// <summary>
+    /// Returns false when the fresh conversation did not load: no browser, the navigation reported
+    /// failure, it timed out, or it threw. The caller treats that as a retryable send-side failure
+    /// instead of sending into a page that may still show the previous job.
+    /// </summary>
+    async Task<bool> NavigateFreshChatAsync() {
         var web=Chat;
-        if(web is null) return;
+        if(web is null) return false;
 
         var loaded=new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         void OnCompleted(object? _,CoreWebView2NavigationCompletedEventArgs e)=>loaded.TrySetResult(e.IsSuccess);
         web.NavigationCompleted+=OnCompleted;
         try {
             web.Navigate(ChatComposer.ChatUrl);
-            await Task.WhenAny(loaded.Task,Task.Delay(TimeSpan.FromSeconds(20)));
+            var finished=await Task.WhenAny(loaded.Task,Task.Delay(TimeSpan.FromSeconds(20)));
+            if(finished!=loaded.Task) { PerfLog.Line("WARN navigate fresh chat timed out"); return false; }
+            return await loaded.Task;
         } catch(Exception ex) {
             PerfLog.Line("WARN navigate fresh chat failed: "+ex.Message);
+            return false;
         } finally {
             web.NavigationCompleted-=OnCompleted;
         }
@@ -980,9 +1131,12 @@ public partial class MainWindow : Window {
         }
         if(!string.Equals(_queue.ActiveJobId,job.JobId,StringComparison.OrdinalIgnoreCase)) return;
 
-        // The user has copied an answer for this job: the watchdog and the "ready" prompt are done.
+        // The user has copied an answer for this job: the watchdog, the completion watch and the
+        // "ready" prompt are all done. Cancelling the watch matters — otherwise its response-start
+        // budget could later report a failure for a job that has just been answered.
         PerfLog.Line("CAPTURE received "+job.JobId);
         _readyJobId=null;
+        _readyCancellation?.Cancel();
         DismissAnswerReady("capture received");
 
         CapturedResult result;
@@ -992,6 +1146,8 @@ public partial class MainWindow : Window {
             _watcher.Disarm();
             _queue.OnCaptureSucceeded(text);
             job.Status="Completed";
+            _activePrepared=null;
+            _attempt=0;
             CaptureStatus.Text=result.Message+(result.Report is not null && result.Report.Changed
                 ? Environment.NewLine+result.Report.Describe() : "");
             Storage.SaveTasks(_tasks);
@@ -1014,25 +1170,10 @@ public partial class MainWindow : Window {
             return;
         }
 
-        // Rejected response: the first one only asks for another Copy; the job stays Processing.
-        if(_queue.OnCaptureFailed()==FailureOutcome.RetryCopy) {
-            CaptureStatus.Text=result.Message+Environment.NewLine+
-                "The job is still in progress — ask the AI to return the corrected JSON and click Copy again.";
-            // Watch for the corrected answer, so its Copy is bounded by the watchdog too.
-            _ = WatchForAnswerAsync(job,Storage.LoadSettings(),afterRejection:true);
-            return;
-        }
-
-        job.Status="Failed";
-        _watcher.Disarm();
-        _activeJob=null;
-        Storage.SaveTasks(_tasks);
-        UpdateSummary();
-        RefreshButtons();
-        CaptureStatus.Text=result.Message+Environment.NewLine+
-            "Second attempt rejected — the job is marked Failed and the raw response was kept. Retry Failed re-queues it.";
-
-        if(_queue.IsRunning) await AdvanceQueueAsync();
+        // A rejected answer is a ChatGPT failure like any other: it shares the ONE 3-attempt budget,
+        // so a job can never be sent more than three times. The raw response is already kept.
+        CaptureStatus.Text=result.Message;
+        await HandleGptFailureAsync(job,GptFailure.InvalidOutput);
     }
 
     // ---------- document generation ----------

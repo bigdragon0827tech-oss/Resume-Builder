@@ -103,6 +103,19 @@ static class Program {
             Test("canonical JSON serialization round-trips", JsonSerialization);
 
             Console.WriteLine();
+            Console.WriteLine("ChatGPT retries");
+            Test("three sends per job, whatever the failure", RetryBudgetIsThreeSends);
+            Test("each failure has a fixed reason, log line and stored reason", RetryReasonsAndLogs);
+            Test("no generation within the start budget is NoResponseStart", WatcherNoResponseStart);
+            Test("generation that stops progressing is Stalled", WatcherStalled);
+            Test("a long answer that keeps generating is never failed", WatcherKeepsWaitingWhileGenerating);
+            Test("the ambiguous idle state notifies once and keeps watching", WatcherUnconfirmedKeepsWatching);
+            Test("a confirmed finish is still Ready, and cancellation still wins", WatcherReadyAndCancel);
+            Test("the ambiguous state asks for the copy once, and Ready does not repeat it", UnconfirmedRequestsCopyOnce);
+            Test("a capture after the ambiguous state cancels the 180 s timeout", UnconfirmedCaptureCancelsTimeout);
+            Test("silence after the ambiguous state still ends as NoResponseStart", UnconfirmedSilenceStillTimesOut);
+
+            Console.WriteLine();
             Console.WriteLine("Clear job history");
             Test("only this app's own job files are planned", ResetPlansOnlyOwnedFiles);
             Test("BASELINE files and other jobs' files are never planned", ResetNeverPlansBaseline);
@@ -587,6 +600,224 @@ static class Program {
             PdfWriter.Write(resume, pdf);
             Check(File.Exists(pdf) && new FileInfo(pdf).Length > 1000, preset + ": no usable PDF was produced");
         }
+    }
+
+    // ---------- ChatGPT retries ----------
+
+    static void RetryBudgetIsThreeSends() {
+        Equal(3, GptAttempts.MaxAttempts, "three sends per job");
+        Check(GptAttempts.CanRetry(1) && GptAttempts.CanRetry(2), "attempts 1 and 2 retry");
+        Check(!GptAttempts.CanRetry(3), "attempt 3 is the last");
+        Equal(AttemptDecision.Fail, GptAttempts.Decide(3), "attempt 3 fails the job");
+        Equal(AttemptDecision.Fail, GptAttempts.Decide(4), "and anything beyond it");
+
+        // Every retryable class shares the ONE budget: mixing them cannot exceed three sends.
+        var sends = 1;
+        foreach (var failure in new[] { GptFailure.SendSide, GptFailure.ResponseStartTimeout,
+                                        GptFailure.InvalidOutput, GptFailure.ResponseStalled }) {
+            if (!GptAttempts.CanRetry(sends)) break;
+            sends++;
+        }
+        Equal(3, sends, "four failures still mean three sends");
+
+        // The status line the queue shows.
+        Equal("Processing", GptAttempts.AttemptStatus(1), "first attempt is plain");
+        Equal("Processing — GPT attempt 2/3", GptAttempts.AttemptStatus(2), "second attempt is numbered");
+        Equal("Processing — GPT attempt 3/3", GptAttempts.AttemptStatus(3), "third attempt");
+    }
+
+    static void RetryReasonsAndLogs() {
+        const string jobId = "RB-20260919-101500-abcdef01";
+        var expected = new Dictionary<GptFailure, (string Reason, string Stored)> {
+            [GptFailure.SendSide] = ("send failed", "GptSendFailed"),
+            [GptFailure.ResponseStartTimeout] = ("response-start timeout", "GptNoResponse"),
+            [GptFailure.ResponseStalled] = ("response stalled", "GptStalled"),
+            [GptFailure.ResponseCeiling] = ("response ceiling reached", "GptStalled"),
+            [GptFailure.InvalidOutput] = ("invalid output", "GptInvalidOutput"),
+        };
+
+        foreach (var (failure, (reason, stored)) in expected) {
+            Equal(reason, GptAttempts.Reason(failure), failure + " reason");
+            Equal(stored, GptAttempts.FailureReason(failure), failure + " stored reason");
+            var line = GptAttempts.AttemptLog(2, failure, jobId);
+            Equal($"GPT attempt 2/3 {reason} {jobId}", line, failure + " log line");
+            Check(line.Contains(jobId, StringComparison.Ordinal), "the log names the job");
+        }
+        Equal($"GPT retries exhausted {jobId}; queue job marked Failed", GptAttempts.ExhaustedLog(jobId), "exhausted log");
+        Equal($"GPT capture timeout {jobId}; queue job marked Failed", GptAttempts.CaptureTimeoutLog(jobId), "capture timeout log");
+
+        // A stored reason is a short token, never free text, and CaptureTimeout keeps its own.
+        foreach (var failure in expected.Keys)
+            Check(!GptAttempts.FailureReason(failure).Contains(' '), failure + " stored reason is a token");
+        Check(expected.Values.All(v => v.Stored != JobTask.CaptureTimeoutReason), "none collides with CaptureTimeout");
+    }
+
+    /// <summary>A probe driven by a script of states, with a virtual clock: no browser, no waiting.</summary>
+    sealed class ScriptedProbe : ICompletionProbe {
+        readonly Func<int, string> _state;
+        public int Polls;
+        public ScriptedProbe(Func<int, string> state) => _state = state;
+        public Task<string> GenerationStateAsync() => Task.FromResult(_state(Polls++));
+    }
+
+    static (CompletionOutcome Outcome, int Polls, int Unconfirmed) RunWatcher(Func<int, string> state, int? cancelAfterPolls = null) {
+        var probe = new ScriptedProbe(state);
+        var cancellation = new CancellationTokenSource();
+        var unconfirmed = 0;
+        Task Delay(int ms, CancellationToken ct) {
+            if (cancelAfterPolls is int limit && probe.Polls >= limit) cancellation.Cancel();
+            return Task.CompletedTask;                       // virtual clock: the watcher counts the ms itself
+        }
+        var outcome = ChatCompletionWatcher.WaitForAnswerAsync(probe, cancellation.Token, Delay, () => unconfirmed++)
+                          .GetAwaiter().GetResult();
+        return (outcome, probe.Polls, unconfirmed);
+    }
+
+    static void WatcherNoResponseStart() {
+        Equal(180_000, ChatCompletionWatcher.ResponseStartMs, "response-start budget is 180 s");
+
+        // Idle for ever: notified once at the start budget, then failed at 180 s. Never Ready.
+        var run = RunWatcher(_ => "idle");
+        Equal(CompletionOutcome.NoResponseStart, run.Outcome, "no generation -> NoResponseStart");
+        Equal(1, run.Unconfirmed, "the user was told once, at the start budget");
+        Equal(ChatCompletionWatcher.ResponseStartMs / ChatCompletionWatcher.PollMs + 1, run.Polls, "it waited the full budget");
+
+        // An unreadable page is treated the same way: it proves nothing.
+        Equal(CompletionOutcome.NoResponseStart, RunWatcher(_ => "unknown").Outcome, "unknown -> NoResponseStart");
+        Equal(0, RunWatcher(_ => "unknown").Unconfirmed, "and an unreadable page is not announced as ready");
+    }
+
+    static void WatcherStalled() {
+        Equal(120_000, ChatCompletionWatcher.InactivityMs, "inactivity budget is 120 s");
+
+        // Generates for 10 polls, then goes quiet without ever finishing (unknown, not idle).
+        var run = RunWatcher(poll => poll < 10 ? "generating" : "unknown");
+        Equal(CompletionOutcome.Stalled, run.Outcome, "started then stalled");
+        var expected = 10 + ChatCompletionWatcher.InactivityMs / ChatCompletionWatcher.PollMs;
+        Check(Math.Abs(run.Polls - expected) <= 2, $"it failed ~120 s after the last progress (polls {run.Polls}, expected ~{expected})");
+
+        // Stalling is measured from the LAST generating poll, not from the start.
+        var late = RunWatcher(poll => poll is < 5 or (> 60 and < 65) ? "generating" : "unknown");
+        Equal(CompletionOutcome.Stalled, late.Outcome, "still stalls eventually");
+        Check(late.Polls > 60 + ChatCompletionWatcher.InactivityMs / ChatCompletionWatcher.PollMs - 2,
+              "the inactivity clock restarts on every sign of progress");
+    }
+
+    static void WatcherKeepsWaitingWhileGenerating() {
+        // A very long answer: generating almost to the ceiling, then finishing normally.
+        var ceiling = ChatCompletionWatcher.MaxWaitMs / ChatCompletionWatcher.PollMs;
+        var run = RunWatcher(poll => poll < ceiling - 10 ? "generating" : "idle");
+        Equal(CompletionOutcome.Ready, run.Outcome, "a long answer that keeps generating is never failed");
+
+        // Generating for ever: only the absolute ceiling stops it.
+        var forever = RunWatcher(_ => "generating");
+        Equal(CompletionOutcome.TimedOut, forever.Outcome, "the 20-minute ceiling is the backstop");
+        Check(forever.Polls >= ceiling, "and it really waited that long");
+    }
+
+    static void WatcherUnconfirmedKeepsWatching() {
+        // Idle at first (generation missed), then generation appears and finishes: Ready, not a failure.
+        var run = RunWatcher(poll => poll < 40 ? "idle" : poll < 60 ? "generating" : "idle");
+        Equal(CompletionOutcome.Ready, run.Outcome, "a late start after the ambiguous state still completes");
+        Equal(1, run.Unconfirmed, "the ambiguous state was announced exactly once");
+        Check(run.Polls < ChatCompletionWatcher.ResponseStartMs / ChatCompletionWatcher.PollMs,
+              "and it finished before the response-start budget");
+
+        // The notification fires once only, at the start budget, never before it.
+        var early = RunWatcher(poll => poll < 5 ? "idle" : "generating");
+        Equal(0, early.Unconfirmed, "nothing is announced before the start budget");
+    }
+
+    static void WatcherReadyAndCancel() {
+        // Generation seen, then three idle polls: the confirmed finish that starts the capture watchdog.
+        var run = RunWatcher(poll => poll < 3 ? "generating" : "idle");
+        Equal(CompletionOutcome.Ready, run.Outcome, "generation then idle = Ready");
+        Equal(3 + ChatCompletionWatcher.StablePolls, run.Polls, "it needs three stable idle polls");
+
+        // Two idle polls are not enough.
+        Equal(CompletionOutcome.Ready, RunWatcher(poll => poll is 0 or 4 ? "generating" : "idle").Outcome, "a flicker does not finish it early");
+
+        // Cancellation (capture, Stop, Skip, retry) always wins.
+        Equal(CompletionOutcome.Cancelled, RunWatcher(_ => "generating", cancelAfterPolls: 5).Outcome, "cancelled while generating");
+        Equal(CompletionOutcome.Cancelled, RunWatcher(_ => "idle", cancelAfterPolls: 5).Outcome, "cancelled while idle");
+    }
+
+    /// <summary>
+    /// Runs the watcher wired to the real CaptureRequestGate, exactly as MainWindow wires it: the
+    /// ambiguous callback asks for a copy, and a confirmed Ready asks again — the gate decides.
+    /// Returns the outcome and how many keystrokes would actually have been sent.
+    /// </summary>
+    static (CompletionOutcome Outcome, int CopyRequests, int Announcements, int Polls) RunWatcherWithGate(
+        Func<int, string> state, int? captureAfterPolls = null) {
+
+        var gate = new CaptureRequestGate();
+        var probe = new ScriptedProbe(state);
+        var cancellation = new CancellationTokenSource();
+        var copies = 0;
+        var announcements = 0;
+
+        Task Delay(int ms, CancellationToken ct) {
+            // A capture arriving is what cancels the watch in the app (OnClipboardTextCaptured).
+            if (captureAfterPolls is int at && probe.Polls >= at) cancellation.Cancel();
+            return Task.CompletedTask;
+        }
+
+        var outcome = ChatCompletionWatcher.WaitForAnswerAsync(probe, cancellation.Token, Delay, () => {
+            announcements++;
+            if (gate.TryRequest()) copies++;             // OnUnconfirmedReady
+        }).GetAwaiter().GetResult();
+
+        if (outcome == CompletionOutcome.Ready && gate.TryRequest()) copies++;   // the Ready branch
+        return (outcome, copies, announcements, probe.Polls);
+    }
+
+    static void UnconfirmedRequestsCopyOnce() {
+        // The gate itself.
+        var gate = new CaptureRequestGate();
+        Check(!gate.Requested, "nothing requested yet");
+        Check(gate.TryRequest(), "the first request is allowed");
+        Check(gate.Requested && !gate.TryRequest() && !gate.TryRequest(), "every later request is refused");
+        gate.ResetForAttempt();
+        Check(gate.TryRequest(), "a new attempt gets its own request");
+
+        // Ambiguous, then generation appears and finishes: announced once, ONE keystroke.
+        var late = RunWatcherWithGate(poll => poll < 40 ? "idle" : poll < 60 ? "generating" : "idle");
+        Equal(CompletionOutcome.Ready, late.Outcome, "it still completes normally");
+        Equal(1, late.Announcements, "announced once");
+        Equal(1, late.CopyRequests, "and the keystroke is NOT sent twice for the same attempt");
+
+        // A normal confirmed answer still gets exactly one keystroke.
+        var normal = RunWatcherWithGate(poll => poll < 5 ? "generating" : "idle");
+        Equal(CompletionOutcome.Ready, normal.Outcome, "normal answer");
+        Equal(0, normal.Announcements, "no ambiguous announcement");
+        Equal(1, normal.CopyRequests, "one keystroke, from the Ready path");
+    }
+
+    static void UnconfirmedCaptureCancelsTimeout() {
+        // Idle for ever, but the copy lands shortly after the ambiguous announcement: the watch is
+        // cancelled, so the 180 s budget never fires and nothing is re-sent.
+        var captured = RunWatcherWithGate(_ => "idle", captureAfterPolls: 40);
+        Equal(CompletionOutcome.Cancelled, captured.Outcome, "a capture cancels the watch");
+        Equal(1, captured.CopyRequests, "the one copy request was made at the ambiguous point");
+        Check(captured.Polls < ChatCompletionWatcher.ResponseStartMs / ChatCompletionWatcher.PollMs,
+              "and it ended well before the response-start budget");
+
+        // The announcement happens at the start budget, so a capture before that needs no keystroke.
+        var fast = RunWatcherWithGate(_ => "idle", captureAfterPolls: 5);
+        Equal(CompletionOutcome.Cancelled, fast.Outcome, "cancelled early");
+        Equal(0, fast.CopyRequests, "the user's own copy needed no keystroke from us");
+    }
+
+    static void UnconfirmedSilenceStillTimesOut() {
+        var silent = RunWatcherWithGate(_ => "idle");
+        Equal(CompletionOutcome.NoResponseStart, silent.Outcome, "nothing usable -> NoResponseStart");
+        Equal(1, silent.CopyRequests, "one copy opportunity was given first");
+        Equal(ChatCompletionWatcher.ResponseStartMs / ChatCompletionWatcher.PollMs + 1, silent.Polls,
+              "and only then, at 180 s");
+
+        // Cancellation still wins over everything.
+        Equal(CompletionOutcome.Cancelled, RunWatcherWithGate(_ => "generating", captureAfterPolls: 3).Outcome,
+              "cancelled while generating");
     }
 
     // ---------- clear job history ----------

@@ -316,8 +316,16 @@ public enum CompletionOutcome {
     /// <summary>
     /// Generation was never observed within the start budget: it finished before the first poll, never
     /// began, or the page's controls changed. The user is still notified, but nothing is failed on it.
+    /// Kept for compatibility; the watcher now reports this through its onUnconfirmedReady callback and
+    /// keeps watching, so an ambiguous state ends as a capture or as NoResponseStart.
     /// </summary>
-    ReadyUnconfirmed
+    ReadyUnconfirmed,
+
+    /// <summary>A confirmed Send produced no generation at all within the response-start budget.</summary>
+    NoResponseStart,
+
+    /// <summary>Generation started, then made no progress for the inactivity budget without finishing.</summary>
+    Stalled
 }
 
 /// <summary>Generation-state probe. Implemented over WebView2 in the app and faked in tests.</summary>
@@ -344,15 +352,39 @@ public static class ChatCompletionWatcher {
     /// <summary>Upper bound on waiting for one answer; long resumes can take several minutes.</summary>
     public const int MaxWaitMs = 20 * 60 * 1000;
 
+    /// <summary>
+    /// How long a confirmed Send has to produce SOMETHING (generation seen, or a capture) before the
+    /// attempt is treated as never started. Deliberately far longer than the capture watchdog.
+    /// </summary>
+    public const int ResponseStartMs = 180_000;
+
+    /// <summary>
+    /// Once generation has been seen, how long with no further "generating" poll and no confirmed
+    /// finish before the answer is treated as stalled. An inactivity budget, not a fixed ceiling:
+    /// while ChatGPT is demonstrably still generating, the wait simply continues.
+    /// </summary>
+    public const int InactivityMs = 120_000;
+
+    /// <summary>
+    /// Watches one answer. <paramref name="onUnconfirmedReady"/> fires ONCE, at the start budget, when
+    /// the page looks idle but generation was never observed — an ambiguous state (a very fast answer,
+    /// nothing started, or drifted controls). The user is notified then, and the watch CONTINUES: if a
+    /// capture lands the caller cancels this watch, and if nothing is seen by <see cref="ResponseStartMs"/>
+    /// the attempt is reported as <see cref="CompletionOutcome.NoResponseStart"/>. That way an
+    /// ambiguous state can neither strand the queue nor cause an immediate duplicate send.
+    /// </summary>
     public static async Task<CompletionOutcome> WaitForAnswerAsync(
         ICompletionProbe probe,
         CancellationToken cancellation = default,
-        Func<int, CancellationToken, Task>? delay = null) {
+        Func<int, CancellationToken, Task>? delay = null,
+        Action? onUnconfirmedReady = null) {
 
         delay ??= (ms, ct) => Task.Delay(ms, ct);
         var waited = 0;
         var sawGenerating = false;
         var idleStreak = 0;
+        var lastProgressMs = 0;          // last poll that showed generation
+        var notifiedUnconfirmed = false;
 
         try {
             while (true) {
@@ -364,20 +396,30 @@ public static class ChatCompletionWatcher {
 
                 if (state == "generating") {
                     sawGenerating = true;
+                    lastProgressMs = waited;
                     idleStreak = 0;
                 } else if (state == "idle") {
                     idleStreak++;
                     // Normal case: generation was seen, and it has now been idle long enough.
                     if (sawGenerating && idleStreak >= StablePolls) {
-                        // GPT finishes work!           
+                        // GPT finishes work!
                         return CompletionOutcome.Ready;
                     }
                     // Generation was never observed within the start budget: it either finished
-                    // before the first poll or never began. Either way, tell the user to look.
-                    if (!sawGenerating && waited >= StartBudgetMs && idleStreak >= StablePolls) return CompletionOutcome.ReadyUnconfirmed;
+                    // before the first poll or never began. Tell the user once, then keep watching.
+                    if (!sawGenerating && waited >= StartBudgetMs && idleStreak >= StablePolls && !notifiedUnconfirmed) {
+                        notifiedUnconfirmed = true;
+                        onUnconfirmedReady?.Invoke();
+                    }
                 } else {
                     idleStreak = 0;   // an unreadable page proves nothing
                 }
+
+                // Nothing ever started: this attempt produced no answer at all.
+                if (!sawGenerating && waited >= ResponseStartMs) return CompletionOutcome.NoResponseStart;
+
+                // It started, then stopped making progress without finishing.
+                if (sawGenerating && waited - lastProgressMs >= InactivityMs) return CompletionOutcome.Stalled;
 
                 if (waited >= MaxWaitMs) return CompletionOutcome.TimedOut;
                 await delay(PollMs, cancellation);

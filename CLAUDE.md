@@ -180,7 +180,8 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 | `QueueRunner.cs` | `QueueRunner`, `QueueState`, `FailureOutcome` — sequencing state machine, no I/O |
 | `Diagnostics.cs` | `PerfLog` (timing/memory log), `PollPolicy` (shared adaptive poll cadence) |
 | `ReadyToast.cs` | `ReadyToast` (right-side, non-activating "answer ready" notification), `WindowAttention` (taskbar flash) |
-| `CaptureWatchdog.cs` | `CaptureWatchdog` — 30 s bounded wait for the Copy after a confirmed READY (no I/O, injectable delay) |
+| `CaptureWatchdog.cs` | `CaptureWatchdog` — 10 s bounded wait for the Copy after a confirmed READY (no I/O, injectable delay) |
+| `GptAttempts.cs` | `GptAttempts`, `GptFailure`, `AttemptDecision` — the ChatGPT retry policy: 3 sends, reasons, log lines |
 | `GlobalHotkey.cs` | `GlobalHotkey` — system-wide Ctrl+Shift+' that only brings Resume Builder forward |
 | `JobHistoryReset.cs` | `JobHistoryReset`, `ResetPlan`, `ResetReport`, `ResetPaths` — the testing reset: plan, guards, execute, per-path failures |
 | `PromptContract.cs` | `PromptModes` (Resume / Normal, tolerant), `PromptContract` — the one output contract and job payload both modes send |
@@ -851,11 +852,13 @@ Rules that keep it that way:
   asserts the probe script contains none of `innerText`, `innerHTML`, `textContent`,
   `data-message-author-role`, `conversation-turn`, `markdown`, `copy`, `click(`, `dispatchEvent`,
   `clipboard`, and that it only returns `generating` / `idle` / `unknown`.
-- **The copy stays a human action by ChatGPT's own feature.** The app tells the user to press
-  Ctrl+Shift+; (ChatGPT's "Copy last code block"; there is no "copy last response" shortcut); the
-  keystroke goes from Windows to the page. Never send it with `SendInput`,
-  `SendKeys`, CDP `Input.dispatchKeyEvent` or a scripted event — that would be programmatic extraction
-  under another name.
+- **The copy uses ChatGPT's own shortcut, and the app now presses it** (`KeyboardSimulator`, from
+  `WatchForAnswerAsync` on a confirmed Ready, commit `25a1034` "feat: version-auto-input"). It brings
+  the window forward, focuses the pane and sends the keystroke through Windows; the user's own
+  Ctrl+Shift+; still works and remains the fallback. **This is a deliberate change from the earlier
+  "human action only" rule — do not silently revert it, and do not expand it**: there is still no
+  reading of assistant turns, no Copy-button click and no DOM read of a reply. The answer still
+  reaches the app only through the clipboard.
 - Idle must hold for 3 consecutive 1-second polls after generation was seen, so reasoning-model pauses
   do not fire early. If generation is never seen, notify only after the 30 s start budget. Give up
   after 20 minutes with a status message. Always cancellable.
@@ -876,18 +879,65 @@ Rules that keep it that way:
   owns the combination, Win32 error 1409) is reported in the status line, never thrown. Verified with a
   real keypress: with another window in front, the hotkey fired once and brought the window forward.
 
+## ChatGPT retries
+
+- **Three sends per job, one budget** (`GptAttempts.MaxAttempts`). `GptAttempts` is pure policy —
+  decide, reason, stored `FailureReason`, log lines, status text — and `MainWindow` performs the
+  effects, like `QueueRunner` and `CaptureWatchdog`.
+- **Retryable** (`GptFailure`): SendSide (no WebView, fresh-chat navigation failed, composer fill
+  failed, Send failed), ResponseStartTimeout, ResponseStalled, ResponseCeiling, InvalidOutput.
+  **Never retried**: prepare/config failures, capture timeout, storage and document failures.
+- **`Prepare` runs ONCE per job.** `_activePrepared` holds the request; every retry re-sends the same
+  `Text` and nothing rewrites `prepared-request.*`. `SendAttemptAsync` is one attempt;
+  `HandleGptFailureAsync` is the only place that retries or gives up.
+- **Before a retry** (`ResetForRetryAsync`): cancel the send, the completion watch and the capture
+  watchdog, clear `_readyJobId`, dismiss the toast, disarm the watcher, recycle the WebView2, then
+  re-arm and navigate to a fresh conversation. The job, its prepared text and **all** application
+  tracking (status, ViewedAt/ReadyAt/AppliedAt/InterviewAt/DoneAt, ApplyUrl, platform, readiness) are
+  untouched — only the QUEUE `Status` ever changes.
+- **On exhaustion** `FailActiveJobAsync` sets queue `Status = Failed` with a token reason
+  (`GptSendFailed` / `GptNoResponse` / `GptStalled` / `GptInvalidOutput`), saves, recycles and
+  advances to the next Queued job.
+- **Invalid output shares the same budget** — the old two-strike counter in `QueueRunner` is no longer
+  used by MainWindow, so a job can never be sent more than three times.
+- **Timing** (`ChatCompletionWatcher`): `ResponseStartMs` 180 s from a confirmed Send;
+  `InactivityMs` 120 s measured from the last `generating` poll, so a long answer that keeps
+  generating is never failed; `MaxWaitMs` 20 min stays the absolute backstop. New outcomes
+  `NoResponseStart` and `Stalled`.
+- **ReadyUnconfirmed is ambiguous and is never treated as success.** At the 30 s start budget the
+  watcher fires `onUnconfirmedReady`: the user is told once, the state stays UNCONFIRMED (no Ready, no
+  capture watchdog, no queue advance) and the watch **keeps going**. It also gets **one** copy
+  opportunity — `RequestCopyAsync`, the same keystroke the confirmed path sends — because the answer
+  may have finished before the first poll; without it a successful fast answer would be re-sent at
+  180 s. A capture cancels the watch and completes the job; silence ends as `NoResponseStart` and is
+  retried.
+- **One copy keystroke per attempt** (`CaptureRequestGate`, reset in `SendAttemptAsync`): if the
+  ambiguous state already asked, a later confirmed Ready must not press it again for the same answer.
+  Every capture rule still applies to whatever lands (prompt echo, non-profile text, wrong or late
+  job, invalid output). No DOM reading was added.
+- **Capture timeout is NOT retried in v1**: ChatGPT may have answered and only the Copy failed. The
+  job is marked Failed (`CaptureTimeout`) and the queue advances, as before.
+- Logs carry the job id, the attempt and a fixed reason only: `GPT attempt 2/3 response-start timeout
+  <jobId>`, `GPT retries exhausted <jobId>; queue job marked Failed`, `GPT capture timeout <jobId>;
+  queue job marked Failed`. Never prompt text, answer text or a URL.
+- The queue status line shows `Processing — GPT attempt 2/3`. No new controls.
+- Tests: `ResumeStyleTests` "ChatGPT retries" (7 checks, a scripted probe on a virtual clock — no real
+  sends). The test project compiles `ChatAutomation.cs`, so it references the WebView2 package.
+
 ## Capture watchdog (A6.6.13)
 
-- **The Copy is awaited for 30 s, never forever.** `CaptureWatchdog` starts only on a *confirmed*
+- **The Copy is awaited for 10 s** (`CaptureWatchdog.DefaultTimeout`; the message says 10 s too). It
+  was 30 s when this was written. It times the CAPTURE stage only — never ChatGPT itself, which has
+  its own budgets above. `CaptureWatchdog` starts only on a *confirmed*
   `CompletionOutcome.Ready` (generation seen, then idle) while the capture is armed. `ReadyUnconfirmed`
   (generation never observed — could be a drifted selector while ChatGPT is still writing) notifies but
   never starts it, so a page change can never fail every job.
 - On timeout: disarm, mark the job `Failed` with `FailureReason = "CaptureTimeout"`, log
-  `CAPTURE TIMEOUT <jobId> after 30s` plus the exact message, recycle the WebView2 as after a completed
+  `CAPTURE TIMEOUT <jobId> after 10s` plus the exact message, recycle the WebView2 as after a completed
   job, and advance. **The job is never re-sent automatically**; Retry Failed re-queues it and clears the reason.
 - Cancelled (logged as `CAPTURE watchdog cancelled <jobId> (<reason>)`) on capture received, Stop, Skip,
   Pause, queue finish, second-strike failure, a new active job, and app close. Resume restarts a fresh
-  30 s wait for a job whose answer was already READY. After a first-strike rejection the completion
+  10 s wait for a job whose answer was already READY. After a first-strike rejection the completion
   watch restarts, so the corrected answer's Copy is bounded too.
 - The watchdog holds no I/O: `MainWindow` performs every effect, and a timer from an earlier job can only
   ever report `Cancelled` (generation counter), so it cannot fail the job active now.
@@ -896,5 +946,5 @@ Rules that keep it that way:
   `Classify` refuses it as `LateResponse`; and `ClipboardWatcher` ignores any update whose clipboard
   sequence number has not moved since arming (`ChangedSinceArm`), so a delayed WM_CLIPBOARDUPDATE can
   never read an older copy for the job armed now. Verified with the real clipboard.
-- Diagnostics: `READY <jobId>`, `CAPTURE watchdog started <jobId> 30s`, `CAPTURE received <jobId>`,
-  `CAPTURE TIMEOUT <jobId> after 30s`.
+- Diagnostics: `READY <jobId>`, `CAPTURE watchdog started <jobId> 10s`, `CAPTURE received <jobId>`,
+  `CAPTURE TIMEOUT <jobId> after 10s`.
