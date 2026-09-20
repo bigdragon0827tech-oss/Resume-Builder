@@ -203,6 +203,21 @@ Either way nothing silently produces a corrupted resume.
 
 ---
 
+## 4b. Which prompt was used
+
+Resume Builder has two prompt modes, chosen in Settings → General:
+
+- **Resume** sends the configured Master Prompt file.
+- **Normal** sends your own prompt file, so it can contain any resume-writing instructions you like.
+
+Either way Resume Builder appends the same COMPLETE JOB PAYLOAD (the job plus the full candidate
+profile) and the same execution instructions, so **this contract applies unchanged in both modes**.
+Only one sentence differs: Resume mode names the Master Prompt, Normal mode says "the resume
+instructions above". A Normal prompt therefore does not need to describe the JSON shape itself.
+
+Style stays optional in both modes: return a `style` object to control it, or leave it out and the
+`promV4.12` preset is used.
+
 ## 5. Output
 
 Documents are written under the Resume Root Folder configured in Settings, organized by day and job:

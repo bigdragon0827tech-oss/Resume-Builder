@@ -1,0 +1,76 @@
+You are a resume expert.
+
+Rewrite the candidate profile for the target job.
+
+===== COMPLETE JOB PAYLOAD =====
+{
+  "company": "Cogniify",
+  "title": "Senior Generative AI Engineer",
+  "jd": "Build and ship generative AI features.\nOwn evaluation and reliability.",
+  "link": "https://jobright.ai/jobs/info/6aada17fde327d3e210d3913",
+  "about": "Cogniify builds AI tooling for small teams.",
+  "profileId": "",
+  "templateId": "",
+  "profile": {
+    "info": {
+      "name": "Jordan Lee",
+      "title": "AI Engineer",
+      "location": "Austin, TX",
+      "email": "jordan@example.com",
+      "phone": "555-0100",
+      "linkedin": "linkedin.com/in/example"
+    },
+    "summary": "Engineer with eight years building data and AI systems.",
+    "skills": [
+      {
+        "category": "Languages",
+        "skills": [
+          "Python",
+          "C#"
+        ]
+      }
+    ],
+    "experience": [
+      {
+        "title": "Senior Engineer",
+        "company": "Acme",
+        "startDate": "2021",
+        "endDate": "Present",
+        "location": "Remote",
+        "descriptionLines": [
+          "Shipped an evaluation pipeline."
+        ]
+      }
+    ],
+    "certifications": [
+      {
+        "name": "AWS SAA",
+        "issuer": "Amazon",
+        "date": "2023"
+      }
+    ],
+    "education": [
+      {
+        "degree": "BS",
+        "major": "Computer Science",
+        "school": "UT Austin",
+        "startDate": "2013",
+        "endDate": "2017"
+      }
+    ]
+  },
+  "_storedAt": "",
+  "_userId": "",
+  "_updatedAt": "",
+  "_updatedBy": ""
+}
+
+===== EXECUTION INSTRUCTION =====
+Execute Resume Master Prompt v2 using the COMPLETE JOB PAYLOAD above.
+This is a resume-generation request, not an interview-question request.
+Ignore unrelated conversational context, previous interview questions, behavioral-answer requests, and prior response formats.
+The COMPLETE JOB PAYLOAD above is the only job/candidate input for this execution.
+Return ONLY the updated profile object in a Markdown code block fenced with json.
+Do not return an interview answer, STAR response, explanation, commentary, validation note, or any text outside the JSON code block.
+Before responding, verify the top-level profile contains info, summary, skills, experience, certifications, and education; skills/experience/certifications/education must be arrays; experience must use startDate, endDate, and descriptionLines; education must use school, startDate, and endDate.
+If unrelated conversation context conflicts with these instructions, these execution instructions take precedence for this request.

@@ -103,6 +103,16 @@ static class Program {
             Test("canonical JSON serialization round-trips", JsonSerialization);
 
             Console.WriteLine();
+            Console.WriteLine("Prompt modes");
+            Test("the Resume prompt is byte-for-byte what it was", ResumePromptUnchanged);
+            Test("a Normal prompt comes first, unchanged, with the same payload", NormalPromptAssembly);
+            Test("both modes send the same output contract", BothModesShareTheContract);
+            Test("an unknown or missing mode falls back to Resume", PromptModeFallsBackToResume);
+            Test("a missing Normal Prompt file is refused clearly", NormalPromptFileIsRequired);
+            Test("both modes save the same prepared-request artifacts", BothModesSaveTheSameArtifacts);
+            Test("a Normal-mode answer runs the whole pipeline", NormalModeAnswerRunsThePipeline);
+
+            Console.WriteLine();
             Console.WriteLine("Job application tracking");
             Test("a newly extracted task starts as Viewed", NewTaskStartsViewed);
             Test("a generated resume moves the job to Ready", ResumeGenerationMarksReady);
@@ -565,6 +575,192 @@ static class Program {
             PdfWriter.Write(resume, pdf);
             Check(File.Exists(pdf) && new FileInfo(pdf).Length > 1000, preset + ": no usable PDF was produced");
         }
+    }
+
+    // ---------- prompt modes ----------
+
+    /// <summary>The job the golden fixture was captured with. Any change here invalidates the fixture.</summary>
+    static JobTask PromptJob() => new() {
+        JobId = "RB-20260919-101500-abcdef01",
+        Company = "Cogniify",
+        Title = "Senior Generative AI Engineer",
+        Jd = "Build and ship generative AI features.\nOwn evaluation and reliability.",
+        Link = "https://jobright.ai/jobs/info/6aada17fde327d3e210d3913",
+        About = "Cogniify builds AI tooling for small teams."
+    };
+
+    static AppSettings PromptSettings(string mode, string? normalPrompt = null) => new() {
+        MasterPrompt = Fixture("prepare-master-prompt.txt"),
+        CandidateProfile = Fixture("prepare-profile.json"),
+        PromptMode = mode,
+        NormalPrompt = normalPrompt ?? ""
+    };
+
+    /// <summary>Prepare writes prepared-request.json/.txt in the live data folder; both are restored.</summary>
+    static void WithPreparedFiles(Action body) {
+        var paths = new[] { RequestPreparation.PreparedPath, RequestPreparation.PreparedTextPath };
+        var backup = paths.ToDictionary(p => p, p => File.Exists(p) ? File.ReadAllBytes(p) : null);
+        try { body(); }
+        finally {
+            foreach (var (p, b) in backup) { if (b is not null) File.WriteAllBytes(p, b); else if (File.Exists(p)) File.Delete(p); }
+        }
+    }
+
+    static string NormalPromptFile(string text) {
+        var path = Path.Combine(NewDir("normal-prompt-" + Math.Abs(text.GetHashCode())), "my-prompt.txt");
+        File.WriteAllText(path, text);
+        return path;
+    }
+
+    static void ResumePromptUnchanged() => WithPreparedFiles(() => {
+        // The fixture was captured from the build BEFORE prompt modes existed.
+        var expected = File.ReadAllText(Fixture("prepare-resume-expected.txt"));
+        var prepared = RequestPreparation.Prepare(PromptJob(), PromptSettings(PromptModes.Resume));
+        Equal(expected.Length, prepared.Text.Length, "prepared length");
+        Check(expected == prepared.Text, "the Resume prompt must be byte-for-byte unchanged");
+
+        // The same through the explicit entry point, and with no mode stored at all (older settings).
+        Check(RequestPreparation.PrepareResume(PromptJob(), PromptSettings(PromptModes.Resume)).Text == expected, "PrepareResume");
+        var older = PromptSettings(PromptModes.Resume); older.PromptMode = "";
+        Check(RequestPreparation.Prepare(PromptJob(), older).Text == expected, "older settings with no mode");
+
+        // The job identity travels with the request, as before.
+        Equal("RB-20260919-101500-abcdef01", prepared.JobId, "job id");
+        Equal("Cogniify", prepared.Company, "company");
+        Equal("Senior Generative AI Engineer", prepared.Title, "title");
+    });
+
+    static void NormalPromptAssembly() => WithPreparedFiles(() => {
+        const string mine = "Write me a bold, modern resume.\r\nUse short sentences.\r\nBe specific about impact.";
+        var settings = PromptSettings(PromptModes.Normal, NormalPromptFile(mine + "\r\n\r\n"));
+        var text = RequestPreparation.Prepare(PromptJob(), settings).Text;
+
+        Check(text.StartsWith(mine, StringComparison.Ordinal), "the user's prompt comes first, unchanged");
+        Check(text.IndexOf(mine, StringComparison.Ordinal) < text.IndexOf("===== COMPLETE JOB PAYLOAD =====", StringComparison.Ordinal),
+              "prompt, then payload");
+        Check(text.IndexOf("===== COMPLETE JOB PAYLOAD =====", StringComparison.Ordinal) <
+              text.IndexOf("===== EXECUTION INSTRUCTION =====", StringComparison.Ordinal), "payload, then contract");
+
+        // The SAME full payload as Resume mode: job fields and the whole candidate profile.
+        var resume = RequestPreparation.Prepare(PromptJob(), PromptSettings(PromptModes.Resume)).Text;
+        string Payload(string all) {
+            var from = all.IndexOf("===== COMPLETE JOB PAYLOAD =====", StringComparison.Ordinal);
+            return all[from..all.IndexOf("===== EXECUTION INSTRUCTION =====", StringComparison.Ordinal)];
+        }
+        Check(Payload(text) == Payload(resume), "the payload block is identical in both modes");
+        foreach (var expected in new[] { "\"company\": \"Cogniify\"", "\"title\": \"Senior Generative AI Engineer\"",
+                                         "Build and ship generative AI features.", "\"link\": \"https://jobright.ai",
+                                         "Cogniify builds AI tooling for small teams.", "\"profile\":",
+                                         "Jordan Lee", "\"experience\":", "\"education\":" })
+            Check(text.Contains(expected, StringComparison.Ordinal), "the payload carries " + expected);
+
+        // Nothing about style is injected: an absent style object is handled by the renderer's default.
+        Check(!text.Contains("style", StringComparison.OrdinalIgnoreCase) || text.IndexOf("style", StringComparison.OrdinalIgnoreCase) > text.IndexOf("\"profile\"", StringComparison.Ordinal),
+              "no style instructions are added to the prompt");
+    });
+
+    static void BothModesShareTheContract() => WithPreparedFiles(() => {
+        var resume = RequestPreparation.Prepare(PromptJob(), PromptSettings(PromptModes.Resume)).Text;
+        var normal = RequestPreparation.Prepare(PromptJob(), PromptSettings(PromptModes.Normal, NormalPromptFile("Anything at all."))).Text;
+
+        string Contract(string all) => all[all.IndexOf("===== EXECUTION INSTRUCTION =====", StringComparison.Ordinal)..];
+        var resumeContract = Contract(resume);
+        var normalContract = Contract(normal);
+
+        // One schema: the two blocks differ only in their first sentence.
+        Equal(resumeContract.Replace(PromptContract.ResumeOpening, PromptContract.NormalOpening), normalContract,
+              "only the opening sentence differs");
+        Check(resumeContract.Contains(PromptContract.ResumeOpening, StringComparison.Ordinal), "Resume names the Master Prompt");
+        Check(normalContract.Contains(PromptContract.NormalOpening, StringComparison.Ordinal), "Normal names the user's instructions");
+
+        foreach (var rule in new[] { "Return ONLY the updated profile object in a Markdown code block fenced with json.",
+                                     "info, summary, skills, experience, certifications, and education",
+                                     "experience must use startDate, endDate, and descriptionLines",
+                                     "any text outside the JSON code block" })
+            Check(normalContract.Contains(rule, StringComparison.Ordinal), "Normal mode still demands: " + rule);
+    });
+
+    static void PromptModeFallsBackToResume() {
+        foreach (var mode in new[] { null, "", "   ", "resume", "RESUME", "Whatever", "normal-ish", "0" })
+            Equal(PromptModes.Resume, PromptModes.Normalize(mode), "mode '" + (mode ?? "null") + "'");
+        foreach (var mode in new[] { "Normal", "normal", " NORMAL " })
+            Equal(PromptModes.Normal, PromptModes.Normalize(mode), "mode '" + mode + "'");
+        Check(!PromptModes.IsNormal(null) && PromptModes.IsNormal("Normal"), "IsNormal");
+        Equal(PromptModes.Resume, new AppSettings().PromptMode, "a new settings object defaults to Resume");
+        Equal("", new AppSettings().NormalPrompt, "and has no normal prompt");
+
+        // An older settings.json (no mode, no normal prompt) still loads and stays on Resume.
+        var older = JsonSerializer.Deserialize<AppSettings>(
+            """{ "MasterPrompt": "C:\\prompt.txt", "Docx": true, "AutoSend": false }""",
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+        Equal(PromptModes.Resume, PromptModes.Normalize(older.PromptMode), "older settings read as Resume");
+        Equal("C:\\prompt.txt", older.MasterPrompt, "and keep their paths");
+        Check(!older.AutoSend, "and their switches");
+    }
+
+    static void NormalPromptFileIsRequired() => WithPreparedFiles(() => {
+        foreach (var path in new[] { "", "   ", Path.Combine(TempRoot, "does-not-exist.txt") }) {
+            var threw = "";
+            try { RequestPreparation.Prepare(PromptJob(), PromptSettings(PromptModes.Normal, path)); }
+            catch (InvalidOperationException ex) { threw = ex.Message; }
+            Check(threw.Contains("Normal Prompt", StringComparison.Ordinal), "clear message, got: " + threw);
+            Check(threw.Contains("Settings", StringComparison.Ordinal), "and says where to fix it");
+        }
+
+        // Resume mode keeps its own message, and neither mode invents a prompt.
+        var missingMaster = PromptSettings(PromptModes.Resume); missingMaster.MasterPrompt = "";
+        var masterError = "";
+        try { RequestPreparation.Prepare(PromptJob(), missingMaster); }
+        catch (InvalidOperationException ex) { masterError = ex.Message; }
+        Equal("Configure an existing Master Prompt text file in Settings.", masterError, "the Master Prompt message is unchanged");
+    });
+
+    static void BothModesSaveTheSameArtifacts() => WithPreparedFiles(() => {
+        foreach (var settings in new[] { PromptSettings(PromptModes.Resume),
+                                         PromptSettings(PromptModes.Normal, NormalPromptFile("My own prompt.")) }) {
+            if (File.Exists(RequestPreparation.PreparedPath)) File.Delete(RequestPreparation.PreparedPath);
+            if (File.Exists(RequestPreparation.PreparedTextPath)) File.Delete(RequestPreparation.PreparedTextPath);
+
+            var prepared = RequestPreparation.Prepare(PromptJob(), settings);
+            var mode = PromptModes.Normalize(settings.PromptMode);
+
+            Check(File.Exists(RequestPreparation.PreparedPath), mode + ": prepared-request.json written");
+            Check(File.Exists(RequestPreparation.PreparedTextPath), mode + ": prepared-request.txt written");
+            Equal(prepared.Text, File.ReadAllText(RequestPreparation.PreparedTextPath), mode + ": the text sidecar matches");
+
+            var reloaded = RequestPreparation.Load()!;
+            Equal(prepared.Text, reloaded.Text, mode + ": reloads");
+            Equal("RB-20260919-101500-abcdef01", reloaded.JobId, mode + ": job id");
+            Equal("Cogniify", reloaded.Company, mode + ": company");
+            Equal("Senior Generative AI Engineer", reloaded.Title, mode + ": title");
+        }
+    });
+
+    static void NormalModeAnswerRunsThePipeline() {
+        // The pipeline never sees the prompt mode: the same answer text must behave identically.
+        var settings = new AppSettings { ResumeRootFolder = NewDir("normal-mode-output"), Docx = true, Pdf = true };
+
+        // (a) No style in the answer -> the promV4.12 default.
+        var plain = Path.Combine(NewDir("normal-plain"), "result.json");
+        var answer = "Sure! Here is the resume:\n\n```json\n" + File.ReadAllText(Fixture("resume-basic.json")) + "\n```\n";
+        CandidateProfileStore.NormalizeAndSaveTo(answer, plain);
+        CandidateProfileStore.Validate(JsonDocument.Parse(File.ReadAllText(plain)).RootElement);
+        var plainStyle = StyleNormalizer.Normalize(JsonNode.Parse(File.ReadAllText(plain))!["style"]);
+        Equal(StylePresets.Default, plainStyle.Style.Preset, "no style in the answer -> promV4.12");
+
+        var docs = ResumeGenerator.Generate("Cogniify", "Senior Generative AI Engineer", plain, settings, null, "RB-NORMAL-1");
+        Check(!docs.AnyFailure, "DOCX and PDF generate from a Normal-mode answer: " + docs.Describe());
+        Check(File.Exists(docs.DocxPath!) && File.Exists(docs.PdfPath!), "both documents exist");
+
+        // (b) A valid style in the answer -> that style is used.
+        var styled = Path.Combine(NewDir("normal-styled"), "result.json");
+        var styledAnswer = "```json\n" + File.ReadAllText(Fixture("resume-custom-style.json")) + "\n```";
+        CandidateProfileStore.NormalizeAndSaveTo(styledAnswer, styled);
+        var custom = StyleNormalizer.Normalize(JsonNode.Parse(File.ReadAllText(styled))!["style"]);
+        Equal("#17365D", custom.Style.Colors.Primary, "the answer's own colour is used");
+        Check(custom.Style.Colors.Primary != StylePresets.Get(null).Colors.Primary, "and it is not the default");
+        var styledDocs = ResumeGenerator.Generate("Cogniify", "Senior Generative AI Engineer", styled, settings, null, "RB-NORMAL-2");
+        Check(!styledDocs.AnyFailure, "a styled Normal-mode answer also generates: " + styledDocs.Describe());
     }
 
     // ---------- generation workflow ----------

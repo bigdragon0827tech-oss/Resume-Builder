@@ -182,10 +182,41 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 | `ReadyToast.cs` | `ReadyToast` (right-side, non-activating "answer ready" notification), `WindowAttention` (taskbar flash) |
 | `CaptureWatchdog.cs` | `CaptureWatchdog` — 30 s bounded wait for the Copy after a confirmed READY (no I/O, injectable delay) |
 | `GlobalHotkey.cs` | `GlobalHotkey` — system-wide Ctrl+Shift+' that only brings Resume Builder forward |
+| `PromptContract.cs` | `PromptModes` (Resume / Normal, tolerant), `PromptContract` — the one output contract and job payload both modes send |
 | `ApplyCapture.cs` | `ApplyCapture`, `ApplyCaptureResult` — decides whether a user's Apply destination is recorded, and on which task |
 | `ApplicationPlatformDetector.cs` | `ApplicationPlatform` enum, `ApplicationPlatformDetector` (ApplyUrl -> platform), `TolerantPlatformConverter` |
 | `TaskViews.cs` | `TaskViews` — the Active / History display filter over the one task collection |
 | `Models.cs` | `JobBatch`, `JobInput`, `JobTask`, `AppSettings`, `PreparedRequest` |
+
+## Prompt modes — Resume and Normal
+
+- **Two prompt FILES, one pipeline.** `RequestPreparation.Prepare` stays THE entry point and picks the
+  file by `AppSettings.PromptMode`: **Resume** = the Master Prompt (`MasterPrompt`), **Normal** = the
+  user's own prompt (`NormalPrompt`). Everything after it — clipboard, armed capture, fresh
+  conversation per job, queue, normalize -> strict validate -> save, DOCX/PDF — is untouched and
+  mode-blind. There is no chat textbox and no second pipeline.
+- **Assembly order, both modes**: the user's prompt file (only `TrimEnd()`, never edited or reordered)
+  -> `===== COMPLETE JOB PAYLOAD =====` + the SAME payload (company, title, jd, link, about and the
+  full candidate profile) -> `===== EXECUTION INSTRUCTION =====`.
+- **One output contract**, in `PromptContract.ExecutionInstruction(resumeMode)`. The two texts differ
+  in exactly ONE sentence: `ResumeOpening` ("Execute Resume Master Prompt v2 …") vs `NormalOpening`
+  ("Execute the resume instructions above …"). Do not fork the rules; `docs\GPT_JSON_CONTRACT.md`
+  documents the same shape for humans and `ProfileNormalizer` + strict validation enforce it.
+- **Resume mode's prepared text is byte-for-byte what it was.** `tests\fixtures\prepare-resume-expected.txt`
+  was captured from the build BEFORE prompt modes existed, and `ResumePromptUnchanged` compares against
+  it. The contract is built from explicit `\r\n` breaks, not a verbatim literal, so the file's line
+  endings can never change the bytes. Regenerate that fixture only for a deliberate contract change.
+- **No style text is ever sent.** Style is optional in the ANSWER; `StyleNormalizer` falls back to the
+  `promV4.12` preset when it is absent — identical in both modes. Never add style detection or inject
+  style instructions into a user's prompt.
+- **`PromptMode` is a STRING** (`PromptModes.Normalize`: unknown/missing/odd case -> Resume), not an
+  enum: `Storage.LoadSettings` turns any exception into DEFAULT settings, which would silently drop
+  the user's configured paths. `PromptMode` and `NormalPrompt` persist in `settings.json` and are
+  additive — older files load and stay on Resume.
+- Settings → General: a **Prompt Mode: Resume | Normal** pair of radio buttons, the existing Master
+  Prompt row, and a **Normal Prompt** row with Browse. Save refuses Normal mode without an existing
+  file; `Prepare` throws the same plain message if it is missing later.
+- Tests: `ResumeStyleTests` "Prompt modes" (7 checks).
 
 ## Document generation (A6.6.9)
 

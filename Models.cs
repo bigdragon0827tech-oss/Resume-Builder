@@ -156,6 +156,16 @@ public sealed class AppSettings {
     public string OriginalResume { get; set; } = "";
     public string CandidateProfile { get; set; } = "";
     public string MasterPrompt { get; set; } = "";
+
+    /// <summary>
+    /// Which prompt file a request is built from: <see cref="PromptModes"/> Resume (default) or Normal.
+    /// A string, and read through PromptModes.Normalize, so an unknown or missing value falls back to
+    /// Resume instead of throwing — a throw here would load DEFAULT settings and lose the user's paths.
+    /// </summary>
+    public string PromptMode { get; set; } = PromptModes.Resume;
+
+    /// <summary>The user's own prompt file, used in Normal mode. Empty until they choose one.</summary>
+    public string NormalPrompt { get; set; } = "";
     public string IncomingFolder { get; set; } = "";
     public string ImportedFolder { get; set; } = "";
     public string ResumeRootFolder { get; set; } = "";

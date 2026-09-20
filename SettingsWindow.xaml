@@ -372,7 +372,18 @@
 <Button Content="Prepare Profile Creation" Padding="10,4" Margin="8,0,0,0" Click="PrepareProfileCreation_Click"/>
 <TextBlock x:Name="BaselineStatus" Margin="12,5,0,0" Text="Not imported"/>
 </StackPanel>
+   <!-- Prompt Mode picks WHICH prompt file is used; everything after it (payload, output contract,
+        capture, validation, documents) is identical for both modes. -->
+   <TextBlock Text="Prompt Mode"/>
+   <StackPanel Orientation="Horizontal" Margin="0,4,0,10">
+    <RadioButton x:Name="ResumeModeBox" GroupName="PromptMode" Content="Resume" Margin="0,0,16,0"
+                 Checked="PromptMode_Changed" ToolTip="Use the Master Prompt file below"/>
+    <RadioButton x:Name="NormalModeBox" GroupName="PromptMode" Content="Normal"
+                 Checked="PromptMode_Changed" ToolTip="Use your own prompt file; Resume Builder still adds the job payload and its output rules"/>
+   </StackPanel>
    <TextBlock Text="Master Prompt"/><DockPanel Margin="0,4,0,10"><Button DockPanel.Dock="Right" Content="Browse" Click="PromptBrowse_Click"/><TextBox x:Name="PromptBox"/></DockPanel>
+   <TextBlock Text="Normal Prompt"/><DockPanel Margin="0,4,0,2"><Button DockPanel.Dock="Right" Content="Browse" Click="NormalPromptBrowse_Click"/><TextBox x:Name="NormalPromptBox"/></DockPanel>
+   <TextBlock x:Name="PromptModeHint" Margin="0,0,0,10" Foreground="{StaticResource Muted}" TextWrapping="Wrap" FontSize="11.5"/>
    <TextBlock Text="Incoming Folder"/><DockPanel Margin="0,4,0,10"><Button DockPanel.Dock="Right" Content="Browse" Click="IncomingBrowse_Click"/><TextBox x:Name="IncomingBox"/></DockPanel>
    <TextBlock Text="Imported Folder"/><DockPanel Margin="0,4,0,10"><Button DockPanel.Dock="Right" Content="Browse" Click="ImportedBrowse_Click"/><TextBox x:Name="ImportedBox"/></DockPanel>
    <TextBlock Text="Resume Root Folder"/><DockPanel Margin="0,4,0,10"><Button DockPanel.Dock="Right" Content="Browse" Click="RootBrowse_Click"/><TextBox x:Name="RootBox"/></DockPanel>

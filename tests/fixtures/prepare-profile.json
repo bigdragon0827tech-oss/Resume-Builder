@@ -1,0 +1,8 @@
+{
+  "info": { "name": "Jordan Lee", "title": "AI Engineer", "location": "Austin, TX", "email": "jordan@example.com", "phone": "555-0100", "linkedin": "linkedin.com/in/example" },
+  "summary": "Engineer with eight years building data and AI systems.",
+  "skills": [ { "category": "Languages", "skills": [ "Python", "C#" ] } ],
+  "experience": [ { "title": "Senior Engineer", "company": "Acme", "startDate": "2021", "endDate": "Present", "location": "Remote", "descriptionLines": [ "Shipped an evaluation pipeline." ] } ],
+  "certifications": [ { "name": "AWS SAA", "issuer": "Amazon", "date": "2023" } ],
+  "education": [ { "degree": "BS", "major": "Computer Science", "school": "UT Austin", "startDate": "2013", "endDate": "2017" } ]
+}

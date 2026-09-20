@@ -667,7 +667,25 @@ public partial class SettingsWindow : Window {
             : $"No resume folder was found for {job.Company} — {job.Title}.";
     }
 
-    void LoadFields(){ ResumeBox.Text=_s.OriginalResume; PromptBox.Text=_s.MasterPrompt; BaselineStatus.Text=File.Exists(BaselineProfileImporter.BaselineProfilePath) ? "Imported" : "Not imported"; IncomingBox.Text=_s.IncomingFolder; ImportedBox.Text=_s.ImportedFolder; RootBox.Text=_s.ResumeRootFolder; DocxBox.IsChecked=_s.Docx; PdfBox.IsChecked=_s.Pdf; AutoFillBox.IsChecked=_s.AutoFillComposer; AutoCaptureBox.IsChecked=_s.AutoCaptureResult; AutoSendBox.IsChecked=_s.AutoSend; ReadyToastBox.IsChecked=_s.ReadyToast; ReadySoundBox.IsChecked=_s.ReadySound; ReadyFlashBox.IsChecked=_s.ReadyFlash; FocusHotkeyBox.IsChecked=_s.FocusHotkey; }
+    /// <summary>The prompt mode in the UI. Unknown or missing reads as Resume (PromptModes.Normalize).</summary>
+    string SelectedPromptMode => NormalModeBox.IsChecked==true ? PromptModes.Normal : PromptModes.Resume;
+
+    void PromptMode_Changed(object s,RoutedEventArgs e) => UpdatePromptModeHint();
+
+    void UpdatePromptModeHint() {
+        if(PromptModeHint is null) return;
+        PromptModeHint.Text = SelectedPromptMode==PromptModes.Normal
+            ? "Normal mode sends your own prompt file, then the same job and candidate payload and the same output rules, so the answer still becomes a resume."
+            : "Resume mode sends the Master Prompt file, exactly as before.";
+    }
+
+    void NormalPromptBrowse_Click(object s,RoutedEventArgs e){var p=PickFile("Text files|*.txt;*.md|All files|*.*");if(p!=null)NormalPromptBox.Text=p;}
+
+    void LoadFields(){ ResumeBox.Text=_s.OriginalResume; PromptBox.Text=_s.MasterPrompt;
+        NormalPromptBox.Text=_s.NormalPrompt;
+        NormalModeBox.IsChecked=PromptModes.IsNormal(_s.PromptMode);
+        ResumeModeBox.IsChecked=!PromptModes.IsNormal(_s.PromptMode);
+        UpdatePromptModeHint(); BaselineStatus.Text=File.Exists(BaselineProfileImporter.BaselineProfilePath) ? "Imported" : "Not imported"; IncomingBox.Text=_s.IncomingFolder; ImportedBox.Text=_s.ImportedFolder; RootBox.Text=_s.ResumeRootFolder; DocxBox.IsChecked=_s.Docx; PdfBox.IsChecked=_s.Pdf; AutoFillBox.IsChecked=_s.AutoFillComposer; AutoCaptureBox.IsChecked=_s.AutoCaptureResult; AutoSendBox.IsChecked=_s.AutoSend; ReadyToastBox.IsChecked=_s.ReadyToast; ReadySoundBox.IsChecked=_s.ReadySound; ReadyFlashBox.IsChecked=_s.ReadyFlash; FocusHotkeyBox.IsChecked=_s.FocusHotkey; }
     string? PickFile(string filter){ var d=new Microsoft.Win32.OpenFileDialog{Filter=filter}; return d.ShowDialog()==true?d.FileName:null; }
     string? PickFolder(){ using var d=new Forms.FolderBrowserDialog(); return d.ShowDialog()==Forms.DialogResult.OK?d.SelectedPath:null; }
     void ResumeBrowse_Click(object s,RoutedEventArgs e){var p=PickFile("Resume files|*.docx;*.pdf|All files|*.*");if(p!=null)ResumeBox.Text=p;}
@@ -678,7 +696,10 @@ public partial class SettingsWindow : Window {
     void Save_Click(object s,RoutedEventArgs e){
         if(!string.IsNullOrWhiteSpace(IncomingBox.Text)&&!Directory.Exists(IncomingBox.Text)){System.Windows.MessageBox.Show("Incoming folder does not exist.");return;}
         if(!string.IsNullOrWhiteSpace(ImportedBox.Text)&&!Directory.Exists(ImportedBox.Text)){System.Windows.MessageBox.Show("Imported folder does not exist.");return;}
-        _s=new(){OriginalResume=ResumeBox.Text.Trim(),CandidateProfile=_s.CandidateProfile,MasterPrompt=PromptBox.Text.Trim(),IncomingFolder=IncomingBox.Text.Trim(),ImportedFolder=ImportedBox.Text.Trim(),ResumeRootFolder=RootBox.Text.Trim(),Docx=DocxBox.IsChecked==true,Pdf=PdfBox.IsChecked==true,AutoFillComposer=AutoFillBox.IsChecked==true,AutoCaptureResult=AutoCaptureBox.IsChecked==true,AutoSend=AutoSendBox.IsChecked==true,ReadyToast=ReadyToastBox.IsChecked==true,ReadySound=ReadySoundBox.IsChecked==true,ReadyFlash=ReadyFlashBox.IsChecked==true,FocusHotkey=FocusHotkeyBox.IsChecked==true};
+        if(SelectedPromptMode==PromptModes.Normal&&!File.Exists(NormalPromptBox.Text.Trim())){
+            System.Windows.MessageBox.Show("Choose an existing Normal Prompt file, or switch Prompt Mode back to Resume."); return; }
+        _s=new(){OriginalResume=ResumeBox.Text.Trim(),CandidateProfile=_s.CandidateProfile,MasterPrompt=PromptBox.Text.Trim(),
+                 PromptMode=SelectedPromptMode,NormalPrompt=NormalPromptBox.Text.Trim(),IncomingFolder=IncomingBox.Text.Trim(),ImportedFolder=ImportedBox.Text.Trim(),ResumeRootFolder=RootBox.Text.Trim(),Docx=DocxBox.IsChecked==true,Pdf=PdfBox.IsChecked==true,AutoFillComposer=AutoFillBox.IsChecked==true,AutoCaptureResult=AutoCaptureBox.IsChecked==true,AutoSend=AutoSendBox.IsChecked==true,ReadyToast=ReadyToastBox.IsChecked==true,ReadySound=ReadySoundBox.IsChecked==true,ReadyFlash=ReadyFlashBox.IsChecked==true,FocusHotkey=FocusHotkeyBox.IsChecked==true};
         Storage.SaveSettings(_s); System.Windows.MessageBox.Show("Settings saved.");
     }
 
