@@ -111,7 +111,10 @@ static class Program {
             Test("a long answer that keeps generating is never failed", WatcherKeepsWaitingWhileGenerating);
             Test("the ambiguous idle state notifies once and keeps watching", WatcherUnconfirmedKeepsWatching);
             Test("a confirmed finish is still Ready, and cancellation still wins", WatcherReadyAndCancel);
-            Test("the ambiguous state asks for the copy once, and Ready does not repeat it", UnconfirmedRequestsCopyOnce);
+            Test("the ambiguous state notifies without auto-copy; Ready uses background capture", UnconfirmedRequestsCopyOnce);
+            Test("background reader extracts last assistant JSON and refuses ambiguity", BackgroundReaderFixtures);
+            Test("background reader waits for a stable payload", BackgroundReaderStability);
+            Test("background reader script is read-only", BackgroundReaderScriptIsReadOnly);
             Test("a capture after the ambiguous state cancels the 180 s timeout", UnconfirmedCaptureCancelsTimeout);
             Test("silence after the ambiguous state still ends as NoResponseStart", UnconfirmedSilenceStillTimesOut);
 
@@ -235,6 +238,28 @@ static class Program {
             Test("an unreadable stored platform loads as Unknown and keeps every task", PlatformTolerantLoading);
             Test("the platform survives save and reload; older tasks load as Unknown", PlatformSaveReload);
             Test("capture and startup refresh derive the platform from ApplyUrl", PlatformDerivedFromApplyUrl);
+
+            Console.WriteLine();
+            Console.WriteLine("Critical pipeline (isolated — no live ChatGPT / Jobright)");
+            Test("import → prepare → capture → DOCX/PDF → Ready tracking", CriticalPipelineChain);
+            Test("capture refuses empty, non-profile and prompt-echo text", CaptureGateRefusals);
+            Test("page navigation must not recreate ChatGPT while it is alive", ChatHostSurvivesNavigation);
+            Test("queue recovers stale Processing jobs and attributes captures correctly", QueueRunnerCaptureAttribution);
+            Test("ChatHost desync (alive without CoreWebView2) is detected", ChatHostDesyncDetection);
+            Test("recycle then ensure creates a fresh browser for the next job", ChatHostRecycleThenEnsure);
+            Test("copy shortcut VK is OEM_1 (semicolon), not letter I", CopyShortcutIsSemicolon);
+            Test("composer readiness waits until the probe reports ready", ComposerReadyWaitsForProbe);
+            Test("Start refuses while a queue run is already active", QueueStartRefusesWhileRunning);
+            Test("Next never reselects a Failed job after it was marked terminal", QueueNextSkipsFailed);
+            Test("clipboard sequence change detection for copy-keystroke verification", ClipboardChangedSinceArm);
+            Test("browser generation invalidates delayed focus after dispose", BrowserGenerationInvalidatesStaleOps);
+            Test("copy-focus policy skips focus after capture path already focused", CopyFocusPolicyDecisions);
+            Test("stale generation cannot touch a replacement browser", StaleGenerationCannotTouchReplacement);
+
+            Console.WriteLine();
+            Console.WriteLine("Theme input readability");
+            Test("dark and light input ink contrast against Bg.Input", ThemeInputContrast);
+            Test("shared control styles bind inputs with DynamicResource", ThemeControlStylesUseDynamicResources);
 
             Console.WriteLine();
             Console.WriteLine("Sample output");
@@ -743,79 +768,129 @@ static class Program {
     }
 
     /// <summary>
-    /// Runs the watcher wired to the real CaptureRequestGate, exactly as MainWindow wires it: the
-    /// ambiguous callback asks for a copy, and a confirmed Ready asks again — the gate decides.
-    /// Returns the outcome and how many keystrokes would actually have been sent.
+    /// Mirrors the new MainWindow policy: unconfirmed notifies only (no auto-copy / no scrape);
+    /// confirmed Ready is when background capture would run (counted as CaptureAttempts here).
     /// </summary>
-    static (CompletionOutcome Outcome, int CopyRequests, int Announcements, int Polls) RunWatcherWithGate(
+    static (CompletionOutcome Outcome, int CaptureAttempts, int Announcements, int Polls) RunWatcherWithGate(
         Func<int, string> state, int? captureAfterPolls = null) {
 
-        var gate = new CaptureRequestGate();
         var probe = new ScriptedProbe(state);
         var cancellation = new CancellationTokenSource();
-        var copies = 0;
+        var captures = 0;
         var announcements = 0;
 
         Task Delay(int ms, CancellationToken ct) {
-            // A capture arriving is what cancels the watch in the app (OnClipboardTextCaptured).
             if (captureAfterPolls is int at && probe.Polls >= at) cancellation.Cancel();
             return Task.CompletedTask;
         }
 
         var outcome = ChatCompletionWatcher.WaitForAnswerAsync(probe, cancellation.Token, Delay, () => {
             announcements++;
-            if (gate.TryRequest()) copies++;             // OnUnconfirmedReady
+            // OnUnconfirmedReady: notify only — no RequestCopyAsync, no page scrape.
         }).GetAwaiter().GetResult();
 
-        if (outcome == CompletionOutcome.Ready && gate.TryRequest()) copies++;   // the Ready branch
-        return (outcome, copies, announcements, probe.Polls);
+        if (outcome == CompletionOutcome.Ready)
+            captures++;   // TryBackgroundCaptureAsync would run here
+        return (outcome, captures, announcements, probe.Polls);
     }
 
     static void UnconfirmedRequestsCopyOnce() {
-        // The gate itself.
-        var gate = new CaptureRequestGate();
-        Check(!gate.Requested, "nothing requested yet");
-        Check(gate.TryRequest(), "the first request is allowed");
-        Check(gate.Requested && !gate.TryRequest() && !gate.TryRequest(), "every later request is refused");
-        gate.ResetForAttempt();
-        Check(gate.TryRequest(), "a new attempt gets its own request");
-
-        // Ambiguous, then generation appears and finishes: announced once, ONE keystroke.
+        // Ambiguous, then generation appears and finishes: notified once, scrape only at Ready.
         var late = RunWatcherWithGate(poll => poll < 40 ? "idle" : poll < 60 ? "generating" : "idle");
         Equal(CompletionOutcome.Ready, late.Outcome, "it still completes normally");
-        Equal(1, late.Announcements, "announced once");
-        Equal(1, late.CopyRequests, "and the keystroke is NOT sent twice for the same attempt");
+        Equal(1, late.Announcements, "announced once at the start budget");
+        Equal(1, late.CaptureAttempts, "background capture runs once at confirmed Ready");
 
-        // A normal confirmed answer still gets exactly one keystroke.
+        // A normal confirmed answer: one background capture, no ambiguous announcement.
         var normal = RunWatcherWithGate(poll => poll < 5 ? "generating" : "idle");
         Equal(CompletionOutcome.Ready, normal.Outcome, "normal answer");
         Equal(0, normal.Announcements, "no ambiguous announcement");
-        Equal(1, normal.CopyRequests, "one keystroke, from the Ready path");
+        Equal(1, normal.CaptureAttempts, "one background capture from Ready");
     }
 
     static void UnconfirmedCaptureCancelsTimeout() {
-        // Idle for ever, but the copy lands shortly after the ambiguous announcement: the watch is
-        // cancelled, so the 180 s budget never fires and nothing is re-sent.
+        // Idle for ever, but a capture (manual or background) lands after the ambiguous announcement.
         var captured = RunWatcherWithGate(_ => "idle", captureAfterPolls: 40);
         Equal(CompletionOutcome.Cancelled, captured.Outcome, "a capture cancels the watch");
-        Equal(1, captured.CopyRequests, "the one copy request was made at the ambiguous point");
+        Equal(0, captured.CaptureAttempts, "Ready never fired — no background scrape");
         Check(captured.Polls < ChatCompletionWatcher.ResponseStartMs / ChatCompletionWatcher.PollMs,
               "and it ended well before the response-start budget");
 
-        // The announcement happens at the start budget, so a capture before that needs no keystroke.
         var fast = RunWatcherWithGate(_ => "idle", captureAfterPolls: 5);
         Equal(CompletionOutcome.Cancelled, fast.Outcome, "cancelled early");
-        Equal(0, fast.CopyRequests, "the user's own copy needed no keystroke from us");
+        Equal(0, fast.CaptureAttempts, "no Ready scrape");
+    }
+
+    static void BackgroundReaderFixtures() {
+        var direct = ChatResponseReader.ParseScriptPayload(
+            """{"status":"ok","text":"```json\n{\"info\":{\"fullName\":\"A\"},\"summary\":\"S\",\"skills\":[],\"experience\":[],\"education\":[],\"certifications\":[]}\n```","assistants":1}""");
+        Check(direct.Success, "direct object payload ok");
+        Check(ResultCapture.LooksLikeProfileResult(direct.Text), "extracted text looks like a profile");
+
+        // ExecuteScriptAsync string-wrap: outer JSON string containing the object JSON.
+        var wrapped = ChatResponseReader.ParseScriptPayload(
+            JsonSerializer.Serialize(
+                """{"status":"ok","text":"```json\n{\"info\":{\"fullName\":\"B\"},\"summary\":\"S\",\"skills\":[],\"experience\":[],\"education\":[],\"certifications\":[]}\n```","assistants":1}"""));
+        Check(wrapped.Success, "string-wrapped payload ok");
+
+        var missing = ChatResponseReader.ParseScriptPayload("""{"status":"missing","text":"","assistants":0}""");
+        Equal(ChatReadStatus.Missing, missing.Status, "missing");
+
+        var empty = ChatResponseReader.ParseScriptPayload("""{"status":"empty","text":"","assistants":1}""");
+        Equal(ChatReadStatus.Empty, empty.Status, "empty");
+
+        var amb = ChatResponseReader.ParseScriptPayload("""{"status":"ambiguous","text":"","assistants":2}""");
+        Equal(ChatReadStatus.Ambiguous, amb.Status, "ambiguous refused");
+
+        var prose = ChatResponseReader.ParseScriptPayload(
+            """{"status":"ok","text":"Sure, here is a helpful tip about resumes.","assistants":1}""");
+        Check(prose.Success, "script said ok");
+        Check(!ResultCapture.ShouldCapture(prose.Text), "prose is not a profile");
+    }
+
+    static void BackgroundReaderStability() {
+        var profile = "```json\n{\"info\":{\"fullName\":\"A\"},\"summary\":\"S\",\"skills\":[],\"experience\":[],\"education\":[],\"certifications\":[]}\n```";
+        var calls = 0;
+        var stable = ChatResponseReader.ReadStableAsync(
+            _ => {
+                calls++;
+                // First read shorter (still streaming), then two identical complete payloads.
+                var text = calls == 1 ? profile[..Math.Min(80, profile.Length)] : profile;
+                return Task.FromResult(new ChatReadResult {
+                    Status = ChatReadStatus.Ok, Text = text, AssistantCount = 1
+                });
+            },
+            budgetMs: 5000,
+            pollMs: 10,
+            matchPolls: 2,
+            delay: (_, _) => Task.CompletedTask).GetAwaiter().GetResult();
+        Check(stable.Success, "became stable");
+        Check(calls >= 3, "needed more than one poll");
+        Check(ResultCapture.LooksLikeProfileResult(stable.Text), "stable text is a profile");
+
+        var never = ChatResponseReader.ReadStableAsync(
+            _ => Task.FromResult(new ChatReadResult { Status = ChatReadStatus.Missing }),
+            budgetMs: 50,
+            pollMs: 10,
+            delay: (_, _) => Task.CompletedTask).GetAwaiter().GetResult();
+        Equal(ChatReadStatus.Missing, never.Status, "budget expiry without a payload");
+    }
+
+    static void BackgroundReaderScriptIsReadOnly() {
+        Check(ChatResponseReader.ScriptIsReadOnly(ChatResponseReader.ReadLastAssistantScript), "read-only");
+        Check(ChatResponseReader.ReadLastAssistantScript.Contains("data-message-author-role"), "targets assistant role");
+        Check(!ChatResponseReader.ReadLastAssistantScript.Contains("click(", StringComparison.OrdinalIgnoreCase), "no click");
+        Check(!ChatResponseReader.ReadLastAssistantScript.Contains("fetch(", StringComparison.OrdinalIgnoreCase), "no fetch");
     }
 
     static void UnconfirmedSilenceStillTimesOut() {
         var silent = RunWatcherWithGate(_ => "idle");
         Equal(CompletionOutcome.NoResponseStart, silent.Outcome, "nothing usable -> NoResponseStart");
-        Equal(1, silent.CopyRequests, "one copy opportunity was given first");
+        Equal(1, silent.Announcements, "notified once at the start budget");
+        Equal(0, silent.CaptureAttempts, "no Ready — no background scrape");
         Equal(ChatCompletionWatcher.ResponseStartMs / ChatCompletionWatcher.PollMs + 1, silent.Polls,
               "and only then, at 180 s");
 
-        // Cancellation still wins over everything.
         Equal(CompletionOutcome.Cancelled, RunWatcherWithGate(_ => "generating", captureAfterPolls: 3).Outcome,
               "cancelled while generating");
     }
@@ -3394,6 +3469,417 @@ static class Program {
         Equal(ApplicationPlatform.Lever, stale.ApplicationPlatform, "corrected from its ApplyUrl");
         Equal(ApplicationPlatform.Unknown, none.ApplicationPlatform, "no ApplyUrl stays Unknown");
         Equal(0, ApplicationPlatformDetector.Refresh(set), "a second refresh changes nothing (no needless save)");
+    }
+
+    // ---------- critical pipeline (isolated component chain) ----------
+
+    /// <summary>
+    /// The production path without ChatGPT or Jobright: ImportOne → Prepare → ResultCapture.Accept →
+    /// ResumeGenerator → MarkResumeReady. Uses temp ResumeRoot and restores anything written under
+    /// the live DataDir (tasks, prepared-request, results\&lt;id&gt;.*).
+    /// </summary>
+    static void CriticalPipelineChain() => WithTasksFileRestored(() => WithPreparedFiles(() => {
+        var tasks = new List<JobTask>();
+        var jobUrl = "https://example.com/sample/e2e-pipeline/" + Guid.NewGuid().ToString("N");
+        var outcome = JobImporter.ImportOne(new JobImportData {
+            Company = "Pipeline Test Co",
+            Title = "Senior Validation Engineer",
+            JobUrl = jobUrl,
+            CompanyUrl = "https://example.com/",
+            Description = "Validate the Resume Builder end-to-end document path."
+        }, JobImporter.BrowserSource, tasks);
+
+        Equal(JobImportKind.Imported, outcome.Kind, "import succeeded");
+        var job = tasks.Single();
+        Equal("Queued", job.Status, "new job is Queued");
+        Equal(ApplicationStatus.Viewed, job.ApplicationStatus, "new job is Viewed");
+
+        // Clean any leftover result files for this id after the run.
+        var resultArtifacts = new[] {
+            ProfileResultStore.ResultPath(job.JobId),
+            ProfileResultStore.RawPath(job.JobId),
+            ProfileResultStore.DocGenLogPath(job.JobId),
+            ProfileResultStore.EffectiveStylePath(job.JobId)
+        };
+        foreach (var p in resultArtifacts) if (File.Exists(p)) File.Delete(p);
+
+        try {
+            var prepared = RequestPreparation.Prepare(job, PromptSettings(PromptModes.Resume));
+            Equal(job.JobId, prepared.JobId, "prepared request is for this job");
+            Check(prepared.Text.Contains(job.Company, StringComparison.Ordinal), "prepared text names the company");
+            Check(prepared.Text.Contains(job.Title, StringComparison.Ordinal), "prepared text names the title");
+            Check(prepared.Text.Contains("===== COMPLETE JOB PAYLOAD =====", StringComparison.Ordinal), "payload section present");
+            Check(File.Exists(RequestPreparation.PreparedPath), "prepared-request.json written");
+
+            // Simulate a successful clipboard capture with a known-good profile fixture.
+            var answer = File.ReadAllText(Fixture("resume-prom-v4.12.json"));
+            Check(ResultCapture.ShouldCapture(answer), "fixture looks like a capturable profile");
+            var captured = ResultCapture.Accept(answer, job.JobId);
+            Check(captured.Saved, "capture saved: " + captured.Message);
+            Equal(ProfileResultStore.ResultPath(job.JobId), captured.TargetPath, "tailored result path");
+            Check(File.Exists(captured.TargetPath), "results\\<jobId>.json exists");
+            Check(!File.Exists(CandidateProfileStore.CandidateProfilePath) ||
+                  !File.ReadAllText(CandidateProfileStore.CandidateProfilePath).Equals(File.ReadAllText(captured.TargetPath), StringComparison.Ordinal),
+                  "baseline candidate-profile is not overwritten by a job result");
+
+            job.Status = "Completed";
+
+            var resumeRoot = NewDir("pipeline-resume-root");
+            var settings = PromptSettings(PromptModes.Resume);
+            settings.ResumeRootFolder = resumeRoot;
+            settings.Docx = true;
+            settings.Pdf = true;
+
+            var generation = ResumeGenerator.Generate(
+                job.Company, job.Title, captured.TargetPath, settings,
+                ProfileResultStore.EffectiveStylePath(job.JobId), job.JobId, job.Link);
+
+            Check(generation.DocxGenerated, "DOCX generated: " + (generation.DocxError ?? generation.FatalError ?? "ok"));
+            Check(generation.PdfGenerated, "PDF generated: " + (generation.PdfError ?? generation.FatalError ?? "ok"));
+            Check(File.Exists(generation.DocxPath!), "DOCX file on disk");
+            Check(File.Exists(generation.PdfPath!), "PDF file on disk");
+            Check(File.Exists(Path.Combine(generation.OutputFolder!, "resume-info.json")) ||
+                  Directory.GetFiles(generation.OutputFolder!, "resume-info*.json").Length > 0,
+                  "resume-info.json written");
+
+            // Content smoke: DOCX opens and carries candidate name from the fixture.
+            using (var doc = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(generation.DocxPath!, false)) {
+                var body = doc.MainDocumentPart?.Document?.Body?.InnerText ?? "";
+                Check(body.Contains("BILLY", StringComparison.OrdinalIgnoreCase) ||
+                      body.Contains("Billy", StringComparison.OrdinalIgnoreCase),
+                      "DOCX carries the fixture candidate name");
+            }
+
+            Check(JobTracker.MarkResumeReady(job, generation.DocxPath), "MarkResumeReady moves Viewed → Ready");
+            Equal(ApplicationStatus.Ready, job.ApplicationStatus, "application status is Ready");
+            Check(!string.IsNullOrWhiteSpace(job.ResumePath), "ResumePath recorded");
+            Equal("Completed", job.Status, "queue Status stays Completed");
+        }
+        finally {
+            foreach (var p in resultArtifacts) {
+                try { if (File.Exists(p)) File.Delete(p); } catch { }
+            }
+        }
+    }));
+
+    static void CaptureGateRefusals() {
+        Check(!ResultCapture.ShouldCapture(null), "null clipboard");
+        Check(!ResultCapture.ShouldCapture(""), "empty clipboard");
+        Check(!ResultCapture.ShouldCapture("hello world"), "plain text is not a profile");
+        Check(!ResultCapture.ShouldCapture("{ \"foo\": 1 }"), "unrelated JSON is not a profile");
+
+        var prepared = "===== COMPLETE JOB PAYLOAD =====\r\n" + new string('x', 80);
+        Check(PromptEchoGuard.IsEchoOfPrompt(prepared, prepared), "verbatim prompt echo is refused");
+        Check(!PromptEchoGuard.IsEchoOfPrompt("{\"info\":{},\"summary\":\"A real answer with enough length here.\"}", prepared),
+              "a real answer is not treated as an echo");
+
+        // Invalid shape that looks like a failed attempt: kept as raw, never saved as profile.
+        WithTasksFileRestored(() => {
+            var jobId = "RB-CAPTURE-REFUSE-" + Guid.NewGuid().ToString("N")[..8];
+            var raw = "```json\n{\"info\": {}, \"summary\": }\n```"; // broken JSON with markers
+            Check(ResultCapture.LooksLikeFailedProfileAttempt(raw) || !ResultCapture.LooksLikeProfileResult(raw),
+                  "broken fence is not a valid profile");
+            var result = ResultCapture.Accept(raw, jobId);
+            Check(!result.Saved, "invalid capture is not saved");
+            Check(!File.Exists(ProfileResultStore.ResultPath(jobId)), "no results json for a failed capture");
+            try {
+                var rawPath = ProfileResultStore.RawPath(jobId);
+                if (File.Exists(rawPath)) File.Delete(rawPath);
+            } catch { }
+        });
+    }
+
+    /// <summary>
+    /// Mirrors MainWindow page hosting: Visibility changes call EnsureAsync again without Release.
+    /// A second Ensure while alive must not create another browser.
+    /// </summary>
+    static void ChatHostSurvivesNavigation() {
+        var creates = 0; var disposes = 0;
+        var host = new ChatHost(
+            create: () => { creates++; return Task.FromResult(1000 + creates); },
+            dispose: () => { disposes++; return Task.FromResult(true); });
+
+        host.EnsureAsync().GetAwaiter().GetResult();
+        host.EnsureAsync().GetAwaiter().GetResult(); // "navigate away and back"
+        host.EnsureAsync().GetAwaiter().GetResult();
+
+        Equal(1, creates, "one browser for repeated Ensure while alive");
+        Equal(1, host.Creations, "ChatHost creation counter");
+        Equal(0, disposes, "navigation does not dispose");
+        Check(host.IsAlive, "browser still alive");
+
+        host.ReleaseAsync().GetAwaiter().GetResult();
+        Equal(1, disposes, "explicit release disposes once");
+        Check(!host.IsAlive, "released");
+    }
+
+    static void ChatHostDesyncDetection() {
+        Check(ChatHost.IsDesynced(hostReportsAlive: true, coreWebViewAvailable: false),
+              "alive without a core view is desynced");
+        Check(!ChatHost.IsDesynced(hostReportsAlive: true, coreWebViewAvailable: true),
+              "alive with a core view is fine");
+        Check(!ChatHost.IsDesynced(hostReportsAlive: false, coreWebViewAvailable: false),
+              "dead host is not desynced — Ensure will create");
+    }
+
+    static string FindThemesFile(string fileName) {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null) {
+            var candidate = Path.Combine(dir.FullName, "Themes", fileName);
+            if (File.Exists(candidate)) return candidate;
+            dir = dir.Parent;
+        }
+        throw new FileNotFoundException("Themes/" + fileName);
+    }
+
+    /// <summary>
+    /// Dark-theme regression: Text.Primary on Bg.Input must stay readable in both palettes.
+    /// Parses the theme XAML color literals (no live UI) and requires WCAG AA contrast (≥ 4.5).
+    /// </summary>
+    static void ThemeInputContrast() {
+        foreach (var name in new[] { "Colors.Dark.xaml", "Colors.Light.xaml" }) {
+            var path = FindThemesFile(name);
+            var xaml = File.ReadAllText(path);
+            var bg = ThemeBrushHex(xaml, "Bg.Input");
+            var fg = ThemeBrushHex(xaml, "Text.Primary");
+            var muted = ThemeBrushHex(xaml, "Text.Muted");
+            var ratio = RelativeLuminanceContrast(bg, fg);
+            Check(ratio >= 4.5, $"{name}: Text.Primary on Bg.Input contrast {ratio:0.00} (need ≥ 4.5)");
+            var mutedRatio = RelativeLuminanceContrast(bg, muted);
+            Check(mutedRatio >= 3.0, $"{name}: Text.Muted on Bg.Input contrast {mutedRatio:0.00} (need ≥ 3.0)");
+        }
+    }
+
+    static void ThemeControlStylesUseDynamicResources() {
+        var path = FindThemesFile("Controls.xaml");
+        var xaml = File.ReadAllText(path);
+        Check(xaml.Contains("TargetType=\"TextBox\""), "TextBox style present");
+        Check(xaml.Contains("TargetType=\"ComboBox\""), "ComboBox style present");
+        Check(xaml.Contains("TargetType=\"PasswordBox\""), "PasswordBox style present");
+        Check(xaml.Contains("PART_ContentHost"), "TextBox/PasswordBox content host templated");
+        Check(xaml.Contains("TextElement.Foreground=\"{TemplateBinding Foreground}\""),
+              "foreground applied on content host");
+        // Input chrome must use DynamicResource so a theme switch updates without restart.
+        var inputBlock = xaml.IndexOf("TargetType=\"TextBox\"", StringComparison.Ordinal);
+        Check(inputBlock >= 0, "TextBox style index");
+        var slice = xaml.Substring(inputBlock, Math.Min(900, xaml.Length - inputBlock));
+        Check(slice.Contains("DynamicResource Bg.Input"), "TextBox Background is DynamicResource Bg.Input");
+        Check(slice.Contains("DynamicResource Text.Primary"), "TextBox Foreground is DynamicResource Text.Primary");
+        Check(!slice.Contains("Background=\"White\"") && !slice.Contains("Background=\"#FFFFFF\""),
+              "TextBox style does not hardcode white background");
+    }
+
+    static string ThemeBrushHex(string xaml, string key) {
+        var marker = $"x:Key=\"{key}\"";
+        var i = xaml.IndexOf(marker, StringComparison.Ordinal);
+        Check(i >= 0, "brush " + key);
+        var colorIdx = xaml.IndexOf("Color=\"#", i, StringComparison.Ordinal);
+        Check(colorIdx >= 0 && colorIdx < i + 120, "Color near " + key);
+        return xaml.Substring(colorIdx + 8, 6);
+    }
+
+    static double RelativeLuminanceContrast(string bgHex, string fgHex) {
+        double L(string hex) {
+            double Chan(int offset) {
+                var c = Convert.ToInt32(hex.Substring(offset, 2), 16) / 255.0;
+                return c <= 0.03928 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4);
+            }
+            return 0.2126 * Chan(0) + 0.7152 * Chan(2) + 0.0722 * Chan(4);
+        }
+        var a = L(bgHex); var b = L(fgHex);
+        var lighter = Math.Max(a, b); var darker = Math.Min(a, b);
+        return (lighter + 0.05) / (darker + 0.05);
+    }
+
+    /// <summary>
+    /// The production sequence after a completed job: RecycleAsync then EnsureAsync for the next
+    /// job must create a second browser, not no-op on a stale IsAlive.
+    /// </summary>
+    static void ChatHostRecycleThenEnsure() {
+        var creates = 0; var disposes = 0;
+        var host = new ChatHost(
+            create: () => { creates++; return Task.FromResult(2000 + creates); },
+            dispose: () => { disposes++; return Task.FromResult(true); });
+
+        host.EnsureAsync().GetAwaiter().GetResult();
+        Equal(1, creates, "job 1 browser");
+
+        host.RecycleAsync().GetAwaiter().GetResult();
+        Equal(1, disposes, "job 1 recycled");
+        Check(!host.IsAlive, "dead after recycle");
+
+        // Simulate the desync MainWindow guards against: host wrongly still "alive".
+        Check(ChatHost.IsDesynced(true, false), "desync helper matches the guard");
+
+        host.EnsureAsync().GetAwaiter().GetResult();
+        Equal(2, creates, "job 2 gets a new browser");
+        Check(host.IsAlive, "alive for job 2");
+        Equal(2, host.Creations, "creation counter");
+    }
+
+    static void CopyShortcutIsSemicolon() {
+        Equal((ushort)0xBA, KeyboardSimulator.CopyShortcutVk, "VK_OEM_1 / semicolon");
+        Equal("Ctrl+Shift+;", KeyboardSimulator.CopyShortcutText, "display text");
+        Check(!string.Equals(KeyboardSimulator.CopyShortcutText, "Ctrl+Shift+I", StringComparison.Ordinal),
+              "must not claim letter I");
+    }
+
+    static void ComposerReadyWaitsForProbe() {
+        var calls = 0;
+        var delays = new List<int>();
+        var ready = ChatComposer.WaitForComposerAsync(
+            probe: () => {
+                calls++;
+                return Task.FromResult(calls >= 3 ? "ready" : "missing");
+            },
+            budgetMs: 5000,
+            delay: (ms, _) => { delays.Add(ms); return Task.CompletedTask; }).GetAwaiter().GetResult();
+        Check(ready, "becomes ready on third poll");
+        Equal(3, calls, "polled until ready");
+        Check(delays.Count >= 1, "used poll delays after the first try");
+
+        var never = ChatComposer.WaitForComposerAsync(
+            probe: () => Task.FromResult("missing"),
+            budgetMs: 300,
+            delay: (ms, _) => Task.CompletedTask).GetAwaiter().GetResult();
+        Check(!never, "budget expiry returns false");
+    }
+
+    static void QueueStartRefusesWhileRunning() {
+        var a = new JobTask { JobId = "RB-S-1", Company = "A", Title = "T", Status = "Queued" };
+        var b = new JobTask { JobId = "RB-S-2", Company = "B", Title = "T", Status = "Queued" };
+        var queue = new QueueRunner();
+        Equal(2, queue.Start(new[] { a, b }), "first start");
+        Equal(0, queue.Start(new[] { a, b }), "second start refused while running");
+        Check(queue.IsRunning, "still running");
+        var first = queue.Next();
+        Equal("RB-S-1", first!.JobId, "first job");
+        a.Status = "Failed";
+        queue.AbandonActive();
+        var second = queue.Next();
+        Equal("RB-S-2", second!.JobId, "advances to second Queued job");
+        queue.Stop();
+    }
+
+    static void QueueNextSkipsFailed() {
+        var a = new JobTask { JobId = "RB-F-1", Company = "A", Title = "T", Status = "Queued" };
+        var queue = new QueueRunner();
+        Equal(1, queue.Start(new[] { a }), "one job");
+        Equal(a, queue.Next(), "selected");
+        a.Status = "Failed";
+        a.FailureReason = JobTask.CaptureTimeoutReason;
+        queue.OnCaptureTimedOut(null);
+        Check(queue.Next() is null, "no further Queued jobs — Finished");
+        Check(!queue.IsRunning, "queue finished after terminal job");
+        // A new Start after Finished is how Retry Failed + Start Queue works — only Queued jobs enter.
+        Equal(0, queue.Start(new[] { a }), "Failed job is not eligible for a new Start");
+        a.Status = "Queued"; // explicit Retry Failed
+        a.FailureReason = "";
+        Equal(1, queue.Start(new[] { a }), "after explicit re-queue it is eligible again");
+        queue.Stop();
+    }
+
+    static void ClipboardChangedSinceArm() {
+        // Same predicate as ClipboardWatcher.ChangedSinceArm (kept pure here so the harness does not
+        // pull in the full WPF clipboard implementation).
+        static bool Changed(uint armed, uint current) =>
+            armed == 0 || current == 0 || current != armed;
+        Check(Changed(10, 11), "sequence moved");
+        Check(!Changed(10, 10), "sequence unchanged");
+        Check(Changed(0, 10), "unknown armed seq does not block");
+        Check(Changed(10, 0), "unknown current seq does not block");
+    }
+
+    static void BrowserGenerationInvalidatesStaleOps() {
+        var gen = new BrowserGeneration();
+        Equal(0, gen.Current, "starts at zero");
+        var g1 = gen.BeginNew();
+        Equal(1, g1, "first browser");
+        Check(gen.IsCurrent(g1), "g1 is live");
+        Check(CopyFocusPolicy.MayTouchBrowser(g1, gen.Current, cancelled: false, viewExists: true), "may touch");
+
+        gen.Invalidate(); // dispose begins
+        Check(!gen.IsCurrent(g1), "g1 stale after invalidate");
+        Check(!CopyFocusPolicy.MayTouchBrowser(g1, gen.Current, cancelled: false, viewExists: false),
+              "null view + stale gen");
+
+        var g2 = gen.BeginNew();
+        Check(g2 > g1, "replacement has a new generation");
+        Check(!CopyFocusPolicy.MayTouchBrowser(g1, gen.Current, cancelled: false, viewExists: true),
+              "old gen must not touch the replacement view");
+        Check(CopyFocusPolicy.MayTouchBrowser(g2, gen.Current, cancelled: false, viewExists: true),
+              "new gen may touch");
+        Check(!CopyFocusPolicy.MayTouchBrowser(g2, gen.Current, cancelled: true, viewExists: true),
+              "cancelled token blocks");
+    }
+
+    static void CopyFocusPolicyDecisions() {
+        Check(!CopyFocusPolicy.ShouldFocusOnAnswerReady(
+                  copyPathAlreadyFocused: true, captureStillArmed: true, jobStillActive: true),
+              "skip ShowAnswerReady focus after RequestCopyAsync");
+        Check(CopyFocusPolicy.ShouldFocusOnAnswerReady(
+                  copyPathAlreadyFocused: false, captureStillArmed: true, jobStillActive: true),
+              "focus when copy path did not run");
+        Check(!CopyFocusPolicy.ShouldFocusOnAnswerReady(
+                  copyPathAlreadyFocused: false, captureStillArmed: false, jobStillActive: true),
+              "skip when capture already accepted");
+
+        Check(CopyFocusPolicy.ShouldRetryCopyOnForeground(
+                  nowOwned: true, sameGeneration: true, jobStillProcessing: true,
+                  captureArmed: true, alreadyCopied: false),
+              "retry when we regain foreground");
+        Check(!CopyFocusPolicy.ShouldRetryCopyOnForeground(
+                  nowOwned: true, sameGeneration: true, jobStillProcessing: true,
+                  captureArmed: true, alreadyCopied: true),
+              "no retry after clipboard already changed");
+        Check(!CopyFocusPolicy.ShouldRetryCopyOnForeground(
+                  nowOwned: false, sameGeneration: true, jobStillProcessing: true,
+                  captureArmed: true, alreadyCopied: false),
+              "no retry while another app owns foreground");
+    }
+
+    static void StaleGenerationCannotTouchReplacement() {
+        // Simulates: Job A Ready → copy → capture → recycle (invalidate) → Job B create (BeginNew).
+        // A delayed FocusChatPane from Job A must not act on Job B's view.
+        var gen = new BrowserGeneration();
+        var jobA = gen.BeginNew();
+        gen.Invalidate();
+        var jobB = gen.BeginNew();
+        Check(!CopyFocusPolicy.MayTouchBrowser(jobA, gen.Current, false, true),
+              "Job A focus after recycle must not touch Job B");
+        Check(CopyFocusPolicy.MayTouchBrowser(jobB, gen.Current, false, true),
+              "Job B may focus its own browser");
+    }
+
+    static void QueueRunnerCaptureAttribution() {
+        var a = new JobTask { JobId = "RB-Q-A", Company = "A", Title = "T", Status = "Queued" };
+        var b = new JobTask { JobId = "RB-Q-B", Company = "B", Title = "T", Status = "Processing" }; // stale
+        var tasks = new List<JobTask> { a, b };
+
+        Equal(1, QueueRunner.RecoverStaleProcessing(tasks), "one stale Processing recovered");
+        Equal("Queued", b.Status, "stale job re-queued");
+
+        var queue = new QueueRunner();
+        Equal(2, queue.Start(tasks), "two queued jobs");
+        var first = queue.Next();
+        Equal(a.JobId, first!.JobId, "first job is active");
+        Equal(a.JobId, queue.ActiveJobId, "ActiveJobId set");
+
+        const string prepared = "prepared request body that is long enough for echo detection xxxxxxxx";
+        Equal(CaptureDecision.Accept, queue.Classify("profile-answer-one", prepared), "first capture accepted");
+        queue.OnCaptureSucceeded("profile-answer-one");
+
+        // Activate the next job so Classify has somewhere to attribute to.
+        a.Status = "Completed";
+        var second = queue.Next();
+        Equal(b.JobId, second!.JobId, "second job becomes active");
+        Equal(CaptureDecision.Duplicate, queue.Classify("profile-answer-one", prepared), "same text refused for next job");
+
+        queue.OnCaptureTimedOut("late-clipboard-text");
+        // After timeout ActiveJobId is null — begin again to test late quarantine.
+        queue.BeginJob(b.JobId);
+        Equal(CaptureDecision.LateResponse, queue.Classify("late-clipboard-text", prepared), "timed-out clipboard quarantined");
+        Equal(CaptureDecision.PromptEcho, queue.Classify(prepared, prepared), "prompt echo classified");
     }
 
     // ---------- the importer ----------

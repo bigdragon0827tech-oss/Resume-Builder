@@ -157,6 +157,49 @@ public sealed class GlobalHotkey : IDisposable {
         return GetForegroundWindow();
     }
 
+    const uint GA_ROOT = 2;
+
+    [DllImport("user32.dll")]
+    static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+
+    [DllImport("user32.dll")]
+    static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    /// <summary>
+    /// True when the foreground window is <paramref name="topLevelHwnd"/> or a child/descendant of it
+    /// (WebView2's Chromium HWND is often the actual focus target after SetForegroundWindow succeeds
+    /// on the WPF top-level window — an exact-handle compare would falsely report foreground=False).
+    /// </summary>
+    public static bool IsForegroundOwnedBy(IntPtr topLevelHwnd) {
+        if (topLevelHwnd == IntPtr.Zero) return false;
+        var fg = GetForegroundWindow();
+        return IsOwnedByTopLevel(topLevelHwnd, fg);
+    }
+
+    /// <summary>Pure ownership check — used by production and by regression tests.</summary>
+    public static bool IsOwnedByTopLevel(IntPtr topLevelHwnd, IntPtr candidateHwnd) {
+        if (topLevelHwnd == IntPtr.Zero || candidateHwnd == IntPtr.Zero) return false;
+        if (candidateHwnd == topLevelHwnd) return true;
+        try {
+            var root = GetAncestor(candidateHwnd, GA_ROOT);
+            return root == topLevelHwnd;
+        } catch {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// True when the foreground window belongs to <paramref name="processId"/> (our process).
+    /// Complements <see cref="IsForegroundOwnedBy"/> when a hosted HWND is not under the WPF root
+    /// but still belongs to Resume Builder.
+    /// </summary>
+    public static bool IsForegroundOwnedByProcess(int processId) {
+        var fg = GetForegroundWindow();
+        if (fg == IntPtr.Zero) return false;
+        GetWindowThreadProcessId(fg, out uint pid);
+        return pid == (uint)processId;
+    }
+
     public static bool TryRestoreForegroundWindow(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero || !IsWindow(hwnd))

@@ -41,15 +41,16 @@ public sealed class ReadyToast : Window {
         ShowInTaskbar = false;
         ShowActivated = false;
         Topmost = true;
-        Background = new SolidColorBrush(Color.FromRgb(0x1F, 0x6F, 0x4E));
-        BorderBrush = new SolidColorBrush(Color.FromRgb(0x16, 0x52, 0x3A));
+        Background = BrushOr(Color.FromRgb(0x15, 0x1A, 0x20), "Bg.Surface");
+        BorderBrush = BrushOr(Color.FromRgb(0x3B, 0x9E, 0xFF), "Accent.Default");
         BorderThickness = new Thickness(1);
         Cursor = Cursors.Hand;
 
         var close = new Button {
             Content = "✕", Width = 24, Height = 24, Padding = new Thickness(0),
             Background = Brushes.Transparent, BorderThickness = new Thickness(0),
-            Foreground = Brushes.White, Cursor = Cursors.Arrow,
+            Foreground = BrushOr(Color.FromRgb(0xE8, 0xED, 0xF2), "Text.Primary"),
+            Cursor = Cursors.Arrow,
             HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top
         };
         close.Click += (_, e) => { e.Handled = true; Close(); };
@@ -70,8 +71,17 @@ public sealed class ReadyToast : Window {
         Loaded += (_, _) => PlaceOnRightSide();
     }
 
+    static SolidColorBrush BrushOr(Color fallback, string key) {
+        try {
+            if (System.Windows.Application.Current?.TryFindResource(key) is SolidColorBrush brush)
+                return brush;
+        } catch { }
+        return new SolidColorBrush(fallback);
+    }
+
     static TextBlock Text(string text, double size, FontWeight weight, double top = 0) => new() {
-        Text = text, FontSize = size, FontWeight = weight, Foreground = Brushes.White,
+        Text = text, FontSize = size, FontWeight = weight,
+        Foreground = BrushOr(Color.FromRgb(0xE8, 0xED, 0xF2), "Text.Primary"),
         TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, top, 0, 0),
         FontFamily = new FontFamily("Segoe UI")
     };

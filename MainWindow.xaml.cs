@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Web.WebView2.Core;
 using System.Runtime.InteropServices;
+using RadioButton = System.Windows.Controls.RadioButton;
 
 namespace ResumeBuilder;
 
@@ -32,13 +33,17 @@ public partial class MainWindow : Window {
     readonly CaptureWatchdog _captureWatchdog = new();
     /// <summary>The job whose answer ChatGPT confirmably finished and whose Copy is still awaited.</summary>
     string? _readyJobId;
-    SettingsWindow? _settings;
     JobTask? _activeJob;
     CoreWebView2Environment? _webEnvironment;
     Microsoft.Web.WebView2.Wpf.WebView2? _chatView;
     ChatHost? _chat;
     System.Threading.CancellationTokenSource? _sendCancellation;
     string? _activePreparedText;
+
+    /// <summary>Embedded settings / applications view (shell). Replaces the old floating Settings window.</summary>
+    SettingsWindow SettingsHost => SettingsView;
+
+    bool _darkTheme = true;
 
     /// <summary>The active job's prepared request. Built ONCE; every retry re-sends this same text.</summary>
     PreparedRequest? _activePrepared;
@@ -48,6 +53,15 @@ public partial class MainWindow : Window {
 
     /// <summary>One copy keystroke per attempt, whether it was asked for at ReadyUnconfirmed or Ready.</summary>
     readonly CaptureRequestGate _copyRequest=new();
+
+    /// <summary>Prevents overlapping AdvanceQueueAsync loops (nested fail→advance + outer advance).</summary>
+    int _advanceDepth;
+
+    /// <summary>Live ChatGPT WebView2 generation — bumped on create and on dispose.</summary>
+    readonly BrowserGeneration _browserGen = new();
+
+    /// <summary>Cancelled when the live browser is disposed so delayed focus/copy work exits.</summary>
+    CancellationTokenSource? _browserOpsCts;
 
     IntPtr _previousWorkWindow = IntPtr.Zero;
 
@@ -67,7 +81,8 @@ public partial class MainWindow : Window {
                 return;
             }
 
-            if (current == resumeBuilder)
+            if (GlobalHotkey.IsForegroundOwnedBy(resumeBuilder)
+                || GlobalHotkey.IsForegroundOwnedByProcess(Environment.ProcessId))
             {
                 _previousWorkWindow = IntPtr.Zero;
                 PerfLog.Line("WORK WINDOW save skipped - ResumeBuilder already foreground");
@@ -98,15 +113,14 @@ public partial class MainWindow : Window {
 
         try
         {
-            var current = GlobalHotkey.CurrentForegroundWindow();
-
             var resumeBuilder =
                 new System.Windows.Interop.WindowInteropHelper(this).Handle;
 
             // Important:
             // if the user has already switched somewhere else manually,
             // do not steal focus from that new window.
-            if (current != resumeBuilder)
+            if (!GlobalHotkey.IsForegroundOwnedBy(resumeBuilder)
+                && !GlobalHotkey.IsForegroundOwnedByProcess(Environment.ProcessId))
             {
                 PerfLog.Line(
                     $"WORK WINDOW restore skipped - foreground already changed ({reason})");
@@ -149,11 +163,33 @@ public partial class MainWindow : Window {
             UpdateViewSwitch();
         };
         Loaded += MainWindow_Loaded;
-        Closed += (_, _) => { DismissAnswerReady("app closed"); _hotkey.Dispose(); _watcher.Dispose(); _ = DisposeChatViewAsync(); };
+        Closed += (_, _) => {
+            DismissAnswerReady("app closed");
+            _hotkey.Dispose();
+            _watcher.Dispose();
+            JobBrowserView.Shutdown();
+            _ = DisposeChatViewAsync();
+        };
         _watcher.TextCaptured += OnClipboardTextCaptured;
         UpdateSummary();
         UpdateViewSwitch();
+        WireShell();
         if (recovered > 0) QueueStatus.Text = $"Recovered {recovered} job(s) left in progress by the previous session.";
+    }
+
+    void WireShell() {
+        JobBrowserView.ImportJob = ImportFromBrowser;
+        JobBrowserView.JobExists = url => _tasks.Any(t =>
+            JobUrls.Normalize(t.Link) == JobUrls.Normalize(url));
+        JobBrowserView.RecordApplyUrl = RecordApplyUrlFromBrowser;
+
+        DashboardView.RefreshInputRequested += () => RefreshInput();
+        DashboardView.OpenJobBrowserRequested += () => NavigateTo("JobBrowser");
+        DashboardView.StartQueueRequested += () => StartQueue_Click(this, new RoutedEventArgs());
+        DashboardView.OpenReadyToApplyRequested += () => {
+            NavigateTo("Applications");
+            SettingsHost.ShowReadyToApplyQueue();
+        };
     }
 
     async void MainWindow_Loaded(object sender, RoutedEventArgs e) {
@@ -172,40 +208,187 @@ public partial class MainWindow : Window {
 
     async Task EnsureChatAsync() {
         if (_chat is null) return;
-        try { await _chat.EnsureAsync(); }
+        try {
+            // Host and view can desync if a dispose cleared the control while ChatHost still
+            // believed a browser was alive — EnsureAsync would then no-op and leave Chat null.
+            if (ChatHost.IsDesynced(_chat.IsAlive, _chatView?.CoreWebView2 is not null)) {
+                PerfLog.Line("BROWSER desync: ChatHost.IsAlive but CoreWebView2 missing — recycling before ensure");
+                await _chat.RecycleAsync();
+            }
+
+            PerfLog.Line($"BROWSER ensure requested alive={_chat.IsAlive} releasing={_chat.IsReleasing}");
+            await _chat.EnsureAsync();
+
+            if (_chatView?.CoreWebView2 is null)
+                throw new InvalidOperationException(
+                    "ChatGPT WebView2 did not initialize (CoreWebView2 is null after Ensure).");
+
+            PerfLog.Line($"BROWSER ensure ok pid={_chat.BrowserProcessId}");
+        }
         catch (Exception ex) {
+            PerfLog.Line("BROWSER ensure FAILED: " + ex.GetType().Name + ": " + ex.Message);
             System.Windows.MessageBox.Show(
                 "ChatGPT browser could not be initialized.\n\n" + ex.Message,
                 "Resume Builder v1.0", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
-    // ---------- job browser ----------
+    // ---------- job browser (embedded in shell) ----------
 
-    JobBrowserWindow? _jobBrowser;
+    void NavigateTo(string destination) {
+        RadioButton? match = destination switch {
+            "Dashboard" => NavDashboard,
+            "JobBrowser" => NavJobBrowser,
+            "TaskQueue" => NavTaskQueue,
+            "AiWorkspace" => NavAiWorkspace,
+            "Documents" => NavDocuments,
+            "Applications" => NavApplications,
+            "Settings" => NavSettings,
+            _ => null
+        };
+        if (match is not null && match.IsChecked != true) match.IsChecked = true;
+        else ShowDestination(destination);
+    }
 
-    /// <summary>
-    /// Opens the built-in job browser, or brings it forward if it is already open. It runs on its own
-    /// WebView2 profile in its own window, so it is untouched by the ChatGPT browser's recycling and
-    /// takes no part in the queue. Owning it means closing Resume Builder closes it too.
-    /// </summary>
-    void JobBrowser_Click(object sender,RoutedEventArgs e) {
-        if(_jobBrowser is not null) {
-            if(_jobBrowser.WindowState==WindowState.Minimized) _jobBrowser.WindowState=WindowState.Normal;
-            _jobBrowser.Activate();
-            return;
+    void Nav_Checked(object sender, RoutedEventArgs e) {
+        if (sender is RadioButton { IsChecked: true, Tag: string tag })
+            ShowDestination(tag);
+    }
+
+    void ShowDestination(string destination) {
+        DashboardView.Visibility = Visibility.Collapsed;
+        JobBrowserView.Visibility = Visibility.Collapsed;
+        TaskQueueView.Visibility = Visibility.Collapsed;
+        AiWorkspaceView.Visibility = Visibility.Collapsed;
+        DocumentsView.Visibility = Visibility.Collapsed;
+        SettingsView.Visibility = Visibility.Collapsed;
+        QueueCommandBar.Visibility = Visibility.Collapsed;
+
+        switch (destination) {
+            case "Dashboard":
+                DashboardView.Visibility = Visibility.Visible;
+                PageTitleText.Text = "Dashboard";
+                RefreshDashboardPage();
+                break;
+            case "JobBrowser":
+                JobBrowserView.Visibility = Visibility.Visible;
+                PageTitleText.Text = "Job Browser";
+                _ = JobBrowserView.EnsureReadyAsync();
+                break;
+            case "TaskQueue":
+                TaskQueueView.Visibility = Visibility.Visible;
+                QueueCommandBar.Visibility = Visibility.Visible;
+                PageTitleText.Text = "Task Queue";
+                UpdateJobDetailPanels();
+                break;
+            case "AiWorkspace":
+                AiWorkspaceView.Visibility = Visibility.Visible;
+                QueueCommandBar.Visibility = Visibility.Visible;
+                PageTitleText.Text = "AI Workspace";
+                UpdateJobDetailPanels();
+                break;
+            case "Documents":
+                DocumentsView.Visibility = Visibility.Visible;
+                PageTitleText.Text = "Resume Documents";
+                DocumentsView.Refresh(_tasks);
+                break;
+            case "Applications":
+                SettingsView.Visibility = Visibility.Visible;
+                PageTitleText.Text = "Applications";
+                SettingsHost.SetShellMode(applicationsFocus: true);
+                break;
+            case "Settings":
+                SettingsView.Visibility = Visibility.Visible;
+                PageTitleText.Text = "Settings";
+                SettingsHost.SetShellMode(applicationsFocus: false);
+                SettingsHost.ShowSection("Candidate Profile");
+                break;
         }
 
-        _jobBrowser=new JobBrowserWindow {
-            Owner=this,
-            ImportJob=ImportFromBrowser,
-            JobExists = url => _tasks.Any(t =>
-                JobUrls.Normalize(t.Link) ==
-                JobUrls.Normalize(url)),
-            RecordApplyUrl = RecordApplyUrlFromBrowser
+        // Keep WebView2 attached and Visible (1×1 keep-alive) when AI Workspace is not shown so
+        // background capture is not suspended by a Collapsed ancestor.
+        PlaceChatView(destination == "AiWorkspace");
+    }
+
+    /// <summary>Hosts the ChatGPT WebView2 on the AI Workspace panel or the always-visible keep-alive.</summary>
+    void PlaceChatView(bool onWorkspace) {
+        if (_chatView is null) return;
+        try {
+            if (onWorkspace) {
+                if (!ReferenceEquals(ChatHostPanel.Child, _chatView)) {
+                    ChatKeepAliveHost.Child = null;
+                    ChatHostPanel.Child = _chatView;
+                }
+            } else {
+                if (!ReferenceEquals(ChatKeepAliveHost.Child, _chatView)) {
+                    ChatHostPanel.Child = null;
+                    ChatKeepAliveHost.Child = _chatView;
+                }
+            }
+        } catch (Exception ex) {
+            PerfLog.Line("BROWSER place host failed: " + ex.GetType().Name);
+        }
+    }
+
+    void RefreshDashboardPage() {
+        string? active = _activeJob is null ? null : $"{_activeJob.Company} — {_activeJob.Title}";
+        DashboardView.Refresh(_tasks, _queue.State, active, _attempt);
+    }
+
+    void UpdateJobDetailPanels() {
+        var job = TaskList.SelectedItem as JobTask ?? _activeJob;
+        if (job is null) {
+            DetailCompany.Text = "No job selected";
+            DetailTitle.Text = "Select a job in the queue to see details.";
+            DetailMeta.Text = "";
+            WorkspaceCompany.Text = "No job selected";
+            WorkspaceTitle.Text = "Prepare & Send uses the selected queue job.";
+            WorkspaceMeta.Text = "";
+            return;
+        }
+        var meta =
+            $"Queue: {job.StatusDisplay}\nApplication: {job.ApplicationStatus}\n" +
+            $"Readiness: {job.ReadinessDisplay}\nPlatform: {JobTracker.PlatformDisplayName(job.ApplicationPlatform)}\n" +
+            $"Job id: {job.JobId}" +
+            (string.IsNullOrWhiteSpace(job.FailureReason) ? "" : $"\nFailure: {job.FailureReason}");
+        DetailCompany.Text = job.Company;
+        DetailTitle.Text = job.Title;
+        DetailMeta.Text = meta;
+        WorkspaceCompany.Text = job.Company;
+        WorkspaceTitle.Text = job.Title;
+        WorkspaceMeta.Text = meta + (_attempt > 0 ? $"\nGPT attempt {_attempt}/{GptAttempts.MaxAttempts}" : "");
+        ContextChip.Text = $"{job.Company} — {job.Title}";
+    }
+
+    void OpenAiWorkspace_Click(object sender, RoutedEventArgs e) => NavigateTo("AiWorkspace");
+    void ShowTaskQueue_Click(object sender, RoutedEventArgs e) => NavigateTo("TaskQueue");
+
+    void ThemeToggle_Click(object sender, RoutedEventArgs e) {
+        _darkTheme = !_darkTheme;
+        var app = System.Windows.Application.Current.Resources.MergedDictionaries;
+        // Replace the theme root: Themes/Theme.xaml merges Colors.Dark — swap color dictionary.
+        var colors = new ResourceDictionary {
+            Source = new Uri(_darkTheme
+                ? "Themes/Colors.Dark.xaml"
+                : "Themes/Colors.Light.xaml", UriKind.Relative)
         };
-        _jobBrowser.Closed+=(_,_) => _jobBrowser=null;
-        _jobBrowser.Show();
+        // Theme.xaml is first merge; rebuild app resources simply:
+        System.Windows.Application.Current.Resources.MergedDictionaries.Clear();
+        var theme = new ResourceDictionary { Source = new Uri("Themes/Theme.xaml", UriKind.Relative) };
+        if (!_darkTheme) {
+            // After Theme (dark), overlay light colors so DynamicResource picks them up.
+            theme.MergedDictionaries.Add(colors);
+        }
+        System.Windows.Application.Current.Resources.MergedDictionaries.Add(theme);
+        if (!_darkTheme)
+            System.Windows.Application.Current.Resources.MergedDictionaries.Add(colors);
+        ThemeToggleButton.Content = _darkTheme ? "Use light theme" : "Use dark theme";
+    }
+
+    void RefreshDashboardIfOpen() {
+        SettingsHost.RefreshTracking();
+        if (DashboardView.Visibility == Visibility.Visible) RefreshDashboardPage();
+        if (DocumentsView.Visibility == Visibility.Visible) DocumentsView.Refresh(_tasks);
     }
 
     /// <summary>
@@ -257,7 +440,7 @@ public partial class MainWindow : Window {
         UpdateViewSwitch();
         RefreshButtons();
         RefreshDashboardIfOpen();
-        _settings?.RefreshInspector();
+        SettingsHost.RefreshInspector();
         ImportMessage.Text="Job history cleared.";
         CaptureStatus.Text="";
         DocumentStatus.Text="";
@@ -278,15 +461,6 @@ public partial class MainWindow : Window {
         return result;
     }
 
-    /// <summary>
-    /// Rebuilds the Applications dashboard's cards, chart, pipeline and board after this window
-    /// changed tracking data. Rows already update themselves through JobTask's change notification;
-    /// the aggregates only through RefreshTracking. Nothing runs when Settings is not open.
-    /// </summary>
-    void RefreshDashboardIfOpen() {
-        if(_settings is { IsLoaded: true }) _settings.RefreshTracking();
-    }
-
     /// <summary>How long to wait for a browser process to actually exit before reporting a timeout.</summary>
     static readonly TimeSpan BrowserExitTimeout = TimeSpan.FromSeconds(10);
 
@@ -294,18 +468,36 @@ public partial class MainWindow : Window {
     async Task<int> CreateChatViewAsync() {
         Directory.CreateDirectory(Storage.WebViewUserDataFolder);
 
+        // WebView2 initialization is unreliable while its host is Collapsed; the caller must have
+        // navigated to AI Workspace first. Still force a layout pass so the panel has a real size.
+        if (AiWorkspaceView.Visibility != Visibility.Visible)
+            NavigateTo("AiWorkspace");
+        ChatHostPanel.UpdateLayout();
+
         _webEnvironment ??= await CoreWebView2Environment.CreateAsync(
             browserExecutableFolder: null, userDataFolder: Storage.WebViewUserDataFolder);
 
         var view = new Microsoft.Web.WebView2.Wpf.WebView2();
-        ChatHostPanel.Child = view;
+        // Prefer the workspace panel when it is visible; otherwise park on the keep-alive host.
+        if (AiWorkspaceView.Visibility == Visibility.Visible)
+            ChatHostPanel.Child = view;
+        else
+            ChatKeepAliveHost.Child = view;
+        PerfLog.Line("BROWSER EnsureCoreWebView2Async…");
         await view.EnsureCoreWebView2Async(_webEnvironment);
         view.CoreWebView2.Settings.AreDevToolsEnabled = false;
-        view.Source = new Uri(ChatComposer.ChatUrl);
+        // Do NOT set Source here. Create only initializes CoreWebView2; NavigateFreshChatAsync owns
+        // the first load and waits for NavigationCompleted + composer readiness. Setting Source
+        // raced with that Navigate and made NavigationCompleted fire in a few milliseconds on a
+        // page that was not yet usable — every post-recycle send then failed immediately.
+        _browserOpsCts?.Cancel();
+        _browserOpsCts?.Dispose();
+        _browserOpsCts = new CancellationTokenSource();
+        var gen = _browserGen.BeginNew();
         _chatView = view;
 
         var pid = (int)view.CoreWebView2.BrowserProcessId;
-        PerfLog.Line($"BROWSER created            pid={pid}");
+        PerfLog.Line($"BROWSER created            pid={pid} gen={gen} (about:blank — navigate owns first load)");
         return pid;
     }
 
@@ -319,6 +511,11 @@ public partial class MainWindow : Window {
     /// Returns true only when the process is confirmed gone.
     /// </summary>
     async Task<bool> DisposeChatViewAsync() {
+        // Invalidate first so any in-flight FocusChatPane / RequestCopy continuation exits before
+        // _chatView is cleared — and cannot attach to a browser created for the next job.
+        try { _browserOpsCts?.Cancel(); } catch { }
+        _browserGen.Invalidate();
+
         var view = _chatView;
         _chatView = null;                       // drop the reference first
         _sendCancellation?.Cancel();            // nothing may still be polling the old browser
@@ -340,6 +537,7 @@ public partial class MainWindow : Window {
         if (environment is not null) environment.BrowserProcessExited += OnBrowserExited;
 
         try { ChatHostPanel.Child = null; } catch { }
+        try { ChatKeepAliveHost.Child = null; } catch { }
         try { view.Dispose(); } catch { }       // asks the controller and browser to shut down
 
         var confirmed = await WaitForBrowserExitAsync(exited.Task, pid);
@@ -384,7 +582,9 @@ public partial class MainWindow : Window {
     /// <summary>Called once a job's result is safely saved — never while a response is pending.</summary>
     async Task RecycleChatAsync() {
         if (_chat is null) return;
+        PerfLog.Line($"BROWSER recycle begin alive={_chat.IsAlive} pid={_chat.BrowserProcessId}");
         using (PerfLog.Measure("chat recycle")) await _chat.RecycleAsync();
+        PerfLog.Line($"BROWSER recycle end alive={_chat.IsAlive} timedOut={_chat.LastShutdownTimedOut}");
         PerfLog.Snapshot("after ChatGPT WebView2 recycle");
         if (_chat.LastShutdownTimedOut)
             DocumentStatus.Text += (DocumentStatus.Text.Length > 0 ? "  " : "") +
@@ -396,14 +596,6 @@ public partial class MainWindow : Window {
         if (_chat is null || !_chat.IsAlive) return;
         using (PerfLog.Measure("chat dispose")) await _chat.ReleaseAsync();
         PerfLog.Snapshot("after queue WebView2 disposal");
-    }
-
-    void Settings_Click(object sender,RoutedEventArgs e) {
-        if(_settings is null || !_settings.IsLoaded) {
-            _settings=new SettingsWindow();
-            _settings.Owner=this;
-            _settings.Show();
-        } else _settings.Activate();
     }
 
     void Refresh_Click(object sender,RoutedEventArgs e)=>RefreshInput();
@@ -457,11 +649,27 @@ public partial class MainWindow : Window {
         HistoryViewButton.Content = $"History ({TaskViews.HistoryCount(_tasks)})";
         ActiveViewButton.FontWeight = _showHistory ? FontWeights.Normal : FontWeights.SemiBold;
         HistoryViewButton.FontWeight = _showHistory ? FontWeights.SemiBold : FontWeights.Normal;
+        UpdateQueueEmptyState();
     }
 
-    void UpdateSummary()=>SummaryText.Text=$"{_tasks.Count} task(s) • {_tasks.Count(x=>x.Status=="Queued")} queued • {_tasks.Count(x=>x.Status=="Completed")} completed";
+    void UpdateSummary() {
+        SummaryText.Text=$"{_tasks.Count} task(s) • {_tasks.Count(x=>x.Status=="Queued")} queued • {_tasks.Count(x=>x.Status=="Completed")} completed";
+        UpdateQueueEmptyState();
+    }
 
-    void TaskList_SelectionChanged(object sender,SelectionChangedEventArgs e)=>RefreshButtons();
+    void UpdateQueueEmptyState() {
+        if (QueueEmptyText is null) return;
+        var count = _showHistory ? TaskViews.HistoryCount(_tasks) : TaskViews.ActiveCount(_tasks);
+        QueueEmptyText.Text = _showHistory
+            ? "No completed jobs yet."
+            : "No active jobs. Import from the Job Browser or refresh Incoming.";
+        QueueEmptyText.Visibility = count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    void TaskList_SelectionChanged(object sender,SelectionChangedEventArgs e) {
+        RefreshButtons();
+        UpdateJobDetailPanels();
+    }
 
     void RetryFailed_Click(object sender,RoutedEventArgs e) {
         var n=0;
@@ -482,6 +690,16 @@ public partial class MainWindow : Window {
         PauseQueueButton.Content=_queue.State==QueueState.Paused ? "▶ Resume Queue" : "⏸ Pause Queue";
         StopQueueButton.IsEnabled=running;
         SkipJobButton.IsEnabled=running && _queue.ActiveJobId is not null;
+        UpdateBusyIndicators();
+    }
+
+    /// <summary>Binds indeterminate progress bars to real queue / Processing state — never simulated.</summary>
+    void UpdateBusyIndicators() {
+        var busy = _queue.IsRunning || _tasks.Any(t => t.Status == "Processing");
+        if (ShellBusyBar is not null)
+            ShellBusyBar.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        if (ChatBusyBar is not null)
+            ChatBusyBar.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
     }
 
     // ---------- shared single-job run (manual and queue take the same path) ----------
@@ -516,9 +734,14 @@ public partial class MainWindow : Window {
         Storage.SaveTasks(_tasks);
         UpdateSummary();
         RefreshButtons();
-        _settings?.RefreshInspector();
+        SettingsHost.RefreshInspector();
         TaskList.SelectedItem=job;
         TaskList.ScrollIntoView(job);
+        UpdateJobDetailPanels();
+        // ChatGPT lives only on the AI Workspace page. Always show it before a send — otherwise a
+        // user who switched to Task Queue (or anywhere else) after job 1 never sees the recycled
+        // browser for job 2, and EnsureCoreWebView2Async can also fail inside a Collapsed host.
+        NavigateTo("AiWorkspace");
 
         await SendAttemptAsync(job,prepared,settings);
         return true;
@@ -560,7 +783,10 @@ public partial class MainWindow : Window {
         // WebView2 user-data folder is untouched, so the signed-in session carries over.
         bool navigated;
         using(PerfLog.Measure("navigate fresh chat")) navigated=await NavigateFreshChatAsync();
-        if(!navigated) { await HandleGptFailureAsync(job,GptFailure.SendSide); return; }
+        if(!navigated) {
+            PerfLog.Line($"GPT send-side {job.JobId} attempt {_attempt}: fresh-chat navigation/composer not ready");
+            await HandleGptFailureAsync(job,GptFailure.SendSide); return;
+        }
 
         // With auto-fill off the user types it themselves: not an attempt this code can retry.
         if(!settings.AutoFillComposer) return;
@@ -569,7 +795,10 @@ public partial class MainWindow : Window {
         using(PerfLog.Measure("composer fill"))
             fill=await ChatComposer.FillAsync(Chat,prepared.Text);
         ImportMessage.Text=$"Prepared {job.Company} — {job.Title}. "+fill.Message;
-        if(!fill.Success) { await HandleGptFailureAsync(job,GptFailure.SendSide); return; }
+        if(!fill.Success) {
+            PerfLog.Line($"GPT send-side {job.JobId} attempt {_attempt}: composer fill failed — {SanitizeDiag(fill.Message)}");
+            await HandleGptFailureAsync(job,GptFailure.SendSide); return;
+        }
         if(!settings.AutoSend) {
             QueueStatus.Text="Auto-Send is off — press Enter in ChatGPT to send the prompt.";
             return;
@@ -584,6 +813,7 @@ public partial class MainWindow : Window {
 
         if(send.Success) {
             QueueStatus.Text=$"{GptAttempts.AttemptStatus(_attempt)} — {job.Company} — {job.Title}: {send.Message}";
+            PerfLog.Line($"GPT send ok {job.JobId} attempt {_attempt}/{GptAttempts.MaxAttempts}");
             _ = WatchForAnswerAsync(job,settings);     // A6.6.13: tell the user when it is ready
 
             // If the previous completed job temporarily brought ResumeBuilder
@@ -592,7 +822,18 @@ public partial class MainWindow : Window {
             RestorePreviousWorkWindow("next job auto-sent");
         }
         // A cancelled send is our own doing (a retry or a stop), never a failure of this attempt.
-        else if(send.Outcome!=SendOutcome.Cancelled) await HandleGptFailureAsync(job,GptFailure.SendSide);
+        else if(send.Outcome!=SendOutcome.Cancelled) {
+            PerfLog.Line($"GPT send failed {job.JobId} attempt {_attempt}/{GptAttempts.MaxAttempts} " +
+                         $"outcome={send.Outcome} — {SanitizeDiag(send.Message)}");
+            await HandleGptFailureAsync(job,GptFailure.SendSide);
+        }
+    }
+
+    /// <summary>One-line diagnostic text with no prompt/clipboard payload.</summary>
+    static string SanitizeDiag(string? message) {
+        if (string.IsNullOrWhiteSpace(message)) return "(none)";
+        var t = message.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return t.Length <= 160 ? t : t[..160] + "…";
     }
 
     // ---------- ChatGPT retry policy (GptAttempts decides; this performs the effects) ----------
@@ -661,6 +902,7 @@ public partial class MainWindow : Window {
         UpdateSummary();
         RefreshButtons();
         QueueStatus.Text=$"{job.Company} — {job.Title}: {message}";
+        PerfLog.Line($"QUEUE job terminal Failed {job.JobId} reason={failureReason}");
         PerfLog.Snapshot("after job "+job.JobId);
 
         await RecycleChatAsync();
@@ -704,15 +946,10 @@ public partial class MainWindow : Window {
         {
             PerfLog.Line("READY " + job.JobId);
 
-            // One keystroke per attempt: if the ambiguous state already asked for the copy, asking
-            // again here would send a second Ctrl+Shift+I for the same answer.
-            if(_copyRequest.TryRequest()) await RequestCopyAsync(job);
-            else PerfLog.Line("KEY already requested for this attempt " + job.JobId);
-
-            ShowAnswerReady(job, settings);
-
-            if(_watcher.IsArmed)
-                _ = RunCaptureWatchdogAsync(job);
+            // Background capture: read the assistant response from WebView2. No focus steal, no
+            // SendInput, no clipboard write. Manual Ctrl+Shift+; remains available if this fails.
+            ShowAnswerReady(job, settings, copyPathAlreadyFocused: true);
+            await TryBackgroundCaptureAsync(job);
         } else if(outcome==CompletionOutcome.NoResponseStart) {
 
             // A confirmed Send produced no generation, and no answer was captured, within the budget.
@@ -735,57 +972,184 @@ public partial class MainWindow : Window {
     /// the existing behaviour, now shared by the confirmed Ready path and the ambiguous one. It reads
     /// nothing from the page; the answer still arrives only through the clipboard.
     /// </summary>
-    async Task RequestCopyAsync(JobTask job) {
+    /// <returns>True when the copy shortcut was dispatched (not when capture has landed).</returns>
+    async Task<bool> RequestCopyAsync(JobTask job) {
+        var gen = _browserGen.Current;
+        var ct = _browserOpsCts?.Token ?? CancellationToken.None;
+
         RememberPreviousWorkWindow();
+
+        if (AiWorkspaceView.Visibility != Visibility.Visible)
+            NavigateTo("AiWorkspace");
 
         GlobalHotkey.BringToFront(this);
 
         // Allow Windows to finish foreground activation.
-        await Task.Delay(450);
-
-        FocusChatPane();
-
-        // Allow WebView2 to acquire keyboard focus.
-        await Task.Delay(150);
-
-        if (_chatView?.CoreWebView2 != null)
-        {
-            await _chatView.CoreWebView2.ExecuteScriptAsync("""
-                (() => {
-                    const el = document.activeElement;
-
-                    if (el && typeof el.blur === 'function') {
-                        el.blur();
-                    }
-
-                    document.body.tabIndex = -1;
-                    document.body.focus();
-                })();
-            """);
-
-            await Task.Delay(150);
+        try { await Task.Delay(450, ct); } catch (OperationCanceledException) {
+            PerfLog.Line($"KEY aborted (browser recycled) {job.JobId}");
+            return false;
         }
 
-        if (_chatView?.IsFocused == true)
-        {
-            PerfLog.Line("KEY Ctrl+Shift+I " + job.JobId);
-
-            try
-            {
-                await Task.Delay(350);
-                KeyboardSimulator.SendCtrlShiftI();
-            }
-            catch(Exception ex)
-            {
-                PerfLog.Line("KEY Ctrl+Shift+I FAILED " +
-                            job.JobId + ": " + ex.Message);
-            }
+        if (!CopyFocusPolicy.MayTouchBrowser(gen, _browserGen.Current, ct.IsCancellationRequested, _chatView is not null)) {
+            PerfLog.Line($"KEY aborted (stale browser gen) {job.JobId}");
+            return false;
         }
-        else
-        {
+
+        await FocusChatPaneForInputAsync(gen, ct);
+
+        if (!CopyFocusPolicy.MayTouchBrowser(gen, _browserGen.Current, ct.IsCancellationRequested, _chatView is not null)) {
+            PerfLog.Line($"KEY aborted after focus (stale browser) {job.JobId}");
+            return false;
+        }
+
+        var ourHwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        var isForeground = IsResumeBuilderForeground(ourHwnd);
+        PerfLog.Line($"KEY pre-send {job.JobId} foreground={isForeground} " +
+                     $"IsFocused={_chatView?.IsFocused} IsKeyboardFocusWithin={_chatView?.IsKeyboardFocusWithin}");
+
+        if (!isForeground) {
+            // Do not SendInput into another app. Keep the job armed and retry when we regain focus.
+            PerfLog.Line("KEY NOT SENT - Resume Builder is not the foreground window " + job.JobId);
+            CaptureStatus.Text =
+                $"ChatGPT finished — bring Resume Builder to the front (or press {GlobalHotkey.DisplayText}), " +
+                $"then press {ChatCompletionWatcher.ShortcutText} or click Copy on the answer. " +
+                "Auto-copy will retry briefly while this window is in the background.";
+            _ = RetryCopyWhenForegroundAsync(job, gen, ct);
+            return false;
+        }
+
+        return await DispatchCopyShortcutAsync(job, gen, ct);
+    }
+
+    /// <summary>True when our top-level window or one of its descendants (e.g. WebView2) owns the foreground.</summary>
+    bool IsResumeBuilderForeground(IntPtr ourHwnd) {
+        if (GlobalHotkey.IsForegroundOwnedBy(ourHwnd)) return true;
+        // Fallback: same process (covers rare hosted HWNDs that are not under the WPF root).
+        return GlobalHotkey.IsForegroundOwnedByProcess(Environment.ProcessId);
+    }
+
+    async Task<bool> DispatchCopyShortcutAsync(JobTask job, int gen, CancellationToken ct) {
+        if (!CopyFocusPolicy.MayTouchBrowser(gen, _browserGen.Current, ct.IsCancellationRequested, _chatView is not null))
+            return false;
+        // Capture already landed — do not press the shortcut again or touch a recycling browser.
+        if (!_watcher.IsArmed || _activeJob != job) {
+            PerfLog.Line($"KEY skipped — capture no longer waiting {job.JobId}");
+            return false;
+        }
+
+        var seqBefore = _watcher.ArmedSequence;
+        PerfLog.Line($"KEY {KeyboardSimulator.CopyShortcutText} {job.JobId}");
+
+        try {
+            try { await Task.Delay(200, ct); } catch (OperationCanceledException) { return false; }
+            KeyboardSimulator.SendCopyShortcut();
+        } catch (Exception ex) {
+            PerfLog.Line($"KEY {KeyboardSimulator.CopyShortcutText} FAILED {job.JobId}: {ex.Message}");
+            return false;
+        }
+
+        // Brief settle: ChatGPT's copy is async to the clipboard. If capture already accepted the
+        // answer and recycled the browser, exit quietly — do not treat that as a focus failure.
+        try { await Task.Delay(400, ct); } catch (OperationCanceledException) {
+            PerfLog.Line($"KEY clipboard check skipped (browser recycled after shortcut) {job.JobId}");
+            return true;
+        }
+
+        if (!_watcher.IsArmed) {
+            PerfLog.Line($"KEY clipboard check skipped (capture already accepted) {job.JobId}");
+            return true;
+        }
+
+        var changed = _watcher.HasClipboardChangedSinceArm();
+        PerfLog.Line($"KEY clipboard after shortcut {job.JobId} changed={changed} " +
+                     $"(armedSeq={seqBefore})");
+        if (!changed) {
+            CaptureStatus.Text =
+                $"The copy shortcut was sent but the clipboard did not change. Press {ChatCompletionWatcher.ShortcutText} " +
+                "yourself, or click Copy on the answer's json code block.";
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Bounded wait for Resume Builder to own the foreground, then one copy retry — never an
+    /// unbounded focus-stealing loop, and never a re-send of the ChatGPT prompt.
+    /// </summary>
+    async Task RetryCopyWhenForegroundAsync(JobTask job, int gen, CancellationToken ct) {
+        var deadline = DateTime.UtcNow + CopyFocusPolicy.ForegroundRetryBudget;
+        var ourHwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+
+        while (DateTime.UtcNow < deadline) {
+            if (ct.IsCancellationRequested || !_browserGen.IsCurrent(gen)) return;
+            if (_activeJob != job || job.Status != "Processing" || !_watcher.IsArmed) return;
+            if (_watcher.HasClipboardChangedSinceArm()) return; // manual or other path already copied
+
+            if (IsResumeBuilderForeground(ourHwnd)) {
+                PerfLog.Line($"KEY foreground recovered — retrying copy {job.JobId}");
+                await FocusChatPaneForInputAsync(gen, ct);
+                await DispatchCopyShortcutAsync(job, gen, ct);
+                return;
+            }
+
+            try { await Task.Delay(250, ct); } catch (OperationCanceledException) { return; }
+        }
+
+        PerfLog.Line($"KEY foreground retry exhausted {job.JobId} — waiting for manual Copy");
+    }
+
+    /// <summary>
+    /// Establishes keyboard focus in the ChatGPT WebView2. Generation-scoped: a recycle cancels the
+    /// token and bumps the generation so this exits without a misleading FAILED log.
+    /// </summary>
+    async Task FocusChatPaneForInputAsync(int generation, CancellationToken ct) {
+        try {
+            if (!CopyFocusPolicy.MayTouchBrowser(generation, _browserGen.Current, ct.IsCancellationRequested, _chatView is not null)) {
+                PerfLog.Line($"FocusChatPane skipped — browser gen {generation} no longer live (current={_browserGen.Current})");
+                return;
+            }
+
+            var web = _chatView;
+            if (web is null) {
+                PerfLog.Line($"FocusChatPane skipped — no live view (gen={generation})");
+                return;
+            }
+
+            web.Visibility = Visibility.Visible;
+            web.Focusable = true;
+
+            var wpfFocus = web.Focus();
+            var keyboardFocus = System.Windows.Input.Keyboard.Focus(web) != null;
+
+            try {
+                await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Input);
+                await Task.Delay(100, ct);
+            } catch (OperationCanceledException) {
+                PerfLog.Line($"FocusChatPane skipped — cancelled during yield (gen={generation})");
+                return;
+            }
+
+            if (!CopyFocusPolicy.MayTouchBrowser(generation, _browserGen.Current, ct.IsCancellationRequested, _chatView is not null)
+                || !ReferenceEquals(_chatView, web)) {
+                PerfLog.Line($"FocusChatPane skipped — browser replaced during focus (gen={generation})");
+                return;
+            }
+
+            wpfFocus = web.Focus() || wpfFocus;
+            keyboardFocus = System.Windows.Input.Keyboard.Focus(web) != null || keyboardFocus;
+            try { await Task.Delay(50, ct); } catch (OperationCanceledException) {
+                PerfLog.Line($"FocusChatPane skipped — cancelled after focus (gen={generation})");
+                return;
+            }
+
             PerfLog.Line(
-                "KEY NOT SENT - WebView has no keyboard focus " +
-                job.JobId);
+                $"FocusChatPane WpfFocus={wpfFocus} " +
+                $"KeyboardFocus={keyboardFocus} " +
+                $"IsFocused={web.IsFocused} " +
+                $"IsKeyboardFocusWithin={web.IsKeyboardFocusWithin} gen={generation}");
+        } catch (OperationCanceledException) {
+            PerfLog.Line($"FocusChatPane skipped — cancelled (gen={generation})");
+        } catch (Exception ex) {
+            PerfLog.Line("FocusChatPane ERROR: " + ex.Message);
         }
     }
 
@@ -799,29 +1163,26 @@ public partial class MainWindow : Window {
     /// </summary>
     void OnUnconfirmedReady(JobTask job,AppSettings settings,bool afterRejection) {
         if(_activeJob!=job) return;
-        PerfLog.Line($"READY {job.JobId} (unconfirmed: generation not observed; one copy request, no watchdog)");
-        if(!afterRejection) ShowAnswerReady(job,settings);
-        if(_copyRequest.TryRequest()) _ = RequestCopyAsync(job);
+        PerfLog.Line($"READY {job.JobId} (unconfirmed: generation not observed; waiting for confirmed Ready — no scrape yet)");
+        if(!afterRejection) ShowAnswerReady(job,settings, copyPathAlreadyFocused: true);
+        // Do not read the page or send a copy shortcut here — the answer may still be incomplete.
     }
 
-    void ShowAnswerReady(JobTask job,AppSettings settings) {
-        var instruction=_hotkey.IsRegistered
-            ? $"From any app: press {GlobalHotkey.DisplayText}, then {ChatCompletionWatcher.ShortcutText}."
-            : $"Press {ChatCompletionWatcher.ShortcutText} to copy the answer's code block (or click that code block's Copy button).";
-        QueueStatus.Text=$"✓ Answer ready — {job.Company} — {job.Title}. {instruction}";
+    void ShowAnswerReady(JobTask job,AppSettings settings, bool copyPathAlreadyFocused = false) {
+        QueueStatus.Text=$"✓ Answer ready — {job.Company} — {job.Title}. Capturing in the background…";
 
         if(settings.ReadySound) System.Media.SystemSounds.Asterisk.Play();
 
-        if(IsActive) FocusChatPane();                          // no focus stealing: only when already in front
-        else if(settings.ReadyFlash) {
-            WindowAttention.FlashUntilForeground(this);
-        }
+        // Automatic path must not steal focus or flash the taskbar into the user's face.
+        // Manual toast/hotkey still available as recovery if background capture fails.
+        if (CopyFocusPolicy.ShouldFocusOnAnswerReady(copyPathAlreadyFocused, _watcher.IsArmed, _activeJob == job)
+            && IsActive)
+            FocusChatPane();
 
         if(!settings.ReadyToast) return;
         CloseReadyToast();
-        var toastInstruction=_hotkey.IsRegistered
-            ? $"Press {GlobalHotkey.DisplayText}, then {ChatCompletionWatcher.ShortcutText}.  (Or click here.)"
-            : $"Click here, then press {ChatCompletionWatcher.ShortcutText} (or click Copy on the answer's code block).";
+        var toastInstruction =
+            $"Background capture is running. If it fails, press {GlobalHotkey.DisplayText}, then {ChatCompletionWatcher.ShortcutText} — or click Copy on the answer.";
         var toast=new ReadyToast("✓ Answer ready",$"{job.Company} — {job.Title}",toastInstruction);
         toast.Clicked+=() => { BringToFrontForCopy(); toast.Close(); };
         toast.Closed+=(_,_) => { if(ReferenceEquals(_readyToast,toast)) _readyToast=null; };
@@ -829,9 +1190,69 @@ public partial class MainWindow : Window {
         toast.Show();
     }
 
+    /// <summary>
+    /// After confirmed Ready: read the last assistant JSON payload from WebView2 without focus or clipboard.
+    /// </summary>
+    async Task TryBackgroundCaptureAsync(JobTask job) {
+        var gen = _browserGen.Current;
+        var ct = _browserOpsCts?.Token ?? CancellationToken.None;
+
+        if (!CopyFocusPolicy.MayTouchBrowser(gen, _browserGen.Current, ct.IsCancellationRequested, _chatView is not null)
+            || Chat is null) {
+            PerfLog.Line($"CAPTURE background aborted — no live browser {job.JobId}");
+            ArmManualCaptureFallback(job, "ChatGPT browser was recycled before the answer could be read.");
+            return;
+        }
+
+        CaptureStatus.Text = $"{job.Company} — {job.Title}: reading the ChatGPT answer in the background…";
+        PerfLog.Line($"CAPTURE background begin {job.JobId} gen={gen} attempt={_attempt}");
+
+        ChatReadResult read;
+        try {
+            using (PerfLog.Measure("background capture " + job.JobId))
+                read = await ChatResponseReader.ReadStableAsync(Chat, ct);
+        } catch (OperationCanceledException) {
+            PerfLog.Line($"CAPTURE background cancelled {job.JobId}");
+            return;
+        } catch (Exception ex) {
+            PerfLog.Line($"CAPTURE background error {job.JobId}: {ex.GetType().Name}");
+            ArmManualCaptureFallback(job, "Background read failed (" + ex.GetType().Name + ").");
+            return;
+        }
+
+        if (!CopyFocusPolicy.MayTouchBrowser(gen, _browserGen.Current, ct.IsCancellationRequested, _chatView is not null)
+            || _activeJob != job || job.Status != "Processing") {
+            PerfLog.Line($"CAPTURE background discarded — stale after read {job.JobId}");
+            return;
+        }
+
+        PerfLog.Line($"CAPTURE background status={read.Status} assistants={read.AssistantCount} " +
+                     $"chars={read.Text.Length} detail={read.Detail} {job.JobId}");
+
+        if (!read.Success || !ResultCapture.ShouldCapture(read.Text)) {
+            ArmManualCaptureFallback(job,
+                read.Status == ChatReadStatus.Ambiguous
+                    ? "More than one JSON block was found — refused to guess. Use manual Copy on the resume JSON."
+                    : "Background capture could not find a finished resume JSON on the page.");
+            return;
+        }
+
+        await AcceptCapturedTextAsync(read.Text, job, source: "background");
+    }
+
+    void ArmManualCaptureFallback(JobTask job, string reason) {
+        CaptureStatus.Text =
+            $"{job.Company} — {job.Title}: {reason} " +
+            $"Optional: press {GlobalHotkey.DisplayText}, then {ChatCompletionWatcher.ShortcutText}, or click Copy on the json code block.";
+        QueueStatus.Text =
+            $"Background capture pending manual fallback — {job.Company} — {job.Title}.";
+        PerfLog.Line($"CAPTURE manual fallback armed {job.JobId}");
+        if (_watcher.IsArmed)
+            _ = RunCaptureWatchdogAsync(job);
+    }
+
     /// <summary>The user clicked the notification or pressed Ctrl+Shift+': bring ResumeBuilder forward.</summary>
     void BringToFrontForCopy() {
-        // ??? have to confirm
         GlobalHotkey.BringToFront(this);
         FocusChatPane();
     }
@@ -856,33 +1277,12 @@ public partial class MainWindow : Window {
         }
     }
 
-    void FocusChatPane()
-    {
-        try
-        {
-            var web = _chatView;
-
-            if (web == null)
-            {
-                PerfLog.Line("FocusChatPane FAILED - _chatView is null");
-                return;
-            }
-
-            var wpfFocus = web.Focus();
-            var keyboardFocus = System.Windows.Input.Keyboard.Focus(web);
-
-            PerfLog.Line(
-                $"FocusChatPane WpfFocus={wpfFocus} " +
-                $"KeyboardFocus={(keyboardFocus != null)} " +
-                $"IsFocused={web.IsFocused} " +
-                $"IsKeyboardFocusWithin={web.IsKeyboardFocusWithin}");
-        }
-        catch(Exception ex)
-        {
-            PerfLog.Line("FocusChatPane ERROR: " + ex.Message);
-        }
+    void FocusChatPane() {
+        // Sync entry for toast / hotkey — generation-scoped so a recycle cancels it cleanly.
+        var gen = _browserGen.Current;
+        var ct = _browserOpsCts?.Token ?? CancellationToken.None;
+        _ = FocusChatPaneForInputAsync(gen, ct);
     }
-
 
     void CloseReadyToast() {
         var toast=_readyToast;
@@ -954,6 +1354,7 @@ public partial class MainWindow : Window {
         RefreshButtons();
         CaptureStatus.Text=$"{job.Company} — {job.Title}: {CaptureWatchdog.TimeoutMessage} " +
             "The job is marked Failed (CaptureTimeout); Retry Failed re-queues it.";
+        PerfLog.Line($"QUEUE job terminal Failed {job.JobId} reason={CaptureWatchdog.FailureReason}");
         PerfLog.Snapshot("after job "+job.JobId);
 
         // Recycle exactly as after a completed job, then move on. The job is not re-sent.
@@ -962,28 +1363,45 @@ public partial class MainWindow : Window {
     }
 
     /// <summary>
-    /// Navigates to a brand-new ChatGPT conversation and waits for it to load. Cookies and the
-    /// signed-in session live in the WebView2 user-data folder, so nothing is lost by navigating.
-    /// </summary>
-    /// <summary>
-    /// Returns false when the fresh conversation did not load: no browser, the navigation reported
-    /// failure, it timed out, or it threw. The caller treats that as a retryable send-side failure
-    /// instead of sending into a page that may still show the previous job.
+    /// Navigates to a brand-new ChatGPT conversation and waits until the page is actually usable.
+    /// NavigationCompleted alone is not enough: after a recycle it can fire in a few milliseconds
+    /// while the SPA still has no composer. Cookies/session live in the WebView2 user-data folder.
     /// </summary>
     async Task<bool> NavigateFreshChatAsync() {
         var web=Chat;
-        if(web is null) return false;
+        if(web is null) {
+            PerfLog.Line("NAV fresh-chat aborted: CoreWebView2 is null");
+            return false;
+        }
 
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var loaded=new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        void OnCompleted(object? _,CoreWebView2NavigationCompletedEventArgs e)=>loaded.TrySetResult(e.IsSuccess);
+        void OnCompleted(object? _,CoreWebView2NavigationCompletedEventArgs e) {
+            PerfLog.Line($"NAV NavigationCompleted success={e.IsSuccess} " +
+                         $"status={(int)e.HttpStatusCode} after {sw.ElapsedMilliseconds}ms");
+            loaded.TrySetResult(e.IsSuccess);
+        }
         web.NavigationCompleted+=OnCompleted;
         try {
+            PerfLog.Line("NAV Navigate → chatgpt.com/ (fresh chat)");
             web.Navigate(ChatComposer.ChatUrl);
             var finished=await Task.WhenAny(loaded.Task,Task.Delay(TimeSpan.FromSeconds(20)));
             if(finished!=loaded.Task) { PerfLog.Line("WARN navigate fresh chat timed out"); return false; }
-            return await loaded.Task;
+            if(!await loaded.Task) {
+                PerfLog.Line("WARN navigate fresh chat NavigationCompleted reported failure");
+                return false;
+            }
+
+            // SPA readiness: wait for the composer, not just the document load event.
+            var composerReady = await ChatComposer.WaitForComposerAsync(web);
+            PerfLog.Line($"NAV composer ready={composerReady} after {sw.ElapsedMilliseconds}ms total");
+            if(!composerReady) {
+                PerfLog.Line("WARN navigate fresh chat: composer never appeared");
+                return false;
+            }
+            return true;
         } catch(Exception ex) {
-            PerfLog.Line("WARN navigate fresh chat failed: "+ex.Message);
+            PerfLog.Line("WARN navigate fresh chat failed: "+ex.GetType().Name+": "+ex.Message);
             return false;
         } finally {
             web.NavigationCompleted-=OnCompleted;
@@ -1003,6 +1421,14 @@ public partial class MainWindow : Window {
     void ProcessSelected_Click(object sender,RoutedEventArgs e) {
         if(_queue.IsRunning) return;                       // the queue owns the active job while it runs
         if(TaskList.SelectedItem is not JobTask job) return;
+        // Explicit single-job run: Failed is allowed (manual retry of one job). Completed is not.
+        if(job.Status == "Completed" || job.Status == "Processing") return;
+        if(job.Status == "Failed") {
+            job.Status = "Queued";
+            job.FailureReason = "";
+            Storage.SaveTasks(_tasks);
+            PerfLog.Line($"QUEUE manual retry selected {job.JobId}");
+        }
         _queue.BeginJob(job.JobId);                        // strike counting applies to manual runs too
         _ = RunJobAsync(job);
     }
@@ -1011,11 +1437,18 @@ public partial class MainWindow : Window {
 
     async void StartQueue_Click(object sender,RoutedEventArgs e) {
         var count=_queue.Start(_tasks);
-        if(count==0) { QueueStatus.Text="Nothing to run — no queued jobs."; RefreshButtons(); return; }
+        if(count==0) {
+            QueueStatus.Text = _queue.IsRunning
+                ? "Queue is already running."
+                : "Nothing to run — no queued jobs.";
+            RefreshButtons();
+            return;
+        }
         PerfLog.Line("QUEUE start, "+count+" job(s)");
         PerfLog.Snapshot("queue start");
         QueueStatus.Text=$"Queue started — {count} job(s).";
         RefreshButtons();
+        NavigateTo("AiWorkspace");
         await AdvanceQueueAsync();
     }
 
@@ -1071,70 +1504,88 @@ public partial class MainWindow : Window {
 
     /// <summary>Moves to the next queued job. A job that cannot be prepared is failed and skipped.</summary>
     async Task AdvanceQueueAsync() {
-        if(_queue.State==QueueState.Paused) { QueueStatus.Text="Queue paused."; RefreshButtons(); return; }
+        // Depth tracks nested fail→advance while an outer AdvanceQueue awaits RunJobAsync.
+        // Start() already refuses a second run while Running/Paused.
+        _advanceDepth++;
+        try {
+            if(_queue.State==QueueState.Paused) { QueueStatus.Text="Queue paused."; RefreshButtons(); return; }
 
-        while(true) {
-            var next=_queue.Next();
-            if(next is null) {
-                _activeJob=null;
-                DismissAnswerReady("queue finished");
-                _watcher.Disarm();
-                QueueStatus.Text = _queue.State==QueueState.Finished ? "Queue finished." : "Queue stopped.";
-                PerfLog.Snapshot(_queue.State==QueueState.Finished ? "queue finished" : "queue stopped");
+            while(true) {
+                var next=_queue.Next();
+                if(next is null) {
+                    _activeJob=null;
+                    DismissAnswerReady("queue finished");
+                    _watcher.Disarm();
+                    QueueStatus.Text = _queue.State==QueueState.Finished ? "Queue finished." : "Queue stopped.";
+                    PerfLog.Line($"QUEUE finished state={_queue.State}");
+                    PerfLog.Snapshot(_queue.State==QueueState.Finished ? "queue finished" : "queue stopped");
+                    Storage.SaveTasks(_tasks);
+                    UpdateSummary();
+                    RefreshButtons();
+                    await ReleaseChatAsync();
+                    return;
+                }
+
+                if (next.Status != "Queued") {
+                    // Defensive: Next() should never return a non-Queued job; never process Failed again.
+                    PerfLog.Line($"QUEUE skip unexpected status {next.JobId} status={next.Status}");
+                    _queue.AbandonActive();
+                    continue;
+                }
+
+                QueueStatus.Text=$"Queue {_queue.Position} of {_queue.Total} — {next.Company} — {next.Title}";
+                PerfLog.Line($"QUEUE advance -> {next.JobId} ({next.Company}) status={next.Status}");
+                if(await RunJobAsync(next)) return;            // now waiting for this job's answer
+
+                // Preparation failed: fail this one and keep going rather than stalling the run.
+                PerfLog.Line($"QUEUE prepare-failed {next.JobId} — marking Failed and continuing");
+                next.Status="Failed";
+                next.FailureReason = "PrepareFailed";
+                _queue.AbandonActive();
                 Storage.SaveTasks(_tasks);
                 UpdateSummary();
                 RefreshButtons();
-                // Nothing is pending: give the browser back entirely. It is rebuilt on the next job.
-                await ReleaseChatAsync();
-                return;
             }
-
-            QueueStatus.Text=$"Queue {_queue.Position} of {_queue.Total} — {next.Company} — {next.Title}";
-            if(await RunJobAsync(next)) return;            // now waiting for this job's answer
-
-            // Preparation failed: fail this one and keep going rather than stalling the run.
-            next.Status="Failed";
-            _queue.AbandonActive();
-            Storage.SaveTasks(_tasks);
-            UpdateSummary();
-            RefreshButtons();
+        } finally {
+            _advanceDepth = Math.Max(0, _advanceDepth - 1);
         }
     }
 
     // ---------- armed result capture ----------
 
     async void OnClipboardTextCaptured(string text) {
-        if(!ResultCapture.ShouldCapture(text)) return;   // not a profile: ignored, never stored
-
+        // Manual fallback only — automatic capture does not write the clipboard.
+        if(!ResultCapture.ShouldCapture(text)) return;
         var job=_activeJob;
-        if(job is null) return;                          // no active job: nothing to attribute it to
+        if(job is null) return;
+        await AcceptCapturedTextAsync(text, job, source: "clipboard");
+    }
 
+    /// <summary>
+    /// Shared accept path for background WebView reads and manual clipboard copies.
+    /// </summary>
+    async Task AcceptCapturedTextAsync(string text, JobTask job, string source) {
         switch(_queue.Classify(text,_activePreparedText)) {
             case CaptureDecision.NoActiveJob:
                 return;
             case CaptureDecision.Duplicate:
-                // A stale Copy of an answer already captured must never be written against another job.
                 CaptureStatus.Text="That is an answer already captured for an earlier job — copy the new response.";
                 return;
             case CaptureDecision.LateResponse:
-                // A6.6.13 — the answer of a job whose capture timed out never belongs to the job active now.
                 CaptureStatus.Text="That answer belongs to an earlier job that timed out, so it was not used — copy the new response.";
                 PerfLog.Line("REFUSED late response from a timed-out job while "+job.JobId+" is active");
                 return;
             case CaptureDecision.PromptEcho:
-                // "Copy last code block" can pick up a code block from our own prompt if an answer has none.
-                // That is not ChatGPT's answer: refuse it, count no strike, and keep waiting.
-                CaptureStatus.Text="That copied text is part of your own prompt, not ChatGPT's answer. " +
-                    $"Make sure the answer contains a json code block, then press {ChatCompletionWatcher.ShortcutText} again.";
-                PerfLog.Line("REFUSED prompt echo for "+job.JobId);
+                CaptureStatus.Text="That text is part of your own prompt, not ChatGPT's answer. " +
+                    $"Make sure the answer contains a json code block" +
+                    (source == "clipboard" ? $", then press {ChatCompletionWatcher.ShortcutText} again." : ".");
+                PerfLog.Line("REFUSED prompt echo for "+job.JobId+" via "+source);
                 return;
         }
         if(!string.Equals(_queue.ActiveJobId,job.JobId,StringComparison.OrdinalIgnoreCase)) return;
+        if(_activeJob!=job || job.Status!="Processing") return;
 
-        // The user has copied an answer for this job: the watchdog, the completion watch and the
-        // "ready" prompt are all done. Cancelling the watch matters — otherwise its response-start
-        // budget could later report a failure for a job that has just been answered.
-        PerfLog.Line("CAPTURE received "+job.JobId);
+        PerfLog.Line("CAPTURE received "+job.JobId+" via "+source);
         _readyJobId=null;
         _readyCancellation?.Cancel();
         DismissAnswerReady("capture received");
@@ -1155,23 +1606,17 @@ public partial class MainWindow : Window {
             RefreshButtons();
             _activeJob=null;
 
-            // Documents are generated only after the JSON is saved, and only from that file.
             await GenerateDocumentsAsync(job,result.TargetPath);
             PerfLog.Snapshot("after job "+job.JobId);
 
-            // A6.6.12 — the answer is captured, validated, saved and rendered, so nothing needs the
-            // browser any more. Destroy it; the next job builds a fresh one.
             await RecycleChatAsync();
 
-            // A manual rescue (the user pressed Enter themselves) resumes the run; an explicit Pause does not.
             if(_queue.TryAutoResume()) QueueStatus.Text="Manual action completed — resuming the queue.";
 
             if(_queue.IsRunning) await AdvanceQueueAsync();
             return;
         }
 
-        // A rejected answer is a ChatGPT failure like any other: it shares the ONE 3-attempt budget,
-        // so a job can never be sent more than three times. The raw response is already kept.
         CaptureStatus.Text=result.Message;
         await HandleGptFailureAsync(job,GptFailure.InvalidOutput);
     }

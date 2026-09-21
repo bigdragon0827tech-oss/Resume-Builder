@@ -52,7 +52,12 @@ public sealed class QueueRunner {
     public int Total => _snapshot.Count;
 
     /// <summary>Takes a snapshot of the currently queued jobs, in list order.</summary>
+    /// <returns>How many queued jobs were captured. Returns 0 without changing state when a run is already active.</returns>
     public int Start(IEnumerable<JobTask> jobs) {
+        // A second Start while Running/Paused would reset the snapshot mid-job and can re-select a
+        // job that just failed. Refuse — the UI already disables the button; this is the hard guard.
+        if (State is QueueState.Running or QueueState.Paused) return 0;
+
         _snapshot.Clear();
         _snapshot.AddRange(jobs.Where(j => j.Status == "Queued"));
         _index = -1;
@@ -74,7 +79,11 @@ public sealed class QueueRunner {
 
         while (++_index < _snapshot.Count) {
             var candidate = _snapshot[_index];
-            if (candidate.Status != "Queued") continue;   // Completed / Failed / Ignored are skipped
+            // Re-read live status: Completed / Failed / Ignored / Processing must never be selected.
+            if (candidate.Status != "Queued") {
+                // Diagnostic hook for tests / callers that log skips (MainWindow logs the id).
+                continue;
+            }
             BeginJob(candidate.JobId);
             Position = _index + 1;
             return candidate;

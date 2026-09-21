@@ -29,6 +29,7 @@
     <Compile Include="..\..\JobHistoryReset.cs" Link="JobHistoryReset.cs" />
     <Compile Include="..\..\GptAttempts.cs" Link="GptAttempts.cs" />
     <Compile Include="..\..\ChatAutomation.cs" Link="ChatAutomation.cs" />
+    <Compile Include="..\..\ChatResponseReader.cs" Link="ChatResponseReader.cs" />
     <Compile Include="..\..\ApplicationPlatformDetector.cs" Link="ApplicationPlatformDetector.cs" />
     <Compile Include="..\..\SampleJobs.cs" Link="SampleJobs.cs" />
     <Compile Include="..\..\ResumeOutputManager.cs" Link="ResumeOutputManager.cs" />
@@ -39,6 +40,10 @@
     <Compile Include="..\..\ResumeStyleNormalizer.cs" Link="ResumeStyleNormalizer.cs" />
     <Compile Include="..\..\DocumentGeneration.cs" Link="DocumentGeneration.cs" />
     <Compile Include="..\..\PdfGeneration.cs" Link="PdfGeneration.cs" />
+    <Compile Include="..\..\ChatHost.cs" Link="ChatHost.cs" />
+    <Compile Include="..\..\QueueRunner.cs" Link="QueueRunner.cs" />
+    <Compile Include="..\..\KeyboardSimulator.cs" Link="KeyboardSimulator.cs" />
+    <Compile Include="..\..\BrowserGeneration.cs" Link="BrowserGeneration.cs" />
   </ItemGroup>
 
   <ItemGroup>

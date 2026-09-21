@@ -19,7 +19,7 @@ namespace ResumeBuilder;
 /// Phase 2: Import Current Job reads the page once, through JobrightPageExtractor, and hands the
 /// result to <see cref="ImportJob"/>. This window never touches the queue or storage itself.
 /// </summary>
-public partial class JobBrowserWindow : Window {
+public partial class JobBrowserWindow : System.Windows.Controls.UserControl {
     /// <summary>
     /// Cached across opens so re-opening the window reuses the same profile without asking WebView2
     /// to attach a second environment to a folder it already knows. Only the real profile is cached.
@@ -57,18 +57,28 @@ public partial class JobBrowserWindow : Window {
     /// window still never touches storage.
     /// </summary>
     public Func<string, string, ApplyCaptureResult>? RecordApplyUrl { get; set; }
+    public JobBrowserWindow() : this(null, null) { }
+
     /// <summary>
     /// The tests open about:blank on a throwaway profile, so no third-party request is made and the
     /// real signed-in profile is never touched while the plumbing is verified.
     /// </summary>
-    public JobBrowserWindow(string? startUrl = null, string? userDataFolder = null) {
+    public JobBrowserWindow(string? startUrl, string? userDataFolder) {
         InitializeComponent();
         _startUrl = string.IsNullOrWhiteSpace(startUrl) ? JobBrowser.HomeUrl : startUrl;
         _profileFolder = string.IsNullOrWhiteSpace(userDataFolder) ? JobBrowser.UserDataFolder : userDataFolder;
 
-        Loaded += async (_, _) => await InitializeBrowserAsync();
-        Closed += (_, _) => DisposeBrowser();
+        Unloaded += (_, _) => { /* keep browser alive across shell navigation; MainWindow.Shutdown disposes */ };
     }
+
+    /// <summary>Called by the shell when the app closes so the Jobright profile is released cleanly.</summary>
+    public void Shutdown() => DisposeBrowser();
+
+    /// <summary>
+    /// Creates the Jobright WebView2 on first use. Safe to call repeatedly; no-ops when already ready.
+    /// Profile folder and automation contracts are unchanged.
+    /// </summary>
+    public Task EnsureReadyAsync() => InitializeBrowserAsync();
 
     /// <summary>True once the browser is usable — the tests wait on this instead of a sleep.</summary>
     public bool IsReady => _view?.CoreWebView2 is not null;
@@ -83,6 +93,7 @@ public partial class JobBrowserWindow : Window {
         if (_view is not null) return;
 
         try {
+            SetBrowserBusy(true, "Starting Jobright browser…");
             PerfLog.Line("JOBBROWSER initialize");
             Directory.CreateDirectory(_profileFolder);
 
@@ -105,12 +116,19 @@ public partial class JobBrowserWindow : Window {
                 // Same-page Apply: the user's click takes this page off a job page to the application site.
                 // Observed only; the navigation itself is never changed.
                 ReportApplyDestination(view.Source?.ToString(), e.Uri, "navigation");
-                _navigating = true; UpdateImportButton();
+                _navigating = true;
+                SetBrowserBusy(true, "Loading page…");
+                UpdateImportButton();
             };
             // New-window Apply. Handled is never set, so the window opens exactly as it did before.
             view.CoreWebView2.NewWindowRequested += (_, e) =>
                 ReportApplyDestination(view.Source?.ToString(), e.Uri, "new-window");
-            view.NavigationCompleted += (_, _) => { _navigating = false; UpdateNavigationButtons(); UpdateImportButton(); };
+            view.NavigationCompleted += (_, _) => {
+                _navigating = false;
+                SetBrowserBusy(false);
+                UpdateNavigationButtons();
+                UpdateImportButton();
+            };
 
             _extractor = new JobrightPageExtractor(
                 script => view.CoreWebView2.ExecuteScriptAsync(script),
@@ -125,11 +143,20 @@ public partial class JobBrowserWindow : Window {
 
             PerfLog.Line("JOBBROWSER ready");
             StatusText.Text = "Sign in to the site as usual, open a job, then click Import Current Job.";
+            SetBrowserBusy(false);
         } catch (Exception ex) {
             // A browser failure here must stay here: the queue and the ChatGPT pane are untouched.
             PerfLog.Line("JOBBROWSER initialize FAILED: " + ex.Message);
             StatusText.Text = "The job browser could not start: " + ex.Message;
+            SetBrowserBusy(false);
         }
+    }
+
+    void SetBrowserBusy(bool busy, string? message = null) {
+        if (BrowserBusyOverlay is null) return;
+        BrowserBusyOverlay.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        if (busy && message is not null && BrowserBusyText is not null)
+            BrowserBusyText.Text = message;
     }
 
     void OnAddressChanged() {

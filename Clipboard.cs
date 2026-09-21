@@ -278,6 +278,16 @@ public sealed class ClipboardWatcher : IDisposable {
     public bool IsArmed { get; private set; }
     public bool IsListening => _listening;
 
+    /// <summary>Clipboard sequence recorded when <see cref="Arm"/> ran (0 = unknown).</summary>
+    public uint ArmedSequence => _armedSequence;
+
+    /// <summary>
+    /// True when the system clipboard sequence has moved since arming — i.e. something was copied
+    /// after we armed (ChatGPT's Copy, or the user). Used to decide whether a copy keystroke worked.
+    /// </summary>
+    public bool HasClipboardChangedSinceArm() =>
+        ChangedSinceArm(_armedSequence, SafeSequenceNumber());
+
     /// <summary>Hooks the window's message loop. Safe to call once the window handle exists.</summary>
     public bool Attach(Window window) {
         if (_listening) return true;

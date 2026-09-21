@@ -4,7 +4,7 @@ using Microsoft.Win32;
 using Forms = System.Windows.Forms;
 namespace ResumeBuilder;
 
-public partial class SettingsWindow : Window {
+public partial class SettingsWindow : System.Windows.Controls.UserControl {
     AppSettings _s=Storage.LoadSettings();
     public SettingsWindow(){ InitializeComponent(); LoadFields(); RefreshInspector(); InitTracking(); }
 
@@ -14,8 +14,11 @@ public partial class SettingsWindow : Window {
     // owner, so a status change here and a queue change there can never overwrite each other. Every
     // calculation lives in JobTracker; this is only the screen.
 
+    /// <summary>The hosting main window when this view is embedded in the shell.</summary>
+    MainWindow? HostMain => System.Windows.Window.GetWindow(this) as MainWindow;
+
     /// <summary>The tasks being tracked: the main window's live list, or the saved file if standalone.</summary>
-    IReadOnlyList<JobTask> TrackedTasks => (Owner as MainWindow)?.Tasks ?? (_standaloneTasks ??= Storage.LoadTasks());
+    IReadOnlyList<JobTask> TrackedTasks => HostMain?.Tasks ?? (_standaloneTasks ??= Storage.LoadTasks());
     List<JobTask>? _standaloneTasks;
 
     /// <summary>Set while the dashboard is rebuilding, so rebinding a row does not look like an edit.</summary>
@@ -727,7 +730,7 @@ public partial class SettingsWindow : Window {
     void ClearTestQueue_Click(object s, RoutedEventArgs e) {
         var tasks=Storage.LoadTasks(); var n=tasks.RemoveAll(SampleJobs.IsTestJob); Storage.SaveTasks(tasks);
         System.Windows.MessageBox.Show($"Removed {n} sample/stress task(s)."+
-            (Owner is MainWindow ? " Click Refresh Input on the main screen to reload the queue." : ""));
+            (HostMain is not null ? " Click Refresh Input on the main screen to reload the queue." : ""));
     }
 
     /// <summary>
@@ -736,7 +739,7 @@ public partial class SettingsWindow : Window {
     /// Builder's own folders is ever in it (JobHistoryReset).
     /// </summary>
     void ClearJobHistory_Click(object s, RoutedEventArgs e) {
-        var main=Owner as MainWindow;
+        var main=HostMain;
         var tasks=(main?.Tasks ?? Storage.LoadTasks()).ToList();
 
         if(main?.IsQueueRunning==true || JobHistoryReset.IsProcessing(tasks)) {
@@ -797,6 +800,61 @@ public partial class SettingsWindow : Window {
         PreparedInputBox.Text=RequestPreparation.Load()?.Text ?? "No job has been prepared yet.";
     }
 
+    public void ShowReadyToApplyQueue() {
+        SetShellMode(applicationsFocus: true);
+        ReadyToApplyCard_Click(ReadyToApplyCard, new RoutedEventArgs());
+    }
+
+    /// <summary>
+    /// Shell mode: Applications-only hides the settings section nav; Settings shows it.
+    /// Still one live control and the same TrackedTasks from MainWindow.
+    /// </summary>
+    public void SetShellMode(bool applicationsFocus) {
+        if (SectionNavPanel is not null)
+            SectionNavPanel.Visibility = applicationsFocus ? Visibility.Collapsed : Visibility.Visible;
+        if (SectionNavColumn is not null)
+            SectionNavColumn.Width = applicationsFocus ? new GridLength(0) : new GridLength(200);
+        if (applicationsFocus) ShowSection("Applications");
+        else ShowSection("Candidate Profile");
+    }
+
+    void SectionNav_Checked(object sender, RoutedEventArgs e) {
+        if (sender is System.Windows.Controls.RadioButton { IsChecked: true, Tag: string tag })
+            ShowSection(tag);
+    }
+
+    /// <summary>Selects a settings tab by header text.</summary>
+    public void ShowSection(string header) {
+        if (SettingsTabs is null) return;
+        foreach (System.Windows.Controls.TabItem tab in SettingsTabs.Items)
+            if (string.Equals(tab.Header as string, header, StringComparison.OrdinalIgnoreCase)) {
+                SettingsTabs.SelectedItem = tab;
+                if (string.Equals(header, "Applications", StringComparison.OrdinalIgnoreCase))
+                    RefreshTracking();
+                // Sync left nav radio without re-entrancy loops
+                if (SectionNavPanel?.Visibility == Visibility.Visible)
+                    foreach (var child in FindSectionRadios())
+                        if (string.Equals(child.Tag as string, header, StringComparison.OrdinalIgnoreCase))
+                            child.IsChecked = true;
+                return;
+            }
+    }
+
+    IEnumerable<System.Windows.Controls.RadioButton> FindSectionRadios() {
+        if (SectionNavPanel is null) yield break;
+        foreach (var rb in FindVisualChildren<System.Windows.Controls.RadioButton>(SectionNavPanel))
+            if (rb.GroupName == "SettingsSection") yield return rb;
+    }
+
+    static IEnumerable<T> FindVisualChildren<T>(DependencyObject parent) where T : DependencyObject {
+        if (parent is null) yield break;
+        var count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent);
+        for (var i = 0; i < count; i++) {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(parent, i);
+            if (child is T typed) yield return typed;
+            foreach (var nested in FindVisualChildren<T>(child)) yield return nested;
+        }
+    }
 
     void CopyPrepared_Click(object s, RoutedEventArgs e) {
         var prepared=RequestPreparation.Load();
@@ -869,7 +927,7 @@ public partial class SettingsWindow : Window {
             Environment.NewLine+Environment.NewLine+detail);
 
         // Same generation path as automatic capture, so the manual fallback produces documents too.
-        if(!ResultCapture.IsBaseline(jobId) && Owner is MainWindow main)
+        if(!ResultCapture.IsBaseline(jobId) && HostMain is MainWindow main)
             await main.GenerateForJobAsync(jobId!);
     }
 
