@@ -4,6 +4,11 @@ using System.Runtime.InteropServices;
 
 namespace ResumeBuilder;
 
+/// <summary>
+/// Injects ChatGPT's own "copy last code block" shortcut (Ctrl+Shift+;) through SendInput.
+/// The virtual-key for ';' on a US keyboard is VK_OEM_1 (0xBA) — not VK_I (0x49). An earlier
+/// misnamed constant still held 0xBA, so the bytes were correct; the name and logs were not.
+/// </summary>
 public static class KeyboardSimulator
 {
     private const uint INPUT_KEYBOARD = 1;
@@ -11,7 +16,14 @@ public static class KeyboardSimulator
 
     private const ushort VK_CONTROL = 0x11;
     private const ushort VK_SHIFT   = 0x10;
-    private const ushort VK_I       = 0xBA;
+    /// <summary>VK_OEM_1 — the ;/: key on a US keyboard (ChatGPT's copy-code-block shortcut).</summary>
+    private const ushort VK_OEM_1   = 0xBA;
+
+    /// <summary>The key this simulator presses with Ctrl+Shift. Exposed for tests.</summary>
+    public const ushort CopyShortcutVk = VK_OEM_1;
+
+    /// <summary>Human-readable form of the injected shortcut.</summary>
+    public const string CopyShortcutText = "Ctrl+Shift+;";
 
     [StructLayout(LayoutKind.Sequential)]
     private struct INPUT
@@ -109,22 +121,28 @@ public static class KeyboardSimulator
         };
     }
 
-    public static void SendCtrlShiftI()
+    /// <summary>Sends Ctrl+Shift+; (ChatGPT copy last code block). Prefer this name.</summary>
+    public static void SendCtrlShiftSemicolon() => SendCopyShortcut();
+
+    /// <summary>Obsolete name kept so older call sites compile; identical to <see cref="SendCtrlShiftSemicolon"/>.</summary>
+    public static void SendCtrlShiftI() => SendCopyShortcut();
+
+    public static void SendCopyShortcut()
     {
         INPUT[] inputs =
         {
             KeyDown(VK_CONTROL),
             KeyDown(VK_SHIFT),
-            KeyDown(VK_I),
+            KeyDown(VK_OEM_1),
 
-            KeyUp(VK_I),
+            KeyUp(VK_OEM_1),
             KeyUp(VK_SHIFT),
             KeyUp(VK_CONTROL)
         };
 
         int inputSize = Marshal.SizeOf<INPUT>();
 
-        PerfLog.Line($"SendInput INPUT size={inputSize}");
+        PerfLog.Line($"SendInput INPUT size={inputSize} shortcut={CopyShortcutText} vk=0x{VK_OEM_1:X2}");
 
         uint sent = SendInput(
             (uint)inputs.Length,
@@ -140,6 +158,6 @@ public static class KeyboardSimulator
                 $"SendInput sent {sent}/{inputs.Length}; Win32 error={error}");
         }
 
-        PerfLog.Line($"SendInput successfully sent {sent}/6 events");
+        PerfLog.Line($"SendInput successfully sent {sent}/6 events ({CopyShortcutText})");
     }
 }

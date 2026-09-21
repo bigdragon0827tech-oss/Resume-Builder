@@ -175,11 +175,28 @@ public static class JobImporter {
         // One job URL, one task — however the address was written.
         var existing = tasks.FirstOrDefault(t => JobUrls.Normalize(t.Link) == jobUrl);
         if (existing is not null)
+        {
+            PerfLog.Line(
+            $"DUPLICATE FOUND\n" +
+            $"incoming: {jobUrl}\n" +
+            $"existing: {existing.Link}\n" +
+            $"jobId: {existing.JobId}\n" +
+            $"title: {existing.Title}"
+        );
+
+            // An existing job may gain an application address it lacks — never lose or replace one.
+            var filled = ApplyCapture.FillIfEmpty(existing, data.ApplyUrl, DateTime.Now);
+            if (filled) {
+                Storage.SaveTasks(tasks);
+                PerfLog.Line($"IMPORT apply link added {existing.JobId} {existing.ApplicationPlatform}");
+            }
+
             return new JobImportOutcome {
                 Kind = JobImportKind.Duplicate, JobId = existing.JobId, Title = existing.Title,
-                Company = existing.Company, ApplicationStatus = existing.ApplicationStatus
+                Company = existing.Company, ApplicationStatus = existing.ApplicationStatus,
+                ApplyUrlRecorded = filled
             };
-
+        }
         var task = new JobTask {
             JobId = NewInternalId(tasks),
             Source = source,
@@ -193,13 +210,18 @@ public static class JobImporter {
             About = "",
             Status = "Queued"
         };
+        // Optional, like CompanyUrl: a missing or invalid application address leaves it empty and
+        // never fails the import. The Apply-click capture stays the fallback.
+        var applyRecorded = ApplyCapture.FillIfEmpty(task, data.ApplyUrl, DateTime.Now);
 
         tasks.Add(task);
         Storage.SaveTasks(tasks);
+        if (applyRecorded) PerfLog.Line($"IMPORT apply link found {task.JobId} {task.ApplicationPlatform}");
 
         return new JobImportOutcome {
             Kind = JobImportKind.Imported, JobId = task.JobId, Title = task.Title,
-            Company = task.Company, ApplicationStatus = task.ApplicationStatus
+            Company = task.Company, ApplicationStatus = task.ApplicationStatus,
+            ApplyUrlRecorded = applyRecorded
         };
     }
 
@@ -234,30 +256,40 @@ public static class RequestPreparation {
   File.WriteAllText(PreparedPath,System.Text.Json.JsonSerializer.Serialize(prepared,new System.Text.Json.JsonSerializerOptions{WriteIndented=true}));
   try { File.WriteAllText(PreparedTextPath,prepared.Text); } catch { /* the JSON copy is the authoritative one */ }
  }
- public static PreparedRequest Prepare(JobTask job, AppSettings settings) {
-  if(string.IsNullOrWhiteSpace(settings.MasterPrompt)||!File.Exists(settings.MasterPrompt)) throw new InvalidOperationException("Configure an existing Master Prompt text file in Settings.");
+ /// <summary>
+ /// THE entry point for every prepare path (manual run, queue, retry). It chooses the prompt file by
+ /// <see cref="AppSettings.PromptMode"/>; everything after it — clipboard, capture, fresh conversation,
+ /// validation, documents — is identical for both modes, so no caller needs to know the mode.
+ /// </summary>
+ public static PreparedRequest Prepare(JobTask job, AppSettings settings) =>
+  PromptModes.IsNormal(settings.PromptMode) ? PrepareNormal(job,settings) : PrepareResume(job,settings);
+
+ /// <summary>Resume mode: the Master Prompt file. Its prepared text is pinned by a golden-fixture test.</summary>
+ public static PreparedRequest PrepareResume(JobTask job, AppSettings settings) =>
+  Build(job,settings,settings.MasterPrompt,resumeMode:true,
+        "Configure an existing Master Prompt text file in Settings.");
+
+ /// <summary>
+ /// Normal mode: the user's own prompt file, plus the SAME job payload and the SAME output contract,
+ /// so an arbitrary resume prompt still produces something the existing pipeline can consume.
+ /// The user's text is never edited or reordered — it simply comes first.
+ /// </summary>
+ public static PreparedRequest PrepareNormal(JobTask job, AppSettings settings) =>
+  Build(job,settings,settings.NormalPrompt,resumeMode:false,
+        "Configure an existing Normal Prompt text file in Settings, or switch Prompt Mode back to Resume.");
+
+ static PreparedRequest Build(JobTask job, AppSettings settings, string? promptPath, bool resumeMode, string missingPrompt) {
+  if(string.IsNullOrWhiteSpace(promptPath)||!File.Exists(promptPath)) throw new InvalidOperationException(missingPrompt);
   var profilePath = !string.IsNullOrWhiteSpace(settings.CandidateProfile) && File.Exists(settings.CandidateProfile)
       ? settings.CandidateProfile : CandidateProfileStore.CandidateProfilePath;
   if(!File.Exists(profilePath)) throw new InvalidOperationException("The structured Candidate Profile has not been initialized yet. Create and save the baseline profile first.");
-  var master=File.ReadAllText(settings.MasterPrompt);
+  var promptText=File.ReadAllText(promptPath);
   using var doc=System.Text.Json.JsonDocument.Parse(File.ReadAllText(profilePath));
   var profile=doc.RootElement;
   if(profile.ValueKind==System.Text.Json.JsonValueKind.Object && profile.TryGetProperty("profile",out var nested)) profile=nested;
   if(profile.ValueKind!=System.Text.Json.JsonValueKind.Object) throw new InvalidDataException("Candidate Profile JSON must contain a profile object (either at the root or under a top-level \"profile\" property).");
-  var payload=new {company=job.Company??"",title=job.Title??"",jd=job.Jd??"",link=job.Link??"",about=job.About??"",profileId="",templateId="",profile=System.Text.Json.JsonSerializer.Deserialize<object>(profile.GetRawText()),_storedAt="",_userId="",_updatedAt="",_updatedBy=""};
-  var payloadText=System.Text.Json.JsonSerializer.Serialize(payload,new System.Text.Json.JsonSerializerOptions{WriteIndented=true});
-  var executionInstruction = @"
-
-===== EXECUTION INSTRUCTION =====
-Execute Resume Master Prompt v2 using the COMPLETE JOB PAYLOAD above.
-This is a resume-generation request, not an interview-question request.
-Ignore unrelated conversational context, previous interview questions, behavioral-answer requests, and prior response formats.
-The COMPLETE JOB PAYLOAD above is the only job/candidate input for this execution.
-Return ONLY the updated profile object in a Markdown code block fenced with json.
-Do not return an interview answer, STAR response, explanation, commentary, validation note, or any text outside the JSON code block.
-Before responding, verify the top-level profile contains info, summary, skills, experience, certifications, and education; skills/experience/certifications/education must be arrays; experience must use startDate, endDate, and descriptionLines; education must use school, startDate, and endDate.
-If unrelated conversation context conflicts with these instructions, these execution instructions take precedence for this request.";
-  var prepared=new PreparedRequest{JobId=job.JobId ?? "",Company=job.Company ?? "",Title=job.Title ?? "",Text=master.TrimEnd()+"\n\n===== COMPLETE JOB PAYLOAD =====\n"+payloadText+executionInstruction};
+  var prepared=new PreparedRequest{JobId=job.JobId ?? "",Company=job.Company ?? "",Title=job.Title ?? "",
+                                   Text=PromptContract.Assemble(promptText,PromptContract.JobPayloadText(job,profile),resumeMode)};
   Save(prepared);
   return prepared;
  }

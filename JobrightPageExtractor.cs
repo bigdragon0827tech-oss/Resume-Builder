@@ -37,31 +37,95 @@ public sealed class JobrightPageExtractor : IJobPageExtractor {
     /// the canonical link, the JSON-LD text and a handful of named fields picked out of __NEXT_DATA__
     /// inside the page — not the whole blob — and it changes nothing.
     /// </summary>
+    
     public const string ReadScript = """
-        (() => {
-          const pick = () => {
-            const el = document.getElementById('__NEXT_DATA__');
-            if (!el) return null;
-            let ds;
-            try { ds = JSON.parse(el.textContent).props.pageProps.dataSource; } catch (e) { return null; }
-            if (!ds) return null;
-            const j = ds.jobResult || {}, c = ds.companyResult || {}, q = j.qualifications || {};
-            const list = v => Array.isArray(v) ? v.filter(x => typeof x === 'string') : [];
-            return {
-              jobId: j.jobId || null, title: j.jobTitle || null, summary: j.jobSummary || null,
-              responsibilities: list(j.coreResponsibilities), required: list(q.mustHave), preferred: list(q.preferredHave),
-              company: c.companyName || null, companyUrl: c.companyURL || null
-            };
-          };
-          const canonical = document.querySelector('link[rel="canonical"]');
-          return JSON.stringify({
-            href: location.href,
-            canonical: canonical ? canonical.getAttribute('href') : null,
-            ld: Array.from(document.querySelectorAll('script[type="application/ld+json"]')).map(s => s.textContent),
-            next: pick()
-          });
-        })()
-        """;
+    (() => {
+      const normalize = (ds) => {
+        if (!ds) return null;
+
+        const j = ds.jobResult || {};
+        const c = ds.companyResult || {};
+        const q = j.qualifications || {};
+
+        const list = v =>
+          Array.isArray(v)
+            ? v.filter(x => typeof x === 'string' && x.trim().length > 0)
+            : [];
+
+        return {
+          jobId: j.jobId || null,
+          title: j.jobTitle || null,
+          summary: j.jobSummary || null,
+          responsibilities: list(j.coreResponsibilities),
+          required: list(q.mustHave),
+          preferred: list(q.preferredHave),
+          company: c.companyName || null,
+          companyUrl: c.companyURL || null,
+          // The application address the page's own Apply button opens (signed-in page data only).
+          applyLink: typeof j.applyLink === 'string' ? j.applyLink : null,
+          originalUrl: typeof j.originalUrl === 'string' ? j.originalUrl : null
+        };
+      };
+
+      const pick = () => {
+
+        // Current Jobright source.
+        const helper =
+          document.getElementById('jobright-helper-job-detail-info');
+
+        if (helper) {
+          try {
+            const data = JSON.parse(helper.textContent || '{}');
+
+            if (data && data.jobResult) {
+              return normalize(data);
+            }
+          } catch (e) {
+            // Fall through to older source.
+          }
+        }
+
+        // Older Jobright / Next.js source.
+        const next =
+          document.getElementById('__NEXT_DATA__');
+
+        if (next) {
+          try {
+            const parsed = JSON.parse(next.textContent || '{}');
+            const ds = parsed?.props?.pageProps?.dataSource;
+
+            if (ds) {
+              return normalize(ds);
+            }
+          } catch (e) {
+            // JSON-LD remains available as the parser's final fallback.
+          }
+        }
+
+        return null;
+      };
+
+      const canonical =
+        document.querySelector('link[rel="canonical"]');
+
+      return JSON.stringify({
+        href: location.href,
+
+        canonical:
+          canonical
+            ? canonical.getAttribute('href')
+            : null,
+
+        ld: Array.from(
+          document.querySelectorAll(
+            'script[type="application/ld+json"]'
+          )
+        ).map(s => s.textContent),
+
+        next: pick()
+      });
+    })()
+    """;
 
     readonly Func<string, Task<string>> _executeScript;
     readonly Func<string?> _currentUrl;
@@ -140,9 +204,19 @@ public sealed class JobrightPageExtractor : IJobPageExtractor {
             JobUrl = JobUrl(Text(payload["canonical"]), href, urlId),
             CompanyUrl = CompanyUrl(fromNext, fromPosting),
             // The full original posting when it is published; otherwise the job's own sections.
-            Description = FirstNonEmpty(HtmlToText(Text(fromPosting?["description"])), Compose(fromNext))
+            Description = FirstNonEmpty(HtmlToText(Text(fromPosting?["description"])), Compose(fromNext)),
+            ApplyUrl = ApplyUrl(fromNext)
         };
     }
+
+    /// <summary>
+    /// The application address, as Jobright's Apply button chooses it: applyLink, else originalUrl —
+    /// each taken only if it passes <see cref="ApplyCapture.IsApplicationUrl"/>. Only from page data
+    /// that describes this job (fromNext is null when stale). Signed-out pages carry neither: null.
+    /// </summary>
+    static string? ApplyUrl(JsonObject? fromNext) =>
+        new[] { Text(fromNext?["applyLink"]).Trim(), Text(fromNext?["originalUrl"]).Trim() }
+            .FirstOrDefault(ApplyCapture.IsApplicationUrl);
 
     // ---------- the five fields ----------
 

@@ -1,51 +1,105 @@
-<Window x:Class="ResumeBuilder.JobBrowserWindow"
+<UserControl x:Class="ResumeBuilder.JobBrowserWindow"
  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
- xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
- Title="Job Browser" Height="820" Width="1180" MinHeight="480" MinWidth="780">
- <Grid>
-  <Grid.RowDefinitions><RowDefinition Height="44"/><RowDefinition Height="Auto"/><RowDefinition/><RowDefinition Height="26"/></Grid.RowDefinitions>
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+ <Grid Background="{DynamicResource Bg.App}">
+  <Grid.RowDefinitions>
+   <RowDefinition Height="Auto"/>
+   <RowDefinition Height="Auto"/>
+   <RowDefinition Height="Auto"/>
+   <RowDefinition Height="*"/>
+   <RowDefinition Height="Auto"/>
+  </Grid.RowDefinitions>
 
-  <Border Background="#F3F7F8" BorderBrush="#DDD" BorderThickness="0,0,0,1">
-   <DockPanel Margin="10,0" LastChildFill="True">
-    <Button x:Name="BackButton" Content="◀" Width="34" Margin="0,7,4,7" Padding="0" FontSize="13"
-            ToolTip="Back" IsEnabled="False" Click="Back_Click"/>
-    <Button x:Name="ForwardButton" Content="▶" Width="34" Margin="0,7,4,7" Padding="0" FontSize="13"
-            ToolTip="Forward" IsEnabled="False" Click="Forward_Click"/>
-    <Button x:Name="RefreshButton" Content="⟳" Width="34" Margin="0,7,4,7" Padding="0" FontSize="14"
-            ToolTip="Refresh" IsEnabled="False" Click="Refresh_Click"/>
-    <Button x:Name="HomeButton" Content="Jobright" Margin="0,7,10,7" Padding="12,0"
-            ToolTip="Back to the Jobright home page" IsEnabled="False" Click="Home_Click"/>
-
-    <!-- Enabled only on a single Jobright job page, once it has finished loading. -->
-    <Button x:Name="ImportButton" DockPanel.Dock="Right" Content="⬇ Import Current Job"
-            Margin="10,7,0,7" Padding="12,0" IsEnabled="False" FontWeight="SemiBold"
-            ToolTip="Open a single Jobright job to import it into the queue."
-            Click="Import_Click"/>
-
-    <TextBox x:Name="AddressBox" IsReadOnly="True" IsReadOnlyCaretVisible="True" VerticalContentAlignment="Center"
-             Margin="0,7,0,7" Padding="8,0" FontSize="11.5" Foreground="#333" Background="White"
-             ToolTip="The page you are on"/>
-   </DockPanel>
+  <!-- Browser navigation -->
+  <Border Grid.Row="0" Background="{DynamicResource Bg.Surface}" BorderBrush="{DynamicResource Border.Subtle}"
+          BorderThickness="0,0,0,1" Padding="12,10">
+   <Grid>
+    <Grid.ColumnDefinitions>
+     <ColumnDefinition Width="Auto"/>
+     <ColumnDefinition Width="*"/>
+    </Grid.ColumnDefinitions>
+    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,10,0">
+     <Button x:Name="BackButton" Width="34" Height="32" Margin="0,0,4,0" Style="{DynamicResource BtnGhost}"
+             ToolTip="Back" IsEnabled="False" Click="Back_Click" Content="◀"/>
+     <Button x:Name="ForwardButton" Width="34" Height="32" Margin="0,0,4,0" Style="{DynamicResource BtnGhost}"
+             ToolTip="Forward" IsEnabled="False" Click="Forward_Click" Content="▶"/>
+     <Button x:Name="RefreshButton" Width="34" Height="32" Margin="0,0,4,0" Style="{DynamicResource BtnGhost}"
+             ToolTip="Refresh" IsEnabled="False" Click="Refresh_Click" Content="⟳"/>
+     <Button x:Name="HomeButton" Height="32" Padding="12,0"
+             ToolTip="Back to the Jobright home page" IsEnabled="False" Click="Home_Click" Content="Jobright"/>
+    </StackPanel>
+    <Border Grid.Column="1" Background="{DynamicResource Bg.Input}" BorderBrush="{DynamicResource Border.Subtle}"
+            BorderThickness="1" CornerRadius="6" Padding="2,0" MinWidth="120">
+     <TextBox x:Name="AddressBox" IsReadOnly="True" IsReadOnlyCaretVisible="True"
+              VerticalContentAlignment="Center" BorderThickness="0" Background="Transparent"
+              Padding="10,0" FontSize="12" Foreground="{DynamicResource Text.Secondary}"
+              ToolTip="The page you are on"/>
+    </Border>
+   </Grid>
   </Border>
 
-  <!-- The outcome of the last import. Hidden until there is one; colour says what happened. -->
-  <Border x:Name="ResultBanner" Grid.Row="1" Visibility="Collapsed" Padding="14,8" BorderThickness="0,0,0,1"
-          Background="#E4F4E8" BorderBrush="#BFE3C8">
+  <!-- Job discovery / import actions (separate from browser chrome) -->
+  <Border Grid.Row="1" Background="{DynamicResource Bg.SurfaceRaised}" BorderBrush="{DynamicResource Border.Subtle}"
+          BorderThickness="0,0,0,1" Padding="12,8">
+   <Grid>
+    <Grid.ColumnDefinitions>
+     <ColumnDefinition Width="Auto"/>
+     <ColumnDefinition Width="*"/>
+    </Grid.ColumnDefinitions>
+    <TextBlock Text="Job import" VerticalAlignment="Center" FontWeight="SemiBold"
+               Foreground="{DynamicResource Text.Secondary}" FontSize="12" Margin="0,0,16,0"/>
+    <WrapPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" ItemHeight="32">
+     <TextBlock x:Name="FoundJobsText" Text="Found: 0" VerticalAlignment="Center" Margin="0,0,10,0"
+                Foreground="{DynamicResource Text.Muted}" FontSize="12"/>
+     <ComboBox x:Name="JobTargetBox" Width="76" Height="32" Margin="0,0,8,0"
+               VerticalContentAlignment="Center" HorizontalContentAlignment="Center"
+               SelectedIndex="1" ToolTip="How many new jobs to find">
+      <ComboBoxItem Content="20" HorizontalContentAlignment="Center"/>
+      <ComboBoxItem Content="50" HorizontalContentAlignment="Center"/>
+      <ComboBoxItem Content="100" HorizontalContentAlignment="Center"/>
+      <ComboBoxItem Content="200" HorizontalContentAlignment="Center"/>
+      <ComboBoxItem Content="500" HorizontalContentAlignment="Center"/>
+     </ComboBox>
+     <Button x:Name="FindJobsButton" Content="Find Jobs" Height="32" Margin="0,0,6,0" Padding="12,0"
+             IsEnabled="False" ToolTip="Find jobs on the current Jobright results page." Click="FindJobs_Click"/>
+     <Button x:Name="StopFindingButton" Content="Stop" Height="32" Margin="0,0,6,0" Padding="12,0"
+             IsEnabled="False" Click="StopFinding_Click"/>
+     <Button x:Name="AutoImportButton" Content="Import Found" Height="32" Margin="0,0,6,0" Padding="12,0"
+             IsEnabled="False" ToolTip="Import the jobs found on this page one by one." Click="AutoImport_Click"/>
+     <Button x:Name="ImportButton" Content="Import Current Job" Height="32" Padding="14,0"
+             Style="{DynamicResource BtnPrimary}" FontWeight="SemiBold"
+             ToolTip="Open a single Jobright job to import it into the queue." Click="Import_Click"/>
+    </WrapPanel>
+   </Grid>
+  </Border>
+
+  <Border x:Name="ResultBanner" Grid.Row="2" Visibility="Collapsed" Padding="16,10" BorderThickness="0,0,0,1"
+          Background="{DynamicResource StatusAppliedBg}" BorderBrush="{DynamicResource Border.Subtle}">
    <DockPanel>
-    <Button DockPanel.Dock="Right" Content="✕" Width="24" Height="22" Padding="0" VerticalAlignment="Top"
-            Background="Transparent" BorderThickness="0" ToolTip="Dismiss" Click="DismissResult_Click"/>
+    <Button DockPanel.Dock="Right" Content="✕" Width="28" Height="26" Padding="0" VerticalAlignment="Top"
+            Style="{DynamicResource BtnGhost}" ToolTip="Dismiss" Click="DismissResult_Click"/>
     <StackPanel>
-     <TextBlock x:Name="ResultHeadline" FontWeight="SemiBold" FontSize="13" Foreground="#1E7E34"/>
-     <TextBlock x:Name="ResultDetail" FontSize="11.5" Foreground="#333" TextWrapping="Wrap" Margin="0,2,0,0"/>
+     <TextBlock x:Name="ResultHeadline" FontWeight="SemiBold" FontSize="13" Foreground="{DynamicResource StatusAppliedFg}"/>
+     <TextBlock x:Name="ResultDetail" FontSize="12" Foreground="{DynamicResource Text.Primary}" TextWrapping="Wrap" Margin="0,3,0,0"/>
     </StackPanel>
    </DockPanel>
   </Border>
 
-  <Border x:Name="BrowserHost" Grid.Row="2" Background="#FAFAFA"/>
+  <Grid Grid.Row="3">
+   <Border x:Name="BrowserHost" Background="{DynamicResource Bg.Input}"/>
+   <Border x:Name="BrowserBusyOverlay" Background="{DynamicResource Overlay.Busy}" Visibility="Collapsed">
+    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+     <ProgressBar Width="180" Height="4" IsIndeterminate="True"/>
+     <TextBlock x:Name="BrowserBusyText" Text="Loading Jobright…" Margin="0,10,0,0"
+                Foreground="{DynamicResource Text.Primary}" HorizontalAlignment="Center"/>
+    </StackPanel>
+   </Border>
+  </Grid>
 
-  <Border Grid.Row="3" Background="#F7F7F7" BorderBrush="#DDD" BorderThickness="0,1,0,0">
-   <TextBlock x:Name="StatusText" Margin="12,0" VerticalAlignment="Center" FontSize="11" Foreground="#666"
-              TextTrimming="CharacterEllipsis" Text="Starting the job browser…"/>
+  <Border Grid.Row="4" Background="{DynamicResource Bg.Surface}" BorderBrush="{DynamicResource Border.Subtle}"
+          BorderThickness="0,1,0,0" Padding="14,0" MinHeight="28">
+   <TextBlock x:Name="StatusText" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource Text.Muted}"
+              TextTrimming="CharacterEllipsis" Text="Open Job Browser to start the Jobright session…"/>
   </Border>
  </Grid>
-</Window>
+</UserControl>

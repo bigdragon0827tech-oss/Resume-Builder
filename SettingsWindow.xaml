@@ -1,34 +1,10 @@
-<Window x:Class="ResumeBuilder.SettingsWindow"
+<UserControl x:Class="ResumeBuilder.SettingsWindow"
  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
  xmlns:sys="clr-namespace:System;assembly=mscorlib"
- Title="Settings / Inspector" Height="700" Width="1000">
- <Window.Resources>
-  <!-- ===================================================================
-       Applications dashboard: light surfaces, one accent, semantic status
-       colours. Presentation only — no behaviour lives here.
-       =================================================================== -->
-  <SolidColorBrush x:Key="Accent" Color="#1F4E79"/>
-  <SolidColorBrush x:Key="AccentSoft" Color="#3B7DBF"/>
-  <SolidColorBrush x:Key="Muted" Color="#6B7280"/>
-  <SolidColorBrush x:Key="Ink" Color="#1F2937"/>
-  <SolidColorBrush x:Key="CardBorder" Color="#E3E7EB"/>
-  <SolidColorBrush x:Key="CardFill" Color="#FFFFFF"/>
-  <SolidColorBrush x:Key="PanelFill" Color="#F5F7FA"/>
-  <SolidColorBrush x:Key="GridLine" Color="#EDF0F3"/>
-
-  <!-- Status accents. Used for badges and column headers only; stored data is untouched. -->
-  <SolidColorBrush x:Key="StatusViewedBg" Color="#EEF1F4"/>
-  <SolidColorBrush x:Key="StatusViewedFg" Color="#4B5563"/>
-  <SolidColorBrush x:Key="StatusReadyBg" Color="#E1EEFA"/>
-  <SolidColorBrush x:Key="StatusReadyFg" Color="#1D6FB8"/>
-  <SolidColorBrush x:Key="StatusAppliedBg" Color="#E4F4E8"/>
-  <SolidColorBrush x:Key="StatusAppliedFg" Color="#1E7E34"/>
-  <SolidColorBrush x:Key="StatusInterviewBg" Color="#FDF0DF"/>
-  <SolidColorBrush x:Key="StatusInterviewFg" Color="#B5660A"/>
-  <SolidColorBrush x:Key="StatusDoneBg" Color="#EDE6F8"/>
-  <SolidColorBrush x:Key="StatusDoneFg" Color="#6B3FA0"/>
-
+ xmlns:local="clr-namespace:ResumeBuilder">
+ <UserControl.Resources>
+  <!-- Colours come from Themes/Theme.xaml (Accent, Status*, Card*, PanelFill, …). -->
   <!-- Status icons, drawn as plain vector paths on a 16x16 grid. No icon library. -->
   <StreamGeometry x:Key="IconViewed">M1,8 C3,4.5 5.4,3 8,3 C10.6,3 13,4.5 15,8 C13,11.5 10.6,13 8,13 C5.4,13 3,11.5 1,8 Z M8,10.6 A2.6,2.6 0 1,0 8,5.4 A2.6,2.6 0 1,0 8,10.6 Z</StreamGeometry>
   <StreamGeometry x:Key="IconReady">M3,1 L9.4,1 L13,4.6 L13,15 L3,15 Z M5.2,8.6 L7.1,10.5 L10.7,6.9 L11.9,8.1 L7.1,12.9 L4,9.8 Z</StreamGeometry>
@@ -44,30 +20,30 @@
    <Setter Property="VerticalAlignment" Value="Center"/>
    <Setter Property="Margin" Value="0,0,5,0"/>
    <Setter Property="Data" Value="{StaticResource IconViewed}"/>
-   <Setter Property="Fill" Value="{StaticResource StatusViewedFg}"/>
+   <Setter Property="Fill" Value="{DynamicResource StatusViewedFg}"/>
    <Style.Triggers>
     <DataTrigger Binding="{Binding ApplicationStatus}" Value="Ready">
      <Setter Property="Data" Value="{StaticResource IconReady}"/>
-     <Setter Property="Fill" Value="{StaticResource StatusReadyFg}"/>
+     <Setter Property="Fill" Value="{DynamicResource StatusReadyFg}"/>
     </DataTrigger>
     <DataTrigger Binding="{Binding ApplicationStatus}" Value="Applied">
      <Setter Property="Data" Value="{StaticResource IconApplied}"/>
-     <Setter Property="Fill" Value="{StaticResource StatusAppliedFg}"/>
+     <Setter Property="Fill" Value="{DynamicResource StatusAppliedFg}"/>
     </DataTrigger>
     <DataTrigger Binding="{Binding ApplicationStatus}" Value="Interview">
      <Setter Property="Data" Value="{StaticResource IconInterview}"/>
-     <Setter Property="Fill" Value="{StaticResource StatusInterviewFg}"/>
+     <Setter Property="Fill" Value="{DynamicResource StatusInterviewFg}"/>
     </DataTrigger>
     <DataTrigger Binding="{Binding ApplicationStatus}" Value="Done">
      <Setter Property="Data" Value="{StaticResource IconDone}"/>
-     <Setter Property="Fill" Value="{StaticResource StatusDoneFg}"/>
+     <Setter Property="Fill" Value="{DynamicResource StatusDoneFg}"/>
     </DataTrigger>
    </Style.Triggers>
   </Style>
 
   <Style x:Key="DashboardCardStyle" TargetType="Border">
-   <Setter Property="Background" Value="{StaticResource CardFill}"/>
-   <Setter Property="BorderBrush" Value="{StaticResource CardBorder}"/>
+   <Setter Property="Background" Value="{DynamicResource Bg.Surface}"/>
+   <Setter Property="BorderBrush" Value="{DynamicResource Border.Subtle}"/>
    <Setter Property="BorderThickness" Value="1"/>
    <Setter Property="CornerRadius" Value="8"/>
    <Setter Property="Padding" Value="14,12"/>
@@ -77,25 +53,25 @@
   <Style x:Key="SectionHeaderStyle" TargetType="TextBlock">
    <Setter Property="FontWeight" Value="SemiBold"/>
    <Setter Property="FontSize" Value="12.5"/>
-   <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+   <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
    <Setter Property="Margin" Value="0,0,0,10"/>
   </Style>
   <Style x:Key="CardLabelStyle" TargetType="TextBlock">
-   <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+   <Setter Property="Foreground" Value="{DynamicResource Text.Muted}"/>
    <Setter Property="FontSize" Value="11"/>
   </Style>
   <Style x:Key="CardValueStyle" TargetType="TextBlock">
    <Setter Property="FontSize" Value="28"/>
    <Setter Property="FontWeight" Value="Bold"/>
-   <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+   <Setter Property="Foreground" Value="{DynamicResource Accent.Default}"/>
    <Setter Property="Margin" Value="0,4,0,2"/>
   </Style>
   <Style x:Key="MutedTextStyle" TargetType="TextBlock">
-   <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+   <Setter Property="Foreground" Value="{DynamicResource Text.Muted}"/>
    <Setter Property="FontSize" Value="10.5"/>
   </Style>
   <Style x:Key="EmptyStateStyle" TargetType="TextBlock">
-   <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+   <Setter Property="Foreground" Value="{DynamicResource Text.Muted}"/>
    <Setter Property="FontSize" Value="11.5"/>
    <Setter Property="HorizontalAlignment" Value="Center"/>
    <Setter Property="VerticalAlignment" Value="Center"/>
@@ -104,41 +80,41 @@
 
   <!-- One pill, recoloured per status by the bound value. -->
   <Style x:Key="StatusBadgeStyle" TargetType="Border">
-   <Setter Property="CornerRadius" Value="9"/>
-   <Setter Property="Padding" Value="9,2"/>
+   <Setter Property="CornerRadius" Value="10"/>
+   <Setter Property="Padding" Value="10,3"/>
    <Setter Property="HorizontalAlignment" Value="Left"/>
-   <Setter Property="Background" Value="{StaticResource StatusViewedBg}"/>
+   <Setter Property="Background" Value="{DynamicResource StatusViewedBg}"/>
    <Style.Triggers>
     <DataTrigger Binding="{Binding ApplicationStatus}" Value="Ready">
-     <Setter Property="Background" Value="{StaticResource StatusReadyBg}"/>
+     <Setter Property="Background" Value="{DynamicResource StatusReadyBg}"/>
     </DataTrigger>
     <DataTrigger Binding="{Binding ApplicationStatus}" Value="Applied">
-     <Setter Property="Background" Value="{StaticResource StatusAppliedBg}"/>
+     <Setter Property="Background" Value="{DynamicResource StatusAppliedBg}"/>
     </DataTrigger>
     <DataTrigger Binding="{Binding ApplicationStatus}" Value="Interview">
-     <Setter Property="Background" Value="{StaticResource StatusInterviewBg}"/>
+     <Setter Property="Background" Value="{DynamicResource StatusInterviewBg}"/>
     </DataTrigger>
     <DataTrigger Binding="{Binding ApplicationStatus}" Value="Done">
-     <Setter Property="Background" Value="{StaticResource StatusDoneBg}"/>
+     <Setter Property="Background" Value="{DynamicResource StatusDoneBg}"/>
     </DataTrigger>
    </Style.Triggers>
   </Style>
   <Style x:Key="StatusBadgeTextStyle" TargetType="TextBlock">
    <Setter Property="FontSize" Value="10.5"/>
    <Setter Property="FontWeight" Value="SemiBold"/>
-   <Setter Property="Foreground" Value="{StaticResource StatusViewedFg}"/>
+   <Setter Property="Foreground" Value="{DynamicResource StatusViewedFg}"/>
    <Style.Triggers>
     <DataTrigger Binding="{Binding ApplicationStatus}" Value="Ready">
-     <Setter Property="Foreground" Value="{StaticResource StatusReadyFg}"/>
+     <Setter Property="Foreground" Value="{DynamicResource StatusReadyFg}"/>
     </DataTrigger>
     <DataTrigger Binding="{Binding ApplicationStatus}" Value="Applied">
-     <Setter Property="Foreground" Value="{StaticResource StatusAppliedFg}"/>
+     <Setter Property="Foreground" Value="{DynamicResource StatusAppliedFg}"/>
     </DataTrigger>
     <DataTrigger Binding="{Binding ApplicationStatus}" Value="Interview">
-     <Setter Property="Foreground" Value="{StaticResource StatusInterviewFg}"/>
+     <Setter Property="Foreground" Value="{DynamicResource StatusInterviewFg}"/>
     </DataTrigger>
     <DataTrigger Binding="{Binding ApplicationStatus}" Value="Done">
-     <Setter Property="Foreground" Value="{StaticResource StatusDoneFg}"/>
+     <Setter Property="Foreground" Value="{DynamicResource StatusDoneFg}"/>
     </DataTrigger>
    </Style.Triggers>
   </Style>
@@ -152,42 +128,42 @@
    <Setter Property="VerticalAlignment" Value="Center"/>
    <Setter Property="Margin" Value="0,0,8,0"/>
    <Setter Property="Data" Value="{StaticResource IconViewed}"/>
-   <Setter Property="Fill" Value="{StaticResource StatusViewedFg}"/>
+   <Setter Property="Fill" Value="{DynamicResource StatusViewedFg}"/>
    <Style.Triggers>
     <DataTrigger Binding="{Binding}" Value="Ready">
      <Setter Property="Data" Value="{StaticResource IconReady}"/>
-     <Setter Property="Fill" Value="{StaticResource StatusReadyFg}"/>
+     <Setter Property="Fill" Value="{DynamicResource StatusReadyFg}"/>
     </DataTrigger>
     <DataTrigger Binding="{Binding}" Value="Applied">
      <Setter Property="Data" Value="{StaticResource IconApplied}"/>
-     <Setter Property="Fill" Value="{StaticResource StatusAppliedFg}"/>
+     <Setter Property="Fill" Value="{DynamicResource StatusAppliedFg}"/>
     </DataTrigger>
     <DataTrigger Binding="{Binding}" Value="Interview">
      <Setter Property="Data" Value="{StaticResource IconInterview}"/>
-     <Setter Property="Fill" Value="{StaticResource StatusInterviewFg}"/>
+     <Setter Property="Fill" Value="{DynamicResource StatusInterviewFg}"/>
     </DataTrigger>
     <DataTrigger Binding="{Binding}" Value="Done">
      <Setter Property="Data" Value="{StaticResource IconDone}"/>
-     <Setter Property="Fill" Value="{StaticResource StatusDoneFg}"/>
+     <Setter Property="Fill" Value="{DynamicResource StatusDoneFg}"/>
     </DataTrigger>
    </Style.Triggers>
   </Style>
   <Style x:Key="StatusChoiceTextStyle" TargetType="TextBlock">
    <Setter Property="FontSize" Value="11.5"/>
    <Setter Property="VerticalAlignment" Value="Center"/>
-   <Setter Property="Foreground" Value="{StaticResource StatusViewedFg}"/>
+   <Setter Property="Foreground" Value="{DynamicResource StatusViewedFg}"/>
    <Style.Triggers>
     <DataTrigger Binding="{Binding}" Value="Ready">
-     <Setter Property="Foreground" Value="{StaticResource StatusReadyFg}"/>
+     <Setter Property="Foreground" Value="{DynamicResource StatusReadyFg}"/>
     </DataTrigger>
     <DataTrigger Binding="{Binding}" Value="Applied">
-     <Setter Property="Foreground" Value="{StaticResource StatusAppliedFg}"/>
+     <Setter Property="Foreground" Value="{DynamicResource StatusAppliedFg}"/>
     </DataTrigger>
     <DataTrigger Binding="{Binding}" Value="Interview">
-     <Setter Property="Foreground" Value="{StaticResource StatusInterviewFg}"/>
+     <Setter Property="Foreground" Value="{DynamicResource StatusInterviewFg}"/>
     </DataTrigger>
     <DataTrigger Binding="{Binding}" Value="Done">
-     <Setter Property="Foreground" Value="{StaticResource StatusDoneFg}"/>
+     <Setter Property="Foreground" Value="{DynamicResource StatusDoneFg}"/>
     </DataTrigger>
    </Style.Triggers>
   </Style>
@@ -199,19 +175,38 @@
     so the popup rendered five invisible rows — the blank white rectangle.
   -->
   <Style x:Key="StatusPickerStyle" TargetType="ComboBox">
-   <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+   <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
    <Setter Property="Background" Value="Transparent"/>
    <Setter Property="BorderThickness" Value="0"/>
    <Setter Property="HorizontalContentAlignment" Value="Left"/>
    <Setter Property="MaxDropDownHeight" Value="196"/>
+   <Setter Property="Cursor" Value="Hand"/>
    <Setter Property="ToolTip" Value="Change status"/>
    <Setter Property="ItemContainerStyle">
     <Setter.Value>
      <Style TargetType="ComboBoxItem">
-      <Setter Property="Height" Value="32"/>
+      <Setter Property="Height" Value="34"/>
       <Setter Property="Padding" Value="10,0"/>
+      <Setter Property="Margin" Value="1"/>
       <Setter Property="VerticalContentAlignment" Value="Center"/>
-      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+      <Setter Property="Template">
+       <Setter.Value>
+        <ControlTemplate TargetType="ComboBoxItem">
+         <Border x:Name="Bd" Background="Transparent" CornerRadius="5" Padding="{TemplateBinding Padding}">
+          <ContentPresenter VerticalAlignment="Center"/>
+         </Border>
+         <ControlTemplate.Triggers>
+          <Trigger Property="IsHighlighted" Value="True">
+           <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Bg.Hover}"/>
+          </Trigger>
+          <Trigger Property="IsSelected" Value="True">
+           <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Bg.Selected}"/>
+          </Trigger>
+         </ControlTemplate.Triggers>
+        </ControlTemplate>
+       </Setter.Value>
+      </Setter>
      </Style>
     </Setter.Value>
    </Setter>
@@ -234,7 +229,7 @@
         <ToggleButton.Template>
          <ControlTemplate TargetType="ToggleButton">
           <!-- Transparent background so the whole cell is clickable, not only the badge. -->
-          <Border Background="Transparent" Padding="0,2">
+          <Border Background="Transparent" Padding="0,2" CornerRadius="6">
            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
             <Border Style="{StaticResource StatusBadgeStyle}">
              <StackPanel Orientation="Horizontal">
@@ -242,7 +237,7 @@
               <TextBlock Text="{Binding ApplicationStatus}" Style="{StaticResource StatusBadgeTextStyle}"/>
              </StackPanel>
             </Border>
-            <Path Data="M 0 0 L 8 0 L 4 5 Z" Fill="{StaticResource Muted}" VerticalAlignment="Center"
+            <Path Data="M 0 0 L 8 0 L 4 5 Z" Fill="{DynamicResource Text.Muted}" VerticalAlignment="Center"
                   Margin="6,2,0,0"/>
            </StackPanel>
           </Border>
@@ -254,10 +249,10 @@
               PopupAnimation="Fade" StaysOpen="False"
               IsOpen="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
         <!-- Sized here, so the popup never inherits the width of the cell or the grid. -->
-        <Border Width="158" MaxHeight="{TemplateBinding MaxDropDownHeight}" Margin="0,2,10,10"
-                Background="{StaticResource CardFill}" BorderBrush="{StaticResource CardBorder}"
-                BorderThickness="1" CornerRadius="6" Padding="3">
-         <Border.Effect><DropShadowEffect BlurRadius="10" ShadowDepth="2" Opacity="0.18" Color="#4A5568"/></Border.Effect>
+        <Border Width="168" MaxHeight="{TemplateBinding MaxDropDownHeight}" Margin="0,2,10,10"
+                Background="{DynamicResource Bg.Surface}" BorderBrush="{DynamicResource Border.Subtle}"
+                BorderThickness="1" CornerRadius="8" Padding="4">
+         <Border.Effect><DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.22" Color="#1F2937"/></Border.Effect>
          <ScrollViewer VerticalScrollBarVisibility="Auto"><ItemsPresenter/></ScrollViewer>
         </Border>
        </Popup>
@@ -267,15 +262,63 @@
    </Setter>
   </Style>
 
-  <Style x:Key="FilterControlStyle" TargetType="ComboBox">
-   <Setter Property="Height" Value="26"/>
+  <Style x:Key="FilterControlStyle" TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
+   <Setter Property="Height" Value="28"/>
+   <Setter Property="MinHeight" Value="26"/>
    <Setter Property="VerticalContentAlignment" Value="Center"/>
    <Setter Property="FontSize" Value="11.5"/>
   </Style>
 
+  <!-- Application platform badge, shared by the List's Job cell and the Board card. Neutral colours on
+       purpose, so it never reads as an application status. Text comes from JobTracker.PlatformDisplayName;
+       Unknown (no application link recorded) is hidden, and so is its tooltip. Display only. -->
+  <local:PlatformDisplayConverter x:Key="PlatformDisplay"/>
+  <local:OpenableUrlConverter x:Key="OpenableUrl"/>
+  <local:CanMarkAppliedConverter x:Key="CanMarkApplied"/>
+  <local:JobDateTextConverter x:Key="JobDateText"/>
+  <Style x:Key="PlatformBadgeStyle" TargetType="ContentControl">
+   <Setter Property="Focusable" Value="False"/>
+   <Setter Property="VerticalAlignment" Value="Center"/>
+   <Setter Property="ToolTip" Value="{Binding ApplyUrl}"/>
+   <Setter Property="Template">
+    <Setter.Value>
+     <ControlTemplate TargetType="ContentControl">
+      <Border Background="{DynamicResource Bg.Input}" BorderBrush="{DynamicResource Border.Subtle}" BorderThickness="1"
+              CornerRadius="10" Padding="7,1,7,2">
+       <TextBlock Text="{Binding ApplicationPlatform, Converter={StaticResource PlatformDisplay}}"
+                  FontSize="10" FontWeight="SemiBold" Foreground="{DynamicResource Text.Secondary}"/>
+      </Border>
+     </ControlTemplate>
+    </Setter.Value>
+   </Setter>
+   <Style.Triggers>
+    <DataTrigger Binding="{Binding ApplicationPlatform}" Value="{x:Static local:ApplicationPlatform.Unknown}">
+     <Setter Property="Visibility" Value="Collapsed"/>
+     <Setter Property="ToolTip" Value="{x:Null}"/>
+    </DataTrigger>
+   </Style.Triggers>
+  </Style>
+
+  <!-- Application readiness: coloured TEXT (never a badge, so it cannot pass for the Status badge),
+       reusing the status foreground brushes. Display only; the value is JobTracker.GetReadiness. -->
+  <Style x:Key="ReadinessTextStyle" TargetType="TextBlock">
+   <Setter Property="Text" Value="{Binding ReadinessDisplay}"/>
+   <Setter Property="ToolTip" Value="{Binding ReadinessHint}"/>
+   <Setter Property="Foreground" Value="{DynamicResource Text.Muted}"/>
+   <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+   <Style.Triggers>
+    <DataTrigger Binding="{Binding Readiness}" Value="{x:Static local:ApplicationReadiness.ReadyToApply}">
+     <Setter Property="Foreground" Value="{DynamicResource StatusAppliedFg}"/>
+    </DataTrigger>
+    <DataTrigger Binding="{Binding Readiness}" Value="{x:Static local:ApplicationReadiness.NeedsApplyLink}">
+     <Setter Property="Foreground" Value="{DynamicResource StatusInterviewFg}"/>
+    </DataTrigger>
+   </Style.Triggers>
+  </Style>
+
   <Style x:Key="BoardCardStyle" TargetType="Border">
-   <Setter Property="Background" Value="{StaticResource CardFill}"/>
-   <Setter Property="BorderBrush" Value="{StaticResource CardBorder}"/>
+   <Setter Property="Background" Value="{DynamicResource Bg.Surface}"/>
+   <Setter Property="BorderBrush" Value="{DynamicResource Border.Subtle}"/>
    <Setter Property="BorderThickness" Value="1"/>
    <Setter Property="CornerRadius" Value="6"/>
    <Setter Property="Padding" Value="9,7"/>
@@ -284,7 +327,7 @@
 
   <!-- List | Board, drawn as one segmented control. -->
   <Style x:Key="SegmentToggleStyle" TargetType="RadioButton">
-   <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+   <Setter Property="Foreground" Value="{DynamicResource Text.Muted}"/>
    <Setter Property="FontSize" Value="11.5"/>
    <Setter Property="Padding" Value="16,3"/>
    <Setter Property="Cursor" Value="Hand"/>
@@ -296,9 +339,12 @@
       </Border>
       <ControlTemplate.Triggers>
        <Trigger Property="IsChecked" Value="True">
-        <Setter TargetName="Chip" Property="Background" Value="{StaticResource CardFill}"/>
-        <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource Bg.Surface}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Accent.Default}"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
+       </Trigger>
+       <Trigger Property="IsMouseOver" Value="True">
+        <Setter TargetName="Chip" Property="Background" Value="{DynamicResource Bg.Hover}"/>
        </Trigger>
       </ControlTemplate.Triggers>
      </ControlTemplate>
@@ -313,66 +359,248 @@
    <sys:String>Interview</sys:String>
    <sys:String>Done</sys:String>
   </x:Array>
- </Window.Resources>
- <Grid Margin="14"><TabControl>
-  <TabItem Header="General"><ScrollViewer><StackPanel Margin="12">
-   <TextBlock Text="Original Resume (DOCX/PDF — used later for document output/template)"/>
-<DockPanel Margin="0,4,0,10"><Button DockPanel.Dock="Right" Content="Browse" Click="ResumeBrowse_Click"/><TextBox x:Name="ResumeBox"/></DockPanel>
-<TextBlock Text="Baseline Profile"/>
-<StackPanel Orientation="Horizontal" Margin="0,4,0,10">
-<Button Content="Import Original Resume" Padding="10,4" Click="ImportBaseline_Click"/>
-<Button Content="Prepare Profile Creation" Padding="10,4" Margin="8,0,0,0" Click="PrepareProfileCreation_Click"/>
-<TextBlock x:Name="BaselineStatus" Margin="12,5,0,0" Text="Not imported"/>
-</StackPanel>
-   <TextBlock Text="Master Prompt"/><DockPanel Margin="0,4,0,10"><Button DockPanel.Dock="Right" Content="Browse" Click="PromptBrowse_Click"/><TextBox x:Name="PromptBox"/></DockPanel>
-   <TextBlock Text="Incoming Folder"/><DockPanel Margin="0,4,0,10"><Button DockPanel.Dock="Right" Content="Browse" Click="IncomingBrowse_Click"/><TextBox x:Name="IncomingBox"/></DockPanel>
-   <TextBlock Text="Imported Folder"/><DockPanel Margin="0,4,0,10"><Button DockPanel.Dock="Right" Content="Browse" Click="ImportedBrowse_Click"/><TextBox x:Name="ImportedBox"/></DockPanel>
-   <TextBlock Text="Resume Root Folder"/><DockPanel Margin="0,4,0,10"><Button DockPanel.Dock="Right" Content="Browse" Click="RootBrowse_Click"/><TextBox x:Name="RootBox"/></DockPanel>
-   <StackPanel Orientation="Horizontal"><CheckBox x:Name="DocxBox" Content="DOCX" Margin="0,0,20,0"/><CheckBox x:Name="PdfBox" Content="PDF"/></StackPanel>
-   <TextBlock Text="AI Round-Trip Automation" FontWeight="Bold" Margin="0,16,0,4"/>
-   <CheckBox x:Name="AutoFillBox" Content="Type the prepared request into the ChatGPT box automatically (you still press Enter)" Margin="0,2,0,0"/>
-   <CheckBox x:Name="AutoSendBox" Content="Click ChatGPT's Send button automatically after the prompt is typed in" Margin="0,6,0,0"/>
-   <CheckBox x:Name="AutoCaptureBox" Content="Capture the AI answer from the clipboard while a request is waiting" Margin="0,6,0,0"/>
-   <TextBlock Text="When the answer is ready" FontWeight="SemiBold" Margin="0,10,0,2"/>
-   <CheckBox x:Name="ReadyToastBox" Content="Show a notification on the right side of the screen" Margin="0,2,0,0"/>
-   <CheckBox x:Name="ReadySoundBox" Content="Play a sound" Margin="0,6,0,0"/>
-   <CheckBox x:Name="ReadyFlashBox" Content="Flash the taskbar button when Resume Builder is in the background" Margin="0,6,0,0"/>
-   <CheckBox x:Name="FocusHotkeyBox" Content="Ctrl+Shift+' brings Resume Builder to the front from any app (applies after restart)" Margin="0,6,0,0"/>
-   <TextBlock TextWrapping="Wrap" Foreground="#666" Margin="0,4,0,0" Text="Resume Builder only watches whether ChatGPT is still generating. You copy the answer yourself: press Ctrl+Shift+' (or click the notification), then press Ctrl+Shift+; to copy the answer's code block (or click the Copy button on that code block)."/>
-   <TextBlock TextWrapping="Wrap" Foreground="#666" Margin="0,4,0,0" Text="Copying the answer stays manual on purpose: you click ChatGPT's own Copy button and the result is captured from the clipboard. Capture is armed only between sending a request and receiving its answer. Text that is not a candidate profile is ignored and never stored. Tailored results are saved to results\&lt;jobId&gt;.json; candidate-profile.json stays the baseline."/>
-   <Button Content="Save" Width="100" Height="34" HorizontalAlignment="Right" Margin="0,18,0,0" Click="Save_Click"/>
-  </StackPanel></ScrollViewer></TabItem>
-  <TabItem Header="Job Details"><Grid Margin="12"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition/></Grid.RowDefinitions>
-<StackPanel Orientation="Horizontal"><TextBlock Text="Prepared GPT Input (latest)" FontWeight="Bold" FontSize="15" VerticalAlignment="Center"/><Button Content="Copy Prepared Input" Margin="16,0,0,0" Padding="10,4" Click="CopyPrepared_Click"/></StackPanel>
-<TextBox Grid.Row="1" x:Name="PreparedInputBox" Margin="0,8,0,0" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
-</Grid></TabItem>
+ </UserControl.Resources>
+
+ <Grid Background="{DynamicResource Bg.App}">
+  <Grid.ColumnDefinitions>
+   <ColumnDefinition x:Name="SectionNavColumn" Width="200"/>
+   <ColumnDefinition Width="*"/>
+  </Grid.ColumnDefinitions>
+
+  <Border x:Name="SectionNavPanel" Grid.Column="0" Background="{DynamicResource Bg.Sidebar}"
+          BorderBrush="{DynamicResource Border.Subtle}" BorderThickness="0,0,1,0">
+   <DockPanel>
+    <TextBlock DockPanel.Dock="Top" Text="Settings" FontWeight="SemiBold" FontSize="13"
+               Margin="16,18,16,10" Foreground="{DynamicResource Text.Primary}"/>
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+     <StackPanel Margin="8,0,8,16">
+      <RadioButton x:Name="NavCandidateProfile" Content="Candidate Profile" GroupName="SettingsSection" Style="{DynamicResource NavButtonStyle}"
+                   Tag="Candidate Profile" IsChecked="True" Checked="SectionNav_Checked"/>
+      <RadioButton Content="Prompts" GroupName="SettingsSection" Style="{DynamicResource NavButtonStyle}"
+                   Tag="Prompts" Checked="SectionNav_Checked"/>
+      <RadioButton Content="Folders" GroupName="SettingsSection" Style="{DynamicResource NavButtonStyle}"
+                   Tag="Folders" Checked="SectionNav_Checked"/>
+      <RadioButton Content="Document Output" GroupName="SettingsSection" Style="{DynamicResource NavButtonStyle}"
+                   Tag="Document Output" Checked="SectionNav_Checked"/>
+      <RadioButton Content="Automation" GroupName="SettingsSection" Style="{DynamicResource NavButtonStyle}"
+                   Tag="Automation" Checked="SectionNav_Checked"/>
+      <RadioButton Content="Notifications" GroupName="SettingsSection" Style="{DynamicResource NavButtonStyle}"
+                   Tag="Notifications" Checked="SectionNav_Checked"/>
+      <RadioButton Content="Job Details" GroupName="SettingsSection" Style="{DynamicResource NavButtonStyle}"
+                   Tag="Job Details" Checked="SectionNav_Checked"/>
+      <RadioButton Content="Manual Result" GroupName="SettingsSection" Style="{DynamicResource NavButtonStyle}"
+                   Tag="Result" Checked="SectionNav_Checked"/>
+      <RadioButton Content="Development" GroupName="SettingsSection" Style="{DynamicResource NavButtonStyle}"
+                   Tag="Development" Checked="SectionNav_Checked"/>
+     </StackPanel>
+    </ScrollViewer>
+   </DockPanel>
+  </Border>
+
+  <TabControl x:Name="SettingsTabs" Grid.Column="1" Background="Transparent" BorderThickness="0" Padding="0">
+   <TabControl.ItemContainerStyle>
+    <Style TargetType="TabItem">
+     <Setter Property="Visibility" Value="Collapsed"/>
+     <Setter Property="Height" Value="0"/>
+    </Style>
+   </TabControl.ItemContainerStyle>
+
+  <TabItem Header="Candidate Profile">
+   <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24">
+    <StackPanel MaxWidth="720">
+     <TextBlock Text="Candidate Profile" Style="{DynamicResource PageTitleStyle}"/>
+     <TextBlock Text="Original resume and baseline profile used for document output." Style="{DynamicResource PageSubtitleStyle}"/>
+     <Border Style="{DynamicResource CardStyle}" Margin="0,0,0,16">
+      <StackPanel>
+       <TextBlock Text="Original Resume (DOCX/PDF)" FontWeight="SemiBold" Margin="0,0,0,6"/>
+       <DockPanel Margin="0,0,0,14">
+        <Button DockPanel.Dock="Right" Content="Browse" Margin="8,0,0,0" Click="ResumeBrowse_Click"/>
+        <TextBox x:Name="ResumeBox"/>
+       </DockPanel>
+       <TextBlock Text="Baseline Profile" FontWeight="SemiBold" Margin="0,0,0,8"/>
+       <StackPanel Orientation="Horizontal">
+        <Button Content="Import Original Resume" Style="{DynamicResource BtnPrimary}" Click="ImportBaseline_Click"/>
+        <Button Content="Prepare Profile Creation" Margin="8,0,0,0" Click="PrepareProfileCreation_Click"/>
+        <TextBlock x:Name="BaselineStatus" Margin="12,8,0,0" Foreground="{DynamicResource Text.Secondary}" Text="Not imported"/>
+       </StackPanel>
+      </StackPanel>
+     </Border>
+     <Button Content="Save settings" Style="{DynamicResource BtnPrimary}" HorizontalAlignment="Left" Width="140" Height="34" Click="Save_Click"/>
+    </StackPanel>
+   </ScrollViewer>
+  </TabItem>
+
+  <TabItem Header="Prompts">
+   <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24">
+    <StackPanel MaxWidth="720">
+     <TextBlock Text="Prompts" Style="{DynamicResource PageTitleStyle}"/>
+     <TextBlock Text="Which prompt file is used; the job payload and output contract stay the same." Style="{DynamicResource PageSubtitleStyle}"/>
+     <Border Style="{DynamicResource CardStyle}">
+      <StackPanel>
+       <TextBlock Text="Prompt Mode" FontWeight="SemiBold" Margin="0,0,0,8"/>
+       <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+        <RadioButton x:Name="ResumeModeBox" GroupName="PromptMode" Content="Resume" Margin="0,0,16,0"
+                     Checked="PromptMode_Changed" ToolTip="Use the Master Prompt file below"/>
+        <RadioButton x:Name="NormalModeBox" GroupName="PromptMode" Content="Normal"
+                     Checked="PromptMode_Changed" ToolTip="Use your own prompt file; Resume Builder still adds the job payload and its output rules"/>
+       </StackPanel>
+       <TextBlock Text="Master Prompt" Margin="0,0,0,4"/>
+       <DockPanel Margin="0,0,0,12">
+        <Button DockPanel.Dock="Right" Content="Browse" Margin="8,0,0,0" Click="PromptBrowse_Click"/>
+        <TextBox x:Name="PromptBox"/>
+       </DockPanel>
+       <TextBlock Text="Normal Prompt" Margin="0,0,0,4"/>
+       <DockPanel Margin="0,0,0,8">
+        <Button DockPanel.Dock="Right" Content="Browse" Margin="8,0,0,0" Click="NormalPromptBrowse_Click"/>
+        <TextBox x:Name="NormalPromptBox"/>
+       </DockPanel>
+       <TextBlock x:Name="PromptModeHint" Foreground="{DynamicResource Text.Muted}" TextWrapping="Wrap" FontSize="11.5"/>
+      </StackPanel>
+     </Border>
+     <Button Content="Save settings" Style="{DynamicResource BtnPrimary}" HorizontalAlignment="Left" Width="140" Height="34" Margin="0,16,0,0" Click="Save_Click"/>
+    </StackPanel>
+   </ScrollViewer>
+  </TabItem>
+
+  <TabItem Header="Folders">
+   <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24">
+    <StackPanel MaxWidth="720">
+     <TextBlock Text="Folders" Style="{DynamicResource PageTitleStyle}"/>
+     <TextBlock Text="Where jobs arrive, where imports are archived, and where resumes are written." Style="{DynamicResource PageSubtitleStyle}"/>
+     <Border Style="{DynamicResource CardStyle}">
+      <StackPanel>
+       <TextBlock Text="Incoming Folder" Margin="0,0,0,4"/>
+       <DockPanel Margin="0,0,0,12">
+        <Button DockPanel.Dock="Right" Content="Browse" Margin="8,0,0,0" Click="IncomingBrowse_Click"/>
+        <TextBox x:Name="IncomingBox"/>
+       </DockPanel>
+       <TextBlock Text="Imported Folder" Margin="0,0,0,4"/>
+       <DockPanel Margin="0,0,0,12">
+        <Button DockPanel.Dock="Right" Content="Browse" Margin="8,0,0,0" Click="ImportedBrowse_Click"/>
+        <TextBox x:Name="ImportedBox"/>
+       </DockPanel>
+       <TextBlock Text="Resume Root Folder" Margin="0,0,0,4"/>
+       <DockPanel>
+        <Button DockPanel.Dock="Right" Content="Browse" Margin="8,0,0,0" Click="RootBrowse_Click"/>
+        <TextBox x:Name="RootBox"/>
+       </DockPanel>
+      </StackPanel>
+     </Border>
+     <Button Content="Save settings" Style="{DynamicResource BtnPrimary}" HorizontalAlignment="Left" Width="140" Height="34" Margin="0,16,0,0" Click="Save_Click"/>
+    </StackPanel>
+   </ScrollViewer>
+  </TabItem>
+
+  <TabItem Header="Document Output">
+   <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24">
+    <StackPanel MaxWidth="720">
+     <TextBlock Text="Document Output" Style="{DynamicResource PageTitleStyle}"/>
+     <TextBlock Text="Which formats are generated after a validated profile is saved." Style="{DynamicResource PageSubtitleStyle}"/>
+     <Border Style="{DynamicResource CardStyle}">
+      <StackPanel Orientation="Horizontal">
+       <CheckBox x:Name="DocxBox" Content="DOCX" Margin="0,0,24,0"/>
+       <CheckBox x:Name="PdfBox" Content="PDF"/>
+      </StackPanel>
+     </Border>
+     <Button Content="Save settings" Style="{DynamicResource BtnPrimary}" HorizontalAlignment="Left" Width="140" Height="34" Margin="0,16,0,0" Click="Save_Click"/>
+    </StackPanel>
+   </ScrollViewer>
+  </TabItem>
+
+  <TabItem Header="Automation">
+   <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24">
+    <StackPanel MaxWidth="720">
+     <TextBlock Text="Automation" Style="{DynamicResource PageTitleStyle}"/>
+     <TextBlock Text="How Resume Builder talks to ChatGPT. Copying the answer stays clipboard-based." Style="{DynamicResource PageSubtitleStyle}"/>
+     <Border Style="{DynamicResource CardStyle}">
+      <StackPanel>
+       <CheckBox x:Name="AutoFillBox" Content="Type the prepared request into the ChatGPT box automatically (you still press Enter)" Margin="0,2,0,0"/>
+       <CheckBox x:Name="AutoSendBox" Content="Click ChatGPT's Send button automatically after the prompt is typed in" Margin="0,10,0,0"/>
+       <CheckBox x:Name="AutoCaptureBox" Content="Capture the AI answer from the clipboard while a request is waiting" Margin="0,10,0,0"/>
+       <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource Text.Muted}" Margin="0,14,0,0" FontSize="11.5"
+                  Text="Resume Builder only watches whether ChatGPT is still generating. You copy the answer yourself: press Ctrl+Shift+' (or click the notification), then press Ctrl+Shift+; to copy the answer's code block (or click the Copy button on that code block)."/>
+       <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource Text.Muted}" Margin="0,8,0,0" FontSize="11.5"
+                  Text="Copying the answer stays manual on purpose: you click ChatGPT's own Copy button and the result is captured from the clipboard. Capture is armed only between sending a request and receiving its answer. Text that is not a candidate profile is ignored and never stored. Tailored results are saved to results\&lt;jobId&gt;.json; candidate-profile.json stays the baseline."/>
+      </StackPanel>
+     </Border>
+     <Button Content="Save settings" Style="{DynamicResource BtnPrimary}" HorizontalAlignment="Left" Width="140" Height="34" Margin="0,16,0,0" Click="Save_Click"/>
+    </StackPanel>
+   </ScrollViewer>
+  </TabItem>
+
+  <TabItem Header="Notifications">
+   <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24">
+    <StackPanel MaxWidth="720">
+     <TextBlock Text="Notifications" Style="{DynamicResource PageTitleStyle}"/>
+     <TextBlock Text="What happens when an answer is ready." Style="{DynamicResource PageSubtitleStyle}"/>
+     <Border Style="{DynamicResource CardStyle}">
+      <StackPanel>
+       <CheckBox x:Name="ReadyToastBox" Content="Show a notification on the right side of the screen" Margin="0,2,0,0"/>
+       <CheckBox x:Name="ReadySoundBox" Content="Play a sound" Margin="0,10,0,0"/>
+       <CheckBox x:Name="ReadyFlashBox" Content="Flash the taskbar button when Resume Builder is in the background" Margin="0,10,0,0"/>
+       <CheckBox x:Name="FocusHotkeyBox" Content="Ctrl+Shift+' brings Resume Builder to the front from any app (applies after restart)" Margin="0,10,0,0"/>
+      </StackPanel>
+     </Border>
+     <Button Content="Save settings" Style="{DynamicResource BtnPrimary}" HorizontalAlignment="Left" Width="140" Height="34" Margin="0,16,0,0" Click="Save_Click"/>
+    </StackPanel>
+   </ScrollViewer>
+  </TabItem>
+
+  <TabItem Header="Job Details">
+   <Grid Margin="24">
+    <Grid.RowDefinitions>
+     <RowDefinition Height="Auto"/>
+     <RowDefinition Height="*"/>
+    </Grid.RowDefinitions>
+    <StackPanel>
+     <TextBlock Text="Job Details" Style="{DynamicResource PageTitleStyle}"/>
+     <DockPanel Margin="0,0,0,12">
+      <Button DockPanel.Dock="Right" Content="Copy Prepared Input" Style="{DynamicResource BtnPrimary}" Click="CopyPrepared_Click"/>
+      <TextBlock Text="Prepared GPT input (latest)" Style="{DynamicResource PageSubtitleStyle}" Margin="0"/>
+     </DockPanel>
+    </StackPanel>
+    <Border Grid.Row="1" Style="{DynamicResource CardStyle}" Padding="0">
+     <TextBox x:Name="PreparedInputBox" Margin="12" IsReadOnly="True" TextWrapping="Wrap"
+              Background="Transparent" BorderThickness="0"
+              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+              Foreground="{DynamicResource Text.Primary}"/>
+    </Border>
+   </Grid>
+  </TabItem>
+
   <TabItem Header="Result">
-<ScrollViewer VerticalScrollBarVisibility="Auto">
-<StackPanel Margin="20">
-<TextBlock Text="ChatGPT Result Capture" FontWeight="Bold" FontSize="16"/>
-<TextBlock Margin="0,6,0,10" TextWrapping="Wrap" Text="Paste the profile JSON returned by ChatGPT here. Validate + Save normalizes known output variations (skills as an object, bullets, dates, institution, start_date/end_date, Markdown contact links, extra fields) into the canonical schema, then validates and saves it."/>
-<TextBox x:Name="ResultInputBox" Height="360" AcceptsReturn="True" AcceptsTab="True" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
-<StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-<Button Content="Paste from Clipboard" Padding="12,5" Click="PasteResult_Click"/>
-<Button Content="Validate + Save Profile" Padding="12,5" Margin="8,0,0,0" Click="SaveProfile_Click"/>
-</StackPanel>
-<TextBlock x:Name="ProfileStatus" Margin="0,10,0,0" TextWrapping="Wrap"/>
-</StackPanel>
-</ScrollViewer>
-</TabItem>
-  <TabItem Header="Applications">
-<Grid Background="{StaticResource PanelFill}">
+   <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24">
+    <StackPanel>
+     <TextBlock Text="Manual Result Capture" Style="{DynamicResource PageTitleStyle}"/>
+     <TextBlock Margin="0,0,0,12" TextWrapping="Wrap" Style="{DynamicResource PageSubtitleStyle}"
+                Text="Paste the profile JSON returned by ChatGPT here. Validate + Save normalizes known output variations into the canonical schema, then validates and saves it."/>
+     <Border Style="{DynamicResource CardStyle}" Padding="0" Margin="0,0,0,12">
+      <TextBox x:Name="ResultInputBox" Height="360" AcceptsReturn="True" AcceptsTab="True" TextWrapping="NoWrap"
+               Background="Transparent" BorderThickness="0" Margin="12"
+               VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
+     </Border>
+     <StackPanel Orientation="Horizontal">
+      <Button Content="Paste from Clipboard" Click="PasteResult_Click"/>
+      <Button Content="Validate + Save Profile" Style="{DynamicResource BtnPrimary}" Margin="8,0,0,0" Click="SaveProfile_Click"/>
+     </StackPanel>
+     <TextBlock x:Name="ProfileStatus" Margin="0,12,0,0" TextWrapping="Wrap" Foreground="{DynamicResource Text.Secondary}"/>
+    </StackPanel>
+   </ScrollViewer>
+  </TabItem>
+
+<TabItem Header="Applications">
+<Grid Background="{DynamicResource Bg.App}">
 <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
-<StackPanel Margin="14,12,14,14">
+<StackPanel Margin="24,20,24,24">
 
 <!-- ===== heading ===== -->
 <DockPanel Margin="2,0,2,10">
-<TextBlock Text="APPLICATIONS" FontSize="14" FontWeight="Bold" Foreground="{StaticResource Accent}" VerticalAlignment="Center"/>
+<TextBlock Text="Applications" Style="{DynamicResource PageTitleStyle}" Margin="0" VerticalAlignment="Center"/>
 <Button DockPanel.Dock="Right" Content="Refresh" Padding="12,3" FontSize="11.5" HorizontalAlignment="Right" Click="TrackingRefresh_Click"/>
 </DockPanel>
 
 <!-- ===== summary cards ===== -->
-<UniformGrid Columns="3" Rows="1">
+<UniformGrid Columns="4" Rows="1">
 <Border Style="{StaticResource DashboardCardStyle}" Margin="0,0,5,0">
 <StackPanel>
 <TextBlock Text="Today's Applications" Style="{StaticResource CardLabelStyle}"/>
@@ -387,13 +615,41 @@
 <TextBlock x:Name="MonthHintText" Text="Applications submitted" Style="{StaticResource MutedTextStyle}"/>
 </StackPanel>
 </Border>
-<Border Style="{StaticResource DashboardCardStyle}" Margin="5,0,0,0">
+<Border Style="{StaticResource DashboardCardStyle}" Margin="5,0">
 <StackPanel>
 <TextBlock Text="Total Applications" Style="{StaticResource CardLabelStyle}"/>
 <TextBlock x:Name="TotalCountText" Text="0" Style="{StaticResource CardValueStyle}"/>
 <TextBlock Text="Applied, Interview and Done" Style="{StaticResource MutedTextStyle}"/>
 </StackPanel>
 </Border>
+<!-- Ready to apply: the one clickable card. A real Button (focusable, Enter/Space work) drawn with the
+     same DashboardCardStyle; it shows exactly the counted jobs (ReadyToApplyCard_Click). -->
+<Button x:Name="ReadyToApplyCard" Margin="5,0,0,0" Click="ReadyToApplyCard_Click" Cursor="Hand"
+        HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"
+        ToolTip="Show the jobs ready to apply that you have not marked Applied yet"
+        AutomationProperties.Name="Ready to apply">
+<Button.Template>
+<ControlTemplate TargetType="Button">
+<Border x:Name="Card" Style="{StaticResource DashboardCardStyle}">
+<ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Top"/>
+</Border>
+<ControlTemplate.Triggers>
+<Trigger Property="IsMouseOver" Value="True">
+<Setter TargetName="Card" Property="BorderBrush" Value="{DynamicResource Accent.Hover}"/>
+</Trigger>
+<Trigger Property="IsKeyboardFocused" Value="True">
+<Setter TargetName="Card" Property="BorderBrush" Value="{DynamicResource Accent.Default}"/>
+<Setter TargetName="Card" Property="BorderThickness" Value="2"/>
+</Trigger>
+</ControlTemplate.Triggers>
+</ControlTemplate>
+</Button.Template>
+<StackPanel>
+<TextBlock Text="Ready to apply" Style="{StaticResource CardLabelStyle}"/>
+<TextBlock x:Name="ReadyToApplyCountText" Text="0" Style="{StaticResource CardValueStyle}"/>
+<TextBlock Text="Ready, not applied yet" Style="{StaticResource MutedTextStyle}"/>
+</StackPanel>
+</Button>
 </UniformGrid>
 
 <!-- ===== pipeline flow graph (Board mode) ===== -->
@@ -422,10 +678,10 @@
 <!-- guide lines sit behind the bars, across the plot area only -->
 <Grid x:Name="ActivityGuides" Margin="34,14,0,22">
 <Grid.RowDefinitions><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
-<Border Grid.Row="0" BorderBrush="{StaticResource GridLine}" BorderThickness="0,1,0,0" VerticalAlignment="Top"/>
-<Border Grid.Row="1" BorderBrush="{StaticResource GridLine}" BorderThickness="0,1,0,0" VerticalAlignment="Top"/>
-<Border Grid.Row="2" BorderBrush="{StaticResource GridLine}" BorderThickness="0,1,0,0" VerticalAlignment="Top"/>
-<Border Grid.Row="3" BorderBrush="{StaticResource CardBorder}" BorderThickness="0,1,0,1"/>
+<Border Grid.Row="0" BorderBrush="{DynamicResource Border.Subtle}" BorderThickness="0,1,0,0" VerticalAlignment="Top"/>
+<Border Grid.Row="1" BorderBrush="{DynamicResource Border.Subtle}" BorderThickness="0,1,0,0" VerticalAlignment="Top"/>
+<Border Grid.Row="2" BorderBrush="{DynamicResource Border.Subtle}" BorderThickness="0,1,0,0" VerticalAlignment="Top"/>
+<Border Grid.Row="3" BorderBrush="{DynamicResource Border.Subtle}" BorderThickness="0,1,0,1"/>
 </Grid>
 
 <!-- y axis: peak and zero only, so the scale reads without clutter -->
@@ -445,9 +701,9 @@
         ToolTip="{Binding Tooltip}" ToolTipService.InitialShowDelay="200" ToolTipService.ShowDuration="15000"
         ToolTipService.BetweenShowDelay="0">
 <StackPanel VerticalAlignment="Bottom">
-<TextBlock Text="{Binding CountLabel}" FontSize="9.5" Foreground="{StaticResource Muted}" HorizontalAlignment="Center" Height="14"/>
+<TextBlock Text="{Binding CountLabel}" FontSize="9.5" Foreground="{DynamicResource Text.Muted}" HorizontalAlignment="Center" Height="14"/>
 <Border Height="{Binding BarHeight}" Background="{Binding BarBrush}" CornerRadius="3,3,0,0"/>
-<TextBlock Text="{Binding Label}" FontSize="9" Foreground="{StaticResource Muted}" HorizontalAlignment="Center"
+<TextBlock Text="{Binding Label}" FontSize="9" Foreground="{DynamicResource Text.Muted}" HorizontalAlignment="Center"
            Margin="0,4,0,0" Height="18" TextTrimming="CharacterEllipsis"/>
 </StackPanel>
 </Border>
@@ -490,9 +746,9 @@
 </DataTemplate>
 </ItemsControl.ItemTemplate>
 </ItemsControl>
-<Border Background="{StaticResource GridLine}" Height="1" Margin="0,12,0,9"/>
-<TextBlock x:Name="TrackingCountsText" FontSize="11" Foreground="{StaticResource Ink}" Text="Total jobs: 0"/>
-<TextBlock x:Name="TrackingRatesText" FontSize="11" Margin="0,4,0,0" Foreground="{StaticResource Muted}"
+<Border Background="{DynamicResource Border.Subtle}" Height="1" Margin="0,12,0,9"/>
+<TextBlock x:Name="TrackingCountsText" FontSize="11" Foreground="{DynamicResource Text.Primary}" Text="Total jobs: 0"/>
+<TextBlock x:Name="TrackingRatesText" FontSize="11" Margin="0,4,0,0" Foreground="{DynamicResource Text.Muted}"
            Text="Applied rate: 0%"/>
 </StackPanel>
 </Border>
@@ -500,7 +756,7 @@
 <!-- ===== toolbar ===== -->
 <Border Style="{StaticResource DashboardCardStyle}" Margin="0,10,0,0" Padding="10,8">
 <DockPanel>
-<Border DockPanel.Dock="Right" Background="{StaticResource PanelFill}" CornerRadius="6" Padding="2" Margin="12,0,0,0">
+<Border DockPanel.Dock="Right" Background="{DynamicResource Bg.App}" CornerRadius="6" Padding="2" Margin="12,0,0,0">
 <StackPanel Orientation="Horizontal">
 <RadioButton x:Name="ListToggle" Content="List" GroupName="TrackingView" Style="{StaticResource SegmentToggleStyle}"
              Checked="TrackingListView_Click"/>
@@ -509,15 +765,15 @@
 </StackPanel>
 </Border>
 <Grid DockPanel.Dock="Right" Margin="8,0,0,0">
-<ToggleButton x:Name="DateFilterButton" Width="132" Height="26" FontSize="11.5" HorizontalContentAlignment="Left"
+<ToggleButton x:Name="DateFilterButton" Width="132" Height="28" FontSize="11.5" HorizontalContentAlignment="Left"
               Padding="8,0" Content="Any date" Click="DateFilterButton_Click"/>
-<Path Data="M 0 0 L 8 0 L 4 5 Z" Fill="{StaticResource Muted}" HorizontalAlignment="Right" VerticalAlignment="Center"
+<Path Data="M 0 0 L 8 0 L 4 5 Z" Fill="{DynamicResource Text.Muted}" HorizontalAlignment="Right" VerticalAlignment="Center"
       Margin="0,0,8,0" IsHitTestVisible="False"/>
 <Popup x:Name="DateFilterPopup" PlacementTarget="{Binding ElementName=DateFilterButton}" Placement="Bottom"
        StaysOpen="False" AllowsTransparency="True" HorizontalOffset="-90" Closed="DateFilterPopup_Closed">
-<Border Background="{StaticResource CardFill}" BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+<Border Background="{DynamicResource Bg.Surface}" BorderBrush="{DynamicResource Border.Subtle}" BorderThickness="1"
         CornerRadius="8" Padding="4" Margin="0,4,8,8">
-<Border.Effect><DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.18" Color="#4A5568"/></Border.Effect>
+<Border.Effect><DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.22" Color="#000000"/></Border.Effect>
 <StackPanel Orientation="Horizontal">
 <ListBox x:Name="QuickDateList" Width="120" BorderThickness="0" Background="Transparent" FontSize="11.5"
          Margin="4,6,4,6" SelectionChanged="QuickDate_Changed">
@@ -528,18 +784,64 @@
 </Style>
 </ListBox.ItemContainerStyle>
 </ListBox>
-<Border Width="1" Background="{StaticResource GridLine}" Margin="0,8"/>
-<Calendar x:Name="DateFilterCalendar" Margin="4,2" SelectedDatesChanged="DateFilterCalendar_Changed"/>
+<Border Width="1" Background="{DynamicResource Border.Subtle}" Margin="0,8"/>
+<Calendar x:Name="DateFilterCalendar" Margin="4,2" SelectedDatesChanged="DateFilterCalendar_Changed"
+          Background="{DynamicResource Bg.Surface}" Foreground="{DynamicResource Text.Primary}"
+          BorderBrush="{DynamicResource Border.Subtle}"/>
 </StackPanel>
 </Border>
 </Popup>
 </Grid>
 <ComboBox DockPanel.Dock="Right" x:Name="TrackingFilterBox" Width="104" Margin="8,0,0,0"
           Style="{StaticResource FilterControlStyle}" SelectionChanged="TrackingFilter_Changed"/>
+<!-- Platforms and Readiness: multi-select, OR matching, built like the date filter. The button, popup,
+     checkboxes and Clear are wired by SettingsWindow.MultiSelectFilter from JobTracker's explicit
+     choice orders. The selections live only in this window. Right-docked, so Readiness sits LEFT of
+     Platforms. -->
+<Grid DockPanel.Dock="Right" Margin="8,0,0,0">
+<ToggleButton x:Name="PlatformFilterButton" Width="132" Height="28" FontSize="11.5" HorizontalContentAlignment="Left"
+              Padding="8,0" Content="All platforms"
+              ToolTip="Show jobs from any of the ticked application platforms"/>
+<Path Data="M 0 0 L 8 0 L 4 5 Z" Fill="{DynamicResource Text.Muted}" HorizontalAlignment="Right" VerticalAlignment="Center"
+      Margin="0,0,8,0" IsHitTestVisible="False"/>
+<Popup x:Name="PlatformFilterPopup" PlacementTarget="{Binding ElementName=PlatformFilterButton}" Placement="Bottom"
+       StaysOpen="False" AllowsTransparency="True">
+<Border Background="{DynamicResource Bg.Surface}" BorderBrush="{DynamicResource Border.Subtle}" BorderThickness="1"
+        CornerRadius="8" Padding="10,8" Margin="0,4,8,8" MinWidth="160">
+<Border.Effect><DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.22" Color="#000000"/></Border.Effect>
+<StackPanel>
+<StackPanel x:Name="PlatformCheckList"/>
+<Border Height="1" Background="{DynamicResource Border.Subtle}" Margin="0,6,0,4"/>
+<Button x:Name="PlatformClearButton" Content="Clear" HorizontalAlignment="Left" Padding="2,1" FontSize="11.5"
+        Style="{DynamicResource BtnGhost}" Foreground="{DynamicResource Accent.Default}" Cursor="Hand"/>
+</StackPanel>
+</Border>
+</Popup>
+</Grid>
+<Grid DockPanel.Dock="Right" Margin="8,0,0,0">
+<ToggleButton x:Name="ReadinessFilterButton" Width="132" Height="28" FontSize="11.5" HorizontalContentAlignment="Left"
+              Padding="8,0" Content="All readiness"
+              ToolTip="Show jobs in any of the ticked readiness states"/>
+<Path Data="M 0 0 L 8 0 L 4 5 Z" Fill="{DynamicResource Text.Muted}" HorizontalAlignment="Right" VerticalAlignment="Center"
+      Margin="0,0,8,0" IsHitTestVisible="False"/>
+<Popup x:Name="ReadinessFilterPopup" PlacementTarget="{Binding ElementName=ReadinessFilterButton}" Placement="Bottom"
+       StaysOpen="False" AllowsTransparency="True">
+<Border Background="{DynamicResource Bg.Surface}" BorderBrush="{DynamicResource Border.Subtle}" BorderThickness="1"
+        CornerRadius="8" Padding="10,8" Margin="0,4,8,8" MinWidth="160">
+<Border.Effect><DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.22" Color="#000000"/></Border.Effect>
+<StackPanel>
+<StackPanel x:Name="ReadinessCheckList"/>
+<Border Height="1" Background="{DynamicResource Border.Subtle}" Margin="0,6,0,4"/>
+<Button x:Name="ReadinessClearButton" Content="Clear" HorizontalAlignment="Left" Padding="2,1" FontSize="11.5"
+        Style="{DynamicResource BtnGhost}" Foreground="{DynamicResource Accent.Default}" Cursor="Hand"/>
+</StackPanel>
+</Border>
+</Popup>
+</Grid>
 <Grid>
-<TextBox x:Name="TrackingSearchBox" Height="26" VerticalContentAlignment="Center" Padding="8,0" FontSize="11.5"
+<TextBox x:Name="TrackingSearchBox" Height="28" VerticalContentAlignment="Center" Padding="8,0" FontSize="11.5"
          TextChanged="TrackingSearch_Changed"/>
-<TextBlock Text="Search applications..." Foreground="#9AA3AE" FontSize="11.5" Margin="11,0,0,0"
+<TextBlock Text="Search applications..." Foreground="{DynamicResource Text.Muted}" FontSize="11.5" Margin="11,0,0,0"
            IsHitTestVisible="False" VerticalAlignment="Center">
 <TextBlock.Style>
 <Style TargetType="TextBlock">
@@ -559,32 +861,40 @@
 <!-- ===== list view ===== -->
 <Border x:Name="ListViewCard" Style="{StaticResource DashboardCardStyle}" Margin="0,10,0,0" Padding="0">
 <Grid>
-<DataGrid x:Name="TrackingGrid" MaxHeight="320" AutoGenerateColumns="False" IsReadOnly="False"
+<DataGrid x:Name="TrackingGrid" MaxHeight="420" AutoGenerateColumns="False" IsReadOnly="False"
           HeadersVisibility="Column" GridLinesVisibility="None" SelectionMode="Single" FontSize="11.5"
-          BorderThickness="0" Background="Transparent" RowBackground="White" AlternatingRowBackground="#FBFCFD"
+          BorderThickness="0" Background="Transparent"
+          RowBackground="{DynamicResource Bg.Surface}"
+          AlternatingRowBackground="{DynamicResource Bg.SurfaceRaised}"
+          Foreground="{DynamicResource Text.Primary}"
           RowHeight="34" CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False"
           MouseDoubleClick="TrackingGrid_DoubleClick" PreviewMouseRightButtonDown="TrackingGrid_RightButtonDown"
           SizeChanged="TrackingGrid_SizeChanged"
           ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto">
 <DataGrid.Resources>
+<Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+<Setter Property="Background" Value="{DynamicResource Bg.Input}"/>
+<Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+</Style>
 <Style TargetType="DataGridColumnHeader">
-<Setter Property="Background" Value="{StaticResource PanelFill}"/>
-<Setter Property="Foreground" Value="{StaticResource Muted}"/>
+<Setter Property="Background" Value="{DynamicResource Bg.SurfaceRaised}"/>
+<Setter Property="Foreground" Value="{DynamicResource Text.Muted}"/>
 <Setter Property="FontSize" Value="10.5"/>
 <Setter Property="FontWeight" Value="SemiBold"/>
 <Setter Property="Padding" Value="10,7"/>
-<Setter Property="BorderBrush" Value="{StaticResource CardBorder}"/>
+<Setter Property="BorderBrush" Value="{DynamicResource Border.Subtle}"/>
 <Setter Property="BorderThickness" Value="0,0,0,1"/>
 <Setter Property="HorizontalContentAlignment" Value="Left"/>
 </Style>
 <Style TargetType="DataGridCell">
 <Setter Property="BorderThickness" Value="0"/>
 <Setter Property="Padding" Value="10,0"/>
+<Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
 <Setter Property="VerticalContentAlignment" Value="Center"/>
 <Style.Triggers>
 <Trigger Property="IsSelected" Value="True">
-<Setter Property="Background" Value="#E8EFF7"/>
-<Setter Property="Foreground" Value="{StaticResource Ink}"/>
+<Setter Property="Background" Value="{DynamicResource Bg.Selected}"/>
+<Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
 </Trigger>
 </Style.Triggers>
 </Style>
@@ -592,6 +902,8 @@
 <DataGrid.ContextMenu>
 <ContextMenu>
 <MenuItem Header="Open Job Posting" Click="TrackingOpenUrl_Click"/>
+<MenuItem Header="Open Application" Click="TrackingOpenApply_Click"/>
+<MenuItem Header="Mark Applied" Click="TrackingMarkApplied_Click"/>
 <MenuItem Header="Open Resume" Click="TrackingOpenResume_Click"/>
 <MenuItem Header="Open Resume Folder" Click="TrackingOpenResumeFolder_Click"/>
 <Separator/>
@@ -606,8 +918,12 @@
 <DataGridTemplateColumn Header="Job" Width="2*" MinWidth="150" MaxWidth="420">
 <DataGridTemplateColumn.CellTemplate>
 <DataTemplate>
-<TextBlock Text="{Binding Title}" FontWeight="SemiBold" Foreground="{StaticResource Ink}"
+<!-- Title, then the platform badge; the title trims first so the badge always stays visible. -->
+<DockPanel VerticalAlignment="Center">
+<ContentControl DockPanel.Dock="Right" Style="{StaticResource PlatformBadgeStyle}" Margin="6,0,0,0"/>
+<TextBlock Text="{Binding Title}" FontWeight="SemiBold" Foreground="{DynamicResource Text.Primary}"
            TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTip="{Binding Title}"/>
+</DockPanel>
 </DataTemplate>
 </DataGridTemplateColumn.CellTemplate>
 </DataGridTemplateColumn>
@@ -629,11 +945,10 @@
 </DataTemplate>
 </DataGridTemplateColumn.CellTemplate>
 </DataGridTemplateColumn>
-<DataGridTemplateColumn Header="Resume" Width="116" MinWidth="116">
+<DataGridTemplateColumn Header="Readiness" Width="116" MinWidth="116">
 <DataGridTemplateColumn.CellTemplate>
 <DataTemplate>
-<TextBlock Text="{Binding ResumeStateDisplay}" VerticalAlignment="Center" FontSize="11"
-           Foreground="{StaticResource Muted}"/>
+<TextBlock Style="{StaticResource ReadinessTextStyle}" VerticalAlignment="Center" FontSize="11"/>
 </DataTemplate>
 </DataGridTemplateColumn.CellTemplate>
 </DataGridTemplateColumn>
@@ -641,19 +956,31 @@
 <DataGridTextColumn.ElementStyle>
 <Style TargetType="TextBlock">
 <Setter Property="VerticalAlignment" Value="Center"/>
-<Setter Property="Foreground" Value="{StaticResource Muted}"/>
+<Setter Property="Foreground" Value="{DynamicResource Text.Muted}"/>
+<!-- Which date this is: every recorded stage (Viewed / Ready / Applied / ...), one per line. -->
+<Setter Property="ToolTip" Value="{Binding Converter={StaticResource JobDateText}, ConverterParameter=Stages}"/>
 </Style>
 </DataGridTextColumn.ElementStyle>
 </DataGridTextColumn>
-<DataGridTemplateColumn Header="Actions" Width="196" MinWidth="196">
+<DataGridTemplateColumn Header="Actions" Width="336" MinWidth="336">
 <DataGridTemplateColumn.CellTemplate>
 <DataTemplate>
 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-<Button Content="Open Job" Padding="8,2" FontSize="10.5" Click="TrackingOpenUrl_Click"
+<Button Content="Open Job" Padding="8,4" FontSize="10.5" Click="TrackingOpenUrl_Click"
         ToolTip="Open the job posting in your browser"/>
-<Button Content="Resume" Padding="8,2" FontSize="10.5" Margin="5,0,0,0" Click="TrackingOpenResume_Click"
+<!-- The recorded application page (ApplyUrl), never the Jobright link. Disabled until one is recorded. -->
+<Button Content="Apply" Padding="8,4" FontSize="10.5" Margin="5,0,0,0" Click="TrackingOpenApply_Click"
+        IsEnabled="{Binding ApplyUrl, Converter={StaticResource OpenableUrl}}"
+        ToolTip="{Binding ApplyUrl}" ToolTipService.ShowOnDisabled="False"/>
+<!-- The user's own "I applied" (ApplicationStatus, never the queue Status). Viewed / Ready only; once
+     Applied or later it is disabled and its tooltip shows the recorded stage dates. -->
+<Button Content="Mark Applied" Padding="8,4" FontSize="10.5" Margin="5,0,0,0" Click="TrackingMarkApplied_Click"
+        IsEnabled="{Binding ApplicationStatus, Converter={StaticResource CanMarkApplied}}"
+        ToolTip="{Binding Converter={StaticResource JobDateText}, ConverterParameter=Stages}"
+        ToolTipService.ShowOnDisabled="True"/>
+<Button Content="Resume" Padding="8,4" FontSize="10.5" Margin="5,0,0,0" Click="TrackingOpenResume_Click"
         IsEnabled="{Binding ResumeGenerated}" ToolTip="Open the generated DOCX"/>
-<Button Content="Folder" Padding="8,2" FontSize="10.5" Margin="5,0,0,0" Click="TrackingOpenResumeFolder_Click"
+<Button Content="Folder" Padding="8,4" FontSize="10.5" Margin="5,0,0,0" Click="TrackingOpenResumeFolder_Click"
         IsEnabled="{Binding ResumeGenerated}" ToolTip="Open the folder the resume was written to"/>
 </StackPanel>
 </DataTemplate>
@@ -672,7 +999,7 @@
 <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="5"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
 <ItemsControl.ItemTemplate>
 <DataTemplate>
-<Border Background="{StaticResource PanelFill}" CornerRadius="7" Margin="3,0" Padding="7,7,7,3">
+<Border Background="{DynamicResource Bg.App}" CornerRadius="7" Margin="3,0" Padding="7,7,7,3">
 <StackPanel>
 <DockPanel Margin="1,0,1,7">
 <Path Data="{Binding Icon}" Fill="{Binding Foreground}" Width="11" Height="11" Stretch="Uniform"
@@ -693,6 +1020,8 @@
 <Border.ContextMenu>
 <ContextMenu>
 <MenuItem Header="Open Job Posting" Click="TrackingOpenUrl_Click"/>
+<MenuItem Header="Open Application" Click="TrackingOpenApply_Click"/>
+<MenuItem Header="Mark Applied" Click="TrackingMarkApplied_Click"/>
 <MenuItem Header="Open Resume" Click="TrackingOpenResume_Click"/>
 <MenuItem Header="Open Resume Folder" Click="TrackingOpenResumeFolder_Click"/>
 <Separator/>
@@ -706,23 +1035,26 @@
 <StackPanel>
 <StackPanel Orientation="Horizontal">
 <Path Style="{StaticResource StatusIconStyle}" Width="10" Height="10" Margin="0,0,4,0"/>
-<TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="11" Foreground="{StaticResource Ink}"
+<TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="11" Foreground="{DynamicResource Text.Primary}"
            TextTrimming="CharacterEllipsis" ToolTip="{Binding Title}"/>
 </StackPanel>
-<TextBlock Text="{Binding Company}" FontSize="10" Foreground="{StaticResource Muted}"
+<DockPanel>
+<ContentControl DockPanel.Dock="Right" Style="{StaticResource PlatformBadgeStyle}" Margin="6,1,0,0"/>
+<TextBlock Text="{Binding Company}" FontSize="10" Foreground="{DynamicResource Text.Muted}"
            TextTrimming="CharacterEllipsis"/>
+</DockPanel>
 <DockPanel Margin="0,5,0,0">
-<TextBlock Text="{Binding TrackingDateDisplay}" FontSize="9.5" Foreground="{StaticResource Muted}"/>
+<TextBlock Text="{Binding Converter={StaticResource JobDateText}}" FontSize="9.5" Foreground="{DynamicResource Text.Muted}"
+           ToolTip="{Binding Converter={StaticResource JobDateText}, ConverterParameter=Stages}"/>
 <TextBlock DockPanel.Dock="Right" HorizontalAlignment="Right" FontSize="9.5"
-           Foreground="{StaticResource AccentSoft}"
-           Text="{Binding ResumeStateDisplay, StringFormat=Resume: {0}}"/>
+           Style="{StaticResource ReadinessTextStyle}"/>
 </DockPanel>
 </StackPanel>
 </Border>
 </DataTemplate>
 </ItemsControl.ItemTemplate>
 </ItemsControl>
-<TextBlock Text="Nothing here" Foreground="#A8B0BA" FontSize="10" HorizontalAlignment="Center"
+<TextBlock Text="Nothing here" Foreground="{DynamicResource Text.Muted}" FontSize="10" HorizontalAlignment="Center"
            Margin="0,10,0,12" Visibility="{Binding EmptyVisibility}"/>
 </StackPanel>
 </ScrollViewer>
@@ -733,23 +1065,53 @@
 </ItemsControl>
 </Border>
 
-<TextBlock x:Name="TrackingStatus" Margin="2,10,0,0" TextWrapping="Wrap" FontSize="11" Foreground="{StaticResource Muted}"
+<TextBlock x:Name="TrackingStatus" Margin="2,10,0,0" TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource Text.Muted}"
            Text="Double-click a row to open the job posting. Right-click a row or card for status and resume actions. Resume Builder only sets Ready by itself, when a resume has been generated."/>
 </StackPanel>
 </ScrollViewer>
 </Grid>
 </TabItem>
-  <TabItem Header="Development"><StackPanel Margin="16">
-<TextBlock Text="Sample Input" FontWeight="Bold" FontSize="16"/>
-<TextBlock Margin="0,8,0,12" Text="Writes one job file per job to Incoming — { company, title, jobUrl, companyUrl, description } — and uses the normal importer." TextWrapping="Wrap"/>
-<StackPanel Orientation="Horizontal">
-<Button Content="Load Sample Jobs" Width="160" Height="34" HorizontalAlignment="Left" Click="LoadSampleJobs_Click"/>
-<Button Content="Load 50 Sample Jobs" Width="170" Height="34" Margin="10,0,0,0" HorizontalAlignment="Left" Click="LoadStressJobs_Click"/>
-</StackPanel>
-<TextBlock Margin="0,8,0,0" TextWrapping="Wrap" Foreground="#666" Text="&quot;Load 50 Sample Jobs&quot; writes 50 synthetic jobs (invented companies and descriptions) to the Incoming folder for queue stress testing. Nothing is written until you click it."/>
-<TextBlock Margin="0,18,0,4" Text="Test Data" FontWeight="Bold"/>
-<TextBlock Text="Google — Senior Software Engineer&#10;Stripe — Backend Engineer&#10;Amazon — Software Engineer II"/>
-<Button Content="Clear Test Queue" Width="160" Height="34" HorizontalAlignment="Left" Margin="0,18,0,0" Click="ClearTestQueue_Click"/>
-</StackPanel></TabItem>
- </TabControl></Grid>
-</Window>
+  
+  <TabItem Header="Development">
+   <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24">
+    <StackPanel MaxWidth="720">
+     <TextBlock Text="Development" Style="{DynamicResource PageTitleStyle}"/>
+     <TextBlock Text="Synthetic jobs and testing resets. Real candidate data is never invented." Style="{DynamicResource PageSubtitleStyle}"/>
+     <Border Style="{DynamicResource CardStyle}" Margin="0,0,0,16">
+      <StackPanel>
+       <TextBlock Text="Sample Input" FontWeight="SemiBold" FontSize="14" Margin="0,0,0,8"/>
+       <TextBlock Margin="0,0,0,12" TextWrapping="Wrap" Foreground="{DynamicResource Text.Secondary}"
+                  Text="Writes one job file per job to Incoming — { company, title, jobUrl, companyUrl, description } — and uses the normal importer."/>
+       <StackPanel Orientation="Horizontal">
+        <Button Content="Load Sample Jobs" Width="160" Height="34" Click="LoadSampleJobs_Click"/>
+        <Button Content="Load 50 Sample Jobs" Width="170" Height="34" Margin="10,0,0,0" Click="LoadStressJobs_Click"/>
+       </StackPanel>
+       <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" Foreground="{DynamicResource Text.Muted}" FontSize="11.5"
+                  Text="&quot;Load 50 Sample Jobs&quot; writes 50 synthetic jobs to Incoming for queue stress testing. Nothing is written until you click it."/>
+       <TextBlock Margin="0,18,0,4" Text="Test Data" FontWeight="SemiBold"/>
+       <TextBlock Foreground="{DynamicResource Text.Secondary}"
+                  Text="Google — Senior Software Engineer&#10;Stripe — Backend Engineer&#10;Amazon — Software Engineer II"/>
+       <Button Content="Remove Sample Jobs" Width="170" Height="34" HorizontalAlignment="Left" Margin="0,14,0,0"
+               Click="ClearTestQueue_Click"
+               ToolTip="Removes only the synthetic sample/stress jobs, leaving your real jobs alone"/>
+       <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="{DynamicResource Text.Muted}" FontSize="11.5"
+                  Text="Removes only the synthetic sample and stress jobs. Your real jobs, their results and their documents are untouched."/>
+      </StackPanel>
+     </Border>
+     <Border Style="{DynamicResource CardStyle}">
+      <StackPanel>
+       <TextBlock Text="Reset For Testing" FontWeight="SemiBold" FontSize="14" Margin="0,0,0,8"/>
+       <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource Text.Secondary}"
+                  Text="Clear Job History removes every job (Active and History) with its application tracking, and the result files Resume Builder saved for those jobs. Your settings, prompt files, candidate profile, Job Browser sign-in, diagnostics log and Incoming/Imported files are not touched."/>
+       <CheckBox x:Name="ClearDocumentsBox" Margin="0,12,0,0" Content="Also delete generated resume folders (DOCX/PDF) for these jobs"/>
+       <Button Content="Clear Job History…" Style="{DynamicResource BtnDanger}" Width="180" Height="34"
+               HorizontalAlignment="Left" Margin="0,12,0,0" Click="ClearJobHistory_Click"/>
+      </StackPanel>
+     </Border>
+    </StackPanel>
+   </ScrollViewer>
+  </TabItem>
+
+ </TabControl>
+ </Grid>
+</UserControl>

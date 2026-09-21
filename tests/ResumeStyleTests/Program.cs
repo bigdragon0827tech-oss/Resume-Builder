@@ -103,6 +103,44 @@ static class Program {
             Test("canonical JSON serialization round-trips", JsonSerialization);
 
             Console.WriteLine();
+            Console.WriteLine("ChatGPT retries");
+            Test("three sends per job, whatever the failure", RetryBudgetIsThreeSends);
+            Test("each failure has a fixed reason, log line and stored reason", RetryReasonsAndLogs);
+            Test("no generation within the start budget is NoResponseStart", WatcherNoResponseStart);
+            Test("generation that stops progressing is Stalled", WatcherStalled);
+            Test("a long answer that keeps generating is never failed", WatcherKeepsWaitingWhileGenerating);
+            Test("the ambiguous idle state notifies once and keeps watching", WatcherUnconfirmedKeepsWatching);
+            Test("a confirmed finish is still Ready, and cancellation still wins", WatcherReadyAndCancel);
+            Test("the ambiguous state notifies without auto-copy; Ready uses background capture", UnconfirmedRequestsCopyOnce);
+            Test("background reader extracts last assistant JSON and refuses ambiguity", BackgroundReaderFixtures);
+            Test("background reader waits for a stable payload", BackgroundReaderStability);
+            Test("background reader script is read-only", BackgroundReaderScriptIsReadOnly);
+            Test("a capture after the ambiguous state cancels the 180 s timeout", UnconfirmedCaptureCancelsTimeout);
+            Test("silence after the ambiguous state still ends as NoResponseStart", UnconfirmedSilenceStillTimesOut);
+
+            Console.WriteLine();
+            Console.WriteLine("Clear job history");
+            Test("only this app's own job files are planned", ResetPlansOnlyOwnedFiles);
+            Test("BASELINE files and other jobs' files are never planned", ResetNeverPlansBaseline);
+            Test("an unsafe ResumePath is ignored; ownership decides", ResetIgnoresUnsafeResumePath);
+            Test("a folder is deleted only when resume-info.json matches", ResetFolderNeedsMatchingInfo);
+            Test("two jobs with the same company and role are handled", ResetHandlesDuplicateJobFolders);
+            Test("documents are untouched when the box is off", ResetWithoutDocuments);
+            Test("a locked file is reported, not hidden", ResetReportsFailures);
+            Test("settings, profile, prompts and inputs survive byte-for-byte", ResetLeavesEverythingElseAlone);
+            Test("a reset is refused while a job is Processing", ResetRefusedWhileProcessing);
+
+            Console.WriteLine();
+            Console.WriteLine("Prompt modes");
+            Test("the Resume prompt is byte-for-byte what it was", ResumePromptUnchanged);
+            Test("a Normal prompt comes first, unchanged, with the same payload", NormalPromptAssembly);
+            Test("both modes send the same output contract", BothModesShareTheContract);
+            Test("an unknown or missing mode falls back to Resume", PromptModeFallsBackToResume);
+            Test("a missing Normal Prompt file is refused clearly", NormalPromptFileIsRequired);
+            Test("both modes save the same prepared-request artifacts", BothModesSaveTheSameArtifacts);
+            Test("a Normal-mode answer runs the whole pipeline", NormalModeAnswerRunsThePipeline);
+
+            Console.WriteLine();
             Console.WriteLine("Job application tracking");
             Test("a newly extracted task starts as Viewed", NewTaskStartsViewed);
             Test("a generated resume moves the job to Ready", ResumeGenerationMarksReady);
@@ -125,8 +163,30 @@ static class Program {
             Test("date filtering uses each job's tracking date", DateFiltering);
             Test("an exact calendar date filters to that day", ExactDateFiltering);
             Test("search spans company, role and job id together", SearchAcrossFields);
+            Test("no platform selection shows every job", PlatformFilterEmptySelection);
+            Test("one selected platform shows only its jobs", PlatformFilterSinglePlatform);
+            Test("several selected platforms match with OR", PlatformFilterOrMatching);
+            Test("the platform filter combines with search, status and dates", PlatformFilterCombined);
+            Test("the platform filter label and choice order", PlatformFilterLabelAndOrder);
+            Test("each readiness state filters on its own; none selected shows all", ReadinessFilterSingleStates);
+            Test("several readiness states match with OR", ReadinessFilterOrMatching);
+            Test("readiness combines with status, search, platforms and dates; Board = List", ReadinessFilterCombined);
+            Test("the readiness filter label and choice order", ReadinessFilterLabelAndOrder);
+            Test("the Ready to apply card counts exactly what the filter shows", CountReadyToApplyMatchesFilter);
+            Test("NeedsAction is ready to apply and not applied for yet", NeedsActionRule);
+            Test("the Not applied yet group filters to Viewed and Ready only", NotAppliedYetGroupFilter);
+            Test("the card count equals its own two filters", ActionQueueCardMatchesItsFilters);
+            Test("Mark Applied removes a job from the action queue only", MarkAppliedLeavesActionQueue);
             Test("resume actions are safe when no resume exists", ResumeActionsAreSafe);
             Test("a resume already on disk is relinked to its job", ResumeRelinking);
+            Test("Open Application uses only a usable ApplyUrl, never the job link", OpenApplicationIsSafe);
+            Test("readiness: needs resume / needs apply link / ready to apply", ReadinessStates);
+            Test("an unusable ApplyUrl never counts as ready", ReadinessRejectsInvalidApplyUrl);
+            Test("readiness is derived: never saved and never changes a status", ReadinessIsDisplayOnly);
+            Test("Mark Applied from Viewed and Ready, backfilling ReadyAt", MarkAppliedFromViewedAndReady);
+            Test("Mark Applied never rewrites AppliedAt or moves a job backwards", MarkAppliedPreservesHistory);
+            Test("Mark Applied leaves the queue status and readiness alone", MarkAppliedTouchesNothingElse);
+            Test("stage dates and the Board date label", AppliedDateDisplay);
 
             Console.WriteLine();
             Console.WriteLine("Job browser");
@@ -156,6 +216,50 @@ static class Program {
             Test("stale or missing page data is refused clearly", ExtractorRefusesBadPages);
             Test("script failures never surface as raw errors", ExtractorNeverRaisesRawScriptErrors);
             Test("the extractor cannot reach tasks or storage", ExtractorStaysOutOfStorage);
+
+            Console.WriteLine();
+            Console.WriteLine("Job browser: application link capture");
+            Test("tasks.json written before ApplyUrl existed still loads", ApplyUrlOldTasksLoad);
+            Test("ApplyUrl and ApplyUrlCapturedAt survive save and reload", ApplyUrlSurvivesReload);
+            Test("only an outside http(s) application address is captured", ApplyUrlCaptureRule);
+            Test("the address is recorded on the matching Jobright job only", ApplyUrlMatchesJob);
+            Test("the extractor reads applyLink, falling back to originalUrl", ExtractorReadsApplyLink);
+            Test("a missing or invalid page link leaves ApplyUrl empty", ExtractorApplyLinkMissingOrInvalid);
+            Test("import saves a discovered ApplyUrl with its time and platform", ImportRecordsApplyUrl);
+            Test("import without a usable link still succeeds, link empty", ImportWithoutApplyUrl);
+            Test("an existing ApplyUrl is never overwritten; an empty one is filled", ImportFillsOnlyEmptyApplyUrl);
+
+            Console.WriteLine();
+            Console.WriteLine("Application platform detection");
+            Test("each known ATS address maps to its platform", PlatformMatching);
+            Test("look-alike domains are not mistaken for an ATS", PlatformLookAlikes);
+            Test("embedded Greenhouse / Ashby job links are recognised", PlatformEmbeddedLinks);
+            Test("a missing or unusable ApplyUrl is Unknown; an unrecognised site is Other", PlatformMissingOrUnknown);
+            Test("an unreadable stored platform loads as Unknown and keeps every task", PlatformTolerantLoading);
+            Test("the platform survives save and reload; older tasks load as Unknown", PlatformSaveReload);
+            Test("capture and startup refresh derive the platform from ApplyUrl", PlatformDerivedFromApplyUrl);
+
+            Console.WriteLine();
+            Console.WriteLine("Critical pipeline (isolated — no live ChatGPT / Jobright)");
+            Test("import → prepare → capture → DOCX/PDF → Ready tracking", CriticalPipelineChain);
+            Test("capture refuses empty, non-profile and prompt-echo text", CaptureGateRefusals);
+            Test("page navigation must not recreate ChatGPT while it is alive", ChatHostSurvivesNavigation);
+            Test("queue recovers stale Processing jobs and attributes captures correctly", QueueRunnerCaptureAttribution);
+            Test("ChatHost desync (alive without CoreWebView2) is detected", ChatHostDesyncDetection);
+            Test("recycle then ensure creates a fresh browser for the next job", ChatHostRecycleThenEnsure);
+            Test("copy shortcut VK is OEM_1 (semicolon), not letter I", CopyShortcutIsSemicolon);
+            Test("composer readiness waits until the probe reports ready", ComposerReadyWaitsForProbe);
+            Test("Start refuses while a queue run is already active", QueueStartRefusesWhileRunning);
+            Test("Next never reselects a Failed job after it was marked terminal", QueueNextSkipsFailed);
+            Test("clipboard sequence change detection for copy-keystroke verification", ClipboardChangedSinceArm);
+            Test("browser generation invalidates delayed focus after dispose", BrowserGenerationInvalidatesStaleOps);
+            Test("copy-focus policy skips focus after capture path already focused", CopyFocusPolicyDecisions);
+            Test("stale generation cannot touch a replacement browser", StaleGenerationCannotTouchReplacement);
+
+            Console.WriteLine();
+            Console.WriteLine("Theme input readability");
+            Test("dark and light input ink contrast against Bg.Input", ThemeInputContrast);
+            Test("shared control styles bind inputs with DynamicResource", ThemeControlStylesUseDynamicResources);
 
             Console.WriteLine();
             Console.WriteLine("Sample output");
@@ -521,6 +625,721 @@ static class Program {
             PdfWriter.Write(resume, pdf);
             Check(File.Exists(pdf) && new FileInfo(pdf).Length > 1000, preset + ": no usable PDF was produced");
         }
+    }
+
+    // ---------- ChatGPT retries ----------
+
+    static void RetryBudgetIsThreeSends() {
+        Equal(3, GptAttempts.MaxAttempts, "three sends per job");
+        Check(GptAttempts.CanRetry(1) && GptAttempts.CanRetry(2), "attempts 1 and 2 retry");
+        Check(!GptAttempts.CanRetry(3), "attempt 3 is the last");
+        Equal(AttemptDecision.Fail, GptAttempts.Decide(3), "attempt 3 fails the job");
+        Equal(AttemptDecision.Fail, GptAttempts.Decide(4), "and anything beyond it");
+
+        // Every retryable class shares the ONE budget: mixing them cannot exceed three sends.
+        var sends = 1;
+        foreach (var failure in new[] { GptFailure.SendSide, GptFailure.ResponseStartTimeout,
+                                        GptFailure.InvalidOutput, GptFailure.ResponseStalled }) {
+            if (!GptAttempts.CanRetry(sends)) break;
+            sends++;
+        }
+        Equal(3, sends, "four failures still mean three sends");
+
+        // The status line the queue shows.
+        Equal("Processing", GptAttempts.AttemptStatus(1), "first attempt is plain");
+        Equal("Processing — GPT attempt 2/3", GptAttempts.AttemptStatus(2), "second attempt is numbered");
+        Equal("Processing — GPT attempt 3/3", GptAttempts.AttemptStatus(3), "third attempt");
+    }
+
+    static void RetryReasonsAndLogs() {
+        const string jobId = "RB-20260919-101500-abcdef01";
+        var expected = new Dictionary<GptFailure, (string Reason, string Stored)> {
+            [GptFailure.SendSide] = ("send failed", "GptSendFailed"),
+            [GptFailure.ResponseStartTimeout] = ("response-start timeout", "GptNoResponse"),
+            [GptFailure.ResponseStalled] = ("response stalled", "GptStalled"),
+            [GptFailure.ResponseCeiling] = ("response ceiling reached", "GptStalled"),
+            [GptFailure.InvalidOutput] = ("invalid output", "GptInvalidOutput"),
+        };
+
+        foreach (var (failure, (reason, stored)) in expected) {
+            Equal(reason, GptAttempts.Reason(failure), failure + " reason");
+            Equal(stored, GptAttempts.FailureReason(failure), failure + " stored reason");
+            var line = GptAttempts.AttemptLog(2, failure, jobId);
+            Equal($"GPT attempt 2/3 {reason} {jobId}", line, failure + " log line");
+            Check(line.Contains(jobId, StringComparison.Ordinal), "the log names the job");
+        }
+        Equal($"GPT retries exhausted {jobId}; queue job marked Failed", GptAttempts.ExhaustedLog(jobId), "exhausted log");
+        Equal($"GPT capture timeout {jobId}; queue job marked Failed", GptAttempts.CaptureTimeoutLog(jobId), "capture timeout log");
+
+        // A stored reason is a short token, never free text, and CaptureTimeout keeps its own.
+        foreach (var failure in expected.Keys)
+            Check(!GptAttempts.FailureReason(failure).Contains(' '), failure + " stored reason is a token");
+        Check(expected.Values.All(v => v.Stored != JobTask.CaptureTimeoutReason), "none collides with CaptureTimeout");
+    }
+
+    /// <summary>A probe driven by a script of states, with a virtual clock: no browser, no waiting.</summary>
+    sealed class ScriptedProbe : ICompletionProbe {
+        readonly Func<int, string> _state;
+        public int Polls;
+        public ScriptedProbe(Func<int, string> state) => _state = state;
+        public Task<string> GenerationStateAsync() => Task.FromResult(_state(Polls++));
+    }
+
+    static (CompletionOutcome Outcome, int Polls, int Unconfirmed) RunWatcher(Func<int, string> state, int? cancelAfterPolls = null) {
+        var probe = new ScriptedProbe(state);
+        var cancellation = new CancellationTokenSource();
+        var unconfirmed = 0;
+        Task Delay(int ms, CancellationToken ct) {
+            if (cancelAfterPolls is int limit && probe.Polls >= limit) cancellation.Cancel();
+            return Task.CompletedTask;                       // virtual clock: the watcher counts the ms itself
+        }
+        var outcome = ChatCompletionWatcher.WaitForAnswerAsync(probe, cancellation.Token, Delay, () => unconfirmed++)
+                          .GetAwaiter().GetResult();
+        return (outcome, probe.Polls, unconfirmed);
+    }
+
+    static void WatcherNoResponseStart() {
+        Equal(180_000, ChatCompletionWatcher.ResponseStartMs, "response-start budget is 180 s");
+
+        // Idle for ever: notified once at the start budget, then failed at 180 s. Never Ready.
+        var run = RunWatcher(_ => "idle");
+        Equal(CompletionOutcome.NoResponseStart, run.Outcome, "no generation -> NoResponseStart");
+        Equal(1, run.Unconfirmed, "the user was told once, at the start budget");
+        Equal(ChatCompletionWatcher.ResponseStartMs / ChatCompletionWatcher.PollMs + 1, run.Polls, "it waited the full budget");
+
+        // An unreadable page is treated the same way: it proves nothing.
+        Equal(CompletionOutcome.NoResponseStart, RunWatcher(_ => "unknown").Outcome, "unknown -> NoResponseStart");
+        Equal(0, RunWatcher(_ => "unknown").Unconfirmed, "and an unreadable page is not announced as ready");
+    }
+
+    static void WatcherStalled() {
+        Equal(120_000, ChatCompletionWatcher.InactivityMs, "inactivity budget is 120 s");
+
+        // Generates for 10 polls, then goes quiet without ever finishing (unknown, not idle).
+        var run = RunWatcher(poll => poll < 10 ? "generating" : "unknown");
+        Equal(CompletionOutcome.Stalled, run.Outcome, "started then stalled");
+        var expected = 10 + ChatCompletionWatcher.InactivityMs / ChatCompletionWatcher.PollMs;
+        Check(Math.Abs(run.Polls - expected) <= 2, $"it failed ~120 s after the last progress (polls {run.Polls}, expected ~{expected})");
+
+        // Stalling is measured from the LAST generating poll, not from the start.
+        var late = RunWatcher(poll => poll is < 5 or (> 60 and < 65) ? "generating" : "unknown");
+        Equal(CompletionOutcome.Stalled, late.Outcome, "still stalls eventually");
+        Check(late.Polls > 60 + ChatCompletionWatcher.InactivityMs / ChatCompletionWatcher.PollMs - 2,
+              "the inactivity clock restarts on every sign of progress");
+    }
+
+    static void WatcherKeepsWaitingWhileGenerating() {
+        // A very long answer: generating almost to the ceiling, then finishing normally.
+        var ceiling = ChatCompletionWatcher.MaxWaitMs / ChatCompletionWatcher.PollMs;
+        var run = RunWatcher(poll => poll < ceiling - 10 ? "generating" : "idle");
+        Equal(CompletionOutcome.Ready, run.Outcome, "a long answer that keeps generating is never failed");
+
+        // Generating for ever: only the absolute ceiling stops it.
+        var forever = RunWatcher(_ => "generating");
+        Equal(CompletionOutcome.TimedOut, forever.Outcome, "the 20-minute ceiling is the backstop");
+        Check(forever.Polls >= ceiling, "and it really waited that long");
+    }
+
+    static void WatcherUnconfirmedKeepsWatching() {
+        // Idle at first (generation missed), then generation appears and finishes: Ready, not a failure.
+        var run = RunWatcher(poll => poll < 40 ? "idle" : poll < 60 ? "generating" : "idle");
+        Equal(CompletionOutcome.Ready, run.Outcome, "a late start after the ambiguous state still completes");
+        Equal(1, run.Unconfirmed, "the ambiguous state was announced exactly once");
+        Check(run.Polls < ChatCompletionWatcher.ResponseStartMs / ChatCompletionWatcher.PollMs,
+              "and it finished before the response-start budget");
+
+        // The notification fires once only, at the start budget, never before it.
+        var early = RunWatcher(poll => poll < 5 ? "idle" : "generating");
+        Equal(0, early.Unconfirmed, "nothing is announced before the start budget");
+    }
+
+    static void WatcherReadyAndCancel() {
+        // Generation seen, then three idle polls: the confirmed finish that starts the capture watchdog.
+        var run = RunWatcher(poll => poll < 3 ? "generating" : "idle");
+        Equal(CompletionOutcome.Ready, run.Outcome, "generation then idle = Ready");
+        Equal(3 + ChatCompletionWatcher.StablePolls, run.Polls, "it needs three stable idle polls");
+
+        // Two idle polls are not enough.
+        Equal(CompletionOutcome.Ready, RunWatcher(poll => poll is 0 or 4 ? "generating" : "idle").Outcome, "a flicker does not finish it early");
+
+        // Cancellation (capture, Stop, Skip, retry) always wins.
+        Equal(CompletionOutcome.Cancelled, RunWatcher(_ => "generating", cancelAfterPolls: 5).Outcome, "cancelled while generating");
+        Equal(CompletionOutcome.Cancelled, RunWatcher(_ => "idle", cancelAfterPolls: 5).Outcome, "cancelled while idle");
+    }
+
+    /// <summary>
+    /// Mirrors the new MainWindow policy: unconfirmed notifies only (no auto-copy / no scrape);
+    /// confirmed Ready is when background capture would run (counted as CaptureAttempts here).
+    /// </summary>
+    static (CompletionOutcome Outcome, int CaptureAttempts, int Announcements, int Polls) RunWatcherWithGate(
+        Func<int, string> state, int? captureAfterPolls = null) {
+
+        var probe = new ScriptedProbe(state);
+        var cancellation = new CancellationTokenSource();
+        var captures = 0;
+        var announcements = 0;
+
+        Task Delay(int ms, CancellationToken ct) {
+            if (captureAfterPolls is int at && probe.Polls >= at) cancellation.Cancel();
+            return Task.CompletedTask;
+        }
+
+        var outcome = ChatCompletionWatcher.WaitForAnswerAsync(probe, cancellation.Token, Delay, () => {
+            announcements++;
+            // OnUnconfirmedReady: notify only — no RequestCopyAsync, no page scrape.
+        }).GetAwaiter().GetResult();
+
+        if (outcome == CompletionOutcome.Ready)
+            captures++;   // TryBackgroundCaptureAsync would run here
+        return (outcome, captures, announcements, probe.Polls);
+    }
+
+    static void UnconfirmedRequestsCopyOnce() {
+        // Ambiguous, then generation appears and finishes: notified once, scrape only at Ready.
+        var late = RunWatcherWithGate(poll => poll < 40 ? "idle" : poll < 60 ? "generating" : "idle");
+        Equal(CompletionOutcome.Ready, late.Outcome, "it still completes normally");
+        Equal(1, late.Announcements, "announced once at the start budget");
+        Equal(1, late.CaptureAttempts, "background capture runs once at confirmed Ready");
+
+        // A normal confirmed answer: one background capture, no ambiguous announcement.
+        var normal = RunWatcherWithGate(poll => poll < 5 ? "generating" : "idle");
+        Equal(CompletionOutcome.Ready, normal.Outcome, "normal answer");
+        Equal(0, normal.Announcements, "no ambiguous announcement");
+        Equal(1, normal.CaptureAttempts, "one background capture from Ready");
+    }
+
+    static void UnconfirmedCaptureCancelsTimeout() {
+        // Idle for ever, but a capture (manual or background) lands after the ambiguous announcement.
+        var captured = RunWatcherWithGate(_ => "idle", captureAfterPolls: 40);
+        Equal(CompletionOutcome.Cancelled, captured.Outcome, "a capture cancels the watch");
+        Equal(0, captured.CaptureAttempts, "Ready never fired — no background scrape");
+        Check(captured.Polls < ChatCompletionWatcher.ResponseStartMs / ChatCompletionWatcher.PollMs,
+              "and it ended well before the response-start budget");
+
+        var fast = RunWatcherWithGate(_ => "idle", captureAfterPolls: 5);
+        Equal(CompletionOutcome.Cancelled, fast.Outcome, "cancelled early");
+        Equal(0, fast.CaptureAttempts, "no Ready scrape");
+    }
+
+    static void BackgroundReaderFixtures() {
+        var direct = ChatResponseReader.ParseScriptPayload(
+            """{"status":"ok","text":"```json\n{\"info\":{\"fullName\":\"A\"},\"summary\":\"S\",\"skills\":[],\"experience\":[],\"education\":[],\"certifications\":[]}\n```","assistants":1}""");
+        Check(direct.Success, "direct object payload ok");
+        Check(ResultCapture.LooksLikeProfileResult(direct.Text), "extracted text looks like a profile");
+
+        // ExecuteScriptAsync string-wrap: outer JSON string containing the object JSON.
+        var wrapped = ChatResponseReader.ParseScriptPayload(
+            JsonSerializer.Serialize(
+                """{"status":"ok","text":"```json\n{\"info\":{\"fullName\":\"B\"},\"summary\":\"S\",\"skills\":[],\"experience\":[],\"education\":[],\"certifications\":[]}\n```","assistants":1}"""));
+        Check(wrapped.Success, "string-wrapped payload ok");
+
+        var missing = ChatResponseReader.ParseScriptPayload("""{"status":"missing","text":"","assistants":0}""");
+        Equal(ChatReadStatus.Missing, missing.Status, "missing");
+
+        var empty = ChatResponseReader.ParseScriptPayload("""{"status":"empty","text":"","assistants":1}""");
+        Equal(ChatReadStatus.Empty, empty.Status, "empty");
+
+        var amb = ChatResponseReader.ParseScriptPayload("""{"status":"ambiguous","text":"","assistants":2}""");
+        Equal(ChatReadStatus.Ambiguous, amb.Status, "ambiguous refused");
+
+        var prose = ChatResponseReader.ParseScriptPayload(
+            """{"status":"ok","text":"Sure, here is a helpful tip about resumes.","assistants":1}""");
+        Check(prose.Success, "script said ok");
+        Check(!ResultCapture.ShouldCapture(prose.Text), "prose is not a profile");
+    }
+
+    static void BackgroundReaderStability() {
+        var profile = "```json\n{\"info\":{\"fullName\":\"A\"},\"summary\":\"S\",\"skills\":[],\"experience\":[],\"education\":[],\"certifications\":[]}\n```";
+        var calls = 0;
+        var stable = ChatResponseReader.ReadStableAsync(
+            _ => {
+                calls++;
+                // First read shorter (still streaming), then two identical complete payloads.
+                var text = calls == 1 ? profile[..Math.Min(80, profile.Length)] : profile;
+                return Task.FromResult(new ChatReadResult {
+                    Status = ChatReadStatus.Ok, Text = text, AssistantCount = 1
+                });
+            },
+            budgetMs: 5000,
+            pollMs: 10,
+            matchPolls: 2,
+            delay: (_, _) => Task.CompletedTask).GetAwaiter().GetResult();
+        Check(stable.Success, "became stable");
+        Check(calls >= 3, "needed more than one poll");
+        Check(ResultCapture.LooksLikeProfileResult(stable.Text), "stable text is a profile");
+
+        var never = ChatResponseReader.ReadStableAsync(
+            _ => Task.FromResult(new ChatReadResult { Status = ChatReadStatus.Missing }),
+            budgetMs: 50,
+            pollMs: 10,
+            delay: (_, _) => Task.CompletedTask).GetAwaiter().GetResult();
+        Equal(ChatReadStatus.Missing, never.Status, "budget expiry without a payload");
+    }
+
+    static void BackgroundReaderScriptIsReadOnly() {
+        Check(ChatResponseReader.ScriptIsReadOnly(ChatResponseReader.ReadLastAssistantScript), "read-only");
+        Check(ChatResponseReader.ReadLastAssistantScript.Contains("data-message-author-role"), "targets assistant role");
+        Check(!ChatResponseReader.ReadLastAssistantScript.Contains("click(", StringComparison.OrdinalIgnoreCase), "no click");
+        Check(!ChatResponseReader.ReadLastAssistantScript.Contains("fetch(", StringComparison.OrdinalIgnoreCase), "no fetch");
+    }
+
+    static void UnconfirmedSilenceStillTimesOut() {
+        var silent = RunWatcherWithGate(_ => "idle");
+        Equal(CompletionOutcome.NoResponseStart, silent.Outcome, "nothing usable -> NoResponseStart");
+        Equal(1, silent.Announcements, "notified once at the start budget");
+        Equal(0, silent.CaptureAttempts, "no Ready — no background scrape");
+        Equal(ChatCompletionWatcher.ResponseStartMs / ChatCompletionWatcher.PollMs + 1, silent.Polls,
+              "and only then, at 180 s");
+
+        Equal(CompletionOutcome.Cancelled, RunWatcherWithGate(_ => "generating", captureAfterPolls: 3).Outcome,
+              "cancelled while generating");
+    }
+
+    // ---------- clear job history ----------
+
+    /// <summary>A throwaway world: results folder, prepared-request pair, resume root with real folders.</summary>
+    sealed class ResetWorld {
+        public string Dir = "", Results = "", Prepared = "", PreparedText = "", Root = "";
+        public AppSettings Settings = new();
+        public ResetPaths Paths = new();
+        public List<JobTask> Tasks = new();
+
+        public string JobFolder(JobTask job, string date) =>
+            Path.Combine(Root, date, ResumeOutputManager.JobFolderName(job.Company, job.Title));
+    }
+
+    static ResetWorld NewResetWorld(string name) {
+        var dir = NewDir("reset-" + name);
+        var w = new ResetWorld {
+            Dir = dir,
+            Results = Path.Combine(dir, "results"),
+            Prepared = Path.Combine(dir, "prepared-request.json"),
+            PreparedText = Path.Combine(dir, "prepared-request.txt"),
+            Root = Path.Combine(dir, "Resumes")
+        };
+        Directory.CreateDirectory(w.Results);
+        Directory.CreateDirectory(w.Root);
+        w.Paths = new ResetPaths { ResultsDir = w.Results, PreparedRequestPath = w.Prepared, PreparedRequestTextPath = w.PreparedText };
+        w.Settings = new AppSettings { ResumeRootFolder = w.Root };
+        File.WriteAllText(w.Prepared, "{}");
+        File.WriteAllText(w.PreparedText, "prompt");
+        return w;
+    }
+
+    /// <summary>Gives a job its four result files and, optionally, a generated folder for a date.</summary>
+    static JobTask ResetJob(ResetWorld w, string id, string company = "Acme", string title = "Engineer",
+                            string status = "Completed", string? documentsOn = null, string? infoJobId = null) {
+        var job = new JobTask { JobId = id, Company = company, Title = title, Jd = "...", Status = status };
+        foreach (var suffix in new[] { ".json", ".raw.txt", ".docgen.txt", ".effective-style.json" })
+            File.WriteAllText(Path.Combine(w.Results, id + suffix), "x");
+
+        if (documentsOn is string date) {
+            var folder = w.JobFolder(job, date);
+            Directory.CreateDirectory(folder);
+            File.WriteAllText(Path.Combine(folder, "Resume.docx"), "docx");
+            File.WriteAllText(Path.Combine(folder, "Resume.pdf"), "pdf");
+            File.WriteAllText(Path.Combine(folder, "resume-info.json"),
+                $$"""{ "jobId": "{{infoJobId ?? id}}", "company": "{{company}}", "role": "{{title}}" }""");
+            job.ResumePath = Path.Combine(folder, "Resume.docx");
+        }
+        w.Tasks.Add(job);
+        return job;
+    }
+
+    static void ResetPlansOnlyOwnedFiles() {
+        var w = NewResetWorld("owned");
+        var a = ResetJob(w, "RB-1", status: "Completed");
+        var b = ResetJob(w, "RB-2", "Stripe", "Backend Engineer", "Queued");
+        File.WriteAllText(Path.Combine(w.Results, "RB-STRANGER.json"), "someone else's");
+
+        var plan = JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: false, w.Paths);
+        Equal(2, plan.JobCount, "both jobs are in the plan");
+        Equal("2 jobs (1 queued, 1 completed)", plan.JobSummary(), "the summary the dialog shows");
+        Equal(10, plan.Files.Count, "4 files per job plus the two prepared-request files");
+        Check(plan.Files.All(f => JobHistoryReset.IsUnderRoot(f, w.Results) || f == w.Prepared || f == w.PreparedText),
+              "every planned file is inside this app's own folders");
+        Check(!plan.Files.Any(f => f.Contains("STRANGER")), "another job's result file is never planned");
+        Equal(0, plan.Folders.Count, "no documents were requested");
+
+        var report = JobHistoryReset.Execute(plan, w.Paths);
+        Equal(10, report.FilesDeleted, "all planned files deleted");
+        Check(!report.AnyFailure, "no failures");
+        Check(File.Exists(Path.Combine(w.Results, "RB-STRANGER.json")), "the stranger's file survives");
+        Check(!File.Exists(w.Prepared) && !File.Exists(w.PreparedText), "prepared-request files are gone");
+        foreach (var job in new[] { a, b })
+            Check(!Directory.GetFiles(w.Results, job.JobId + "*").Any(), job.JobId + "'s results are gone");
+    }
+
+    static void ResetNeverPlansBaseline() {
+        var w = NewResetWorld("baseline");
+        ResetJob(w, "RB-1");
+        foreach (var suffix in new[] { ".json", ".raw.txt", ".effective-style.json" })
+            File.WriteAllText(Path.Combine(w.Results, ResultCapture.BaselineJobId + suffix), "baseline");
+
+        // Even a task carrying the reserved id must not pull the baseline files in.
+        w.Tasks.Add(new JobTask { JobId = ResultCapture.BaselineJobId, Company = "X", Title = "Y" });
+        w.Tasks.Add(new JobTask { JobId = "   ", Company = "X", Title = "Y" });
+
+        var plan = JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: false, w.Paths);
+        Check(!plan.Files.Any(f => Path.GetFileName(f).StartsWith(ResultCapture.BaselineJobId, StringComparison.OrdinalIgnoreCase)),
+              "BASELINE.* is never planned");
+        JobHistoryReset.Execute(plan, w.Paths);
+        foreach (var suffix in new[] { ".json", ".raw.txt", ".effective-style.json" })
+            Check(File.Exists(Path.Combine(w.Results, ResultCapture.BaselineJobId + suffix)), "BASELINE" + suffix + " survives");
+    }
+
+    static void ResetIgnoresUnsafeResumePath() {
+        var w = NewResetWorld("unsafe");
+        var outside = NewDir("reset-unsafe-outside");
+        File.WriteAllText(Path.Combine(outside, "precious.docx"), "not ours");
+
+        // The task claims a document far outside the Resume Root; it must count for nothing.
+        var job = ResetJob(w, "RB-1");
+        job.ResumePath = Path.Combine(outside, "precious.docx");
+
+        var plan = JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: true, w.Paths);
+        Equal(0, plan.Folders.Count, "a ResumePath outside the root plans no folder");
+        Check(!plan.Files.Any(f => f.Contains("precious")), "and no file");
+        JobHistoryReset.Execute(plan, w.Paths);
+        Check(File.Exists(Path.Combine(outside, "precious.docx")), "the outside file is untouched");
+
+        // The guard itself.
+        Check(JobHistoryReset.IsUnderRoot(Path.Combine(w.Root, "2026-09-19", "Acme - Engineer"), w.Root), "a real child is under the root");
+        Check(!JobHistoryReset.IsUnderRoot(w.Root, w.Root), "the root itself is not 'under' the root");
+        Check(!JobHistoryReset.IsUnderRoot(Path.Combine(w.Root, "..", "elsewhere"), w.Root), "a path that climbs out is refused");
+        Check(!JobHistoryReset.IsUnderRoot(@"C:\Windows\System32", w.Root), "an unrelated path is refused");
+        Check(!JobHistoryReset.IsUnderRoot("", w.Root) && !JobHistoryReset.IsUnderRoot(w.Root, ""), "empty paths are refused");
+    }
+
+    static void ResetFolderNeedsMatchingInfo() {
+        var w = NewResetWorld("folders");
+        const string date = "2026-09-19";
+        var mine = ResetJob(w, "RB-MINE", "Cogniify", "AI Engineer", documentsOn: date);
+        var wrongId = ResetJob(w, "RB-WRONG", "Stripe", "Backend Engineer", documentsOn: date, infoJobId: "RB-SOMEONE-ELSE");
+        var noInfo = ResetJob(w, "RB-NOINFO", "Acme", "Engineer", documentsOn: date);
+        File.Delete(Path.Combine(w.JobFolder(noInfo, date), "resume-info.json"));
+
+        // A folder under a NON-date parent, and a stranger's folder, must both be ignored.
+        var notDated = Path.Combine(w.Root, "Archive", ResumeOutputManager.JobFolderName("Cogniify", "AI Engineer"));
+        Directory.CreateDirectory(notDated);
+        File.WriteAllText(Path.Combine(notDated, "resume-info.json"), """{ "jobId": "RB-MINE" }""");
+        var stranger = Path.Combine(w.Root, date, "Someone Else - Role");
+        Directory.CreateDirectory(stranger);
+        File.WriteAllText(Path.Combine(stranger, "Resume.docx"), "theirs");
+
+        var plan = JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: true, w.Paths);
+        Equal(1, plan.Folders.Count, "only the folder whose resume-info.json matches");
+        Equal(w.JobFolder(mine, date), plan.Folders[0], "and it is the right one");
+
+        var report = JobHistoryReset.Execute(plan, w.Paths);
+        Equal(1, report.FoldersDeleted, "one folder deleted");
+        Check(!Directory.Exists(w.JobFolder(mine, date)), "the matching folder is gone");
+        Check(Directory.Exists(w.JobFolder(wrongId, date)), "a folder whose info names another job survives");
+        Check(Directory.Exists(w.JobFolder(noInfo, date)), "a folder with no resume-info.json survives");
+        Check(Directory.Exists(notDated), "a folder outside a yyyy-MM-dd parent survives");
+        Check(Directory.Exists(stranger), "a stranger's folder survives");
+        Equal(0, report.DateFoldersRemoved, "the date folder still holds other folders, so it stays");
+        Check(Directory.Exists(Path.Combine(w.Root, date)), "the date folder survives");
+
+        // With nothing left in it, the date folder is tidied away.
+        var solo = NewResetWorld("folders-solo");
+        var only = ResetJob(solo, "RB-ONLY", documentsOn: date);
+        var soloReport = JobHistoryReset.Execute(JobHistoryReset.Plan(solo.Tasks, solo.Settings, true, solo.Paths), solo.Paths);
+        Equal(1, soloReport.DateFoldersRemoved, "an empty date folder is removed");
+        Check(!Directory.Exists(Path.Combine(solo.Root, date)), "and it is gone");
+        Check(Directory.Exists(solo.Root), "the Resume Root itself is never deleted");
+    }
+
+    /// <summary>Re-imported jobs share a company and role, so one folder name maps to several job ids.</summary>
+    static void ResetHandlesDuplicateJobFolders() {
+        var w = NewResetWorld("duplicates");
+        const string company = "Caterpillar Inc.", title = "Senior AI Software Engineer";
+        var first = ResetJob(w, "RB-DUP-1", company, title, documentsOn: "2026-09-18");
+        var second = ResetJob(w, "RB-DUP-2", company, title, documentsOn: "2026-09-19");
+        Equal(ResumeOutputManager.JobFolderName(company, title),
+              ResumeOutputManager.JobFolderName(company, title), "both jobs map to one folder name");
+
+        var plan = JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: true, w.Paths);   // must not throw
+        Equal(2, plan.Folders.Count, "both dated folders are planned");
+        Equal(8, plan.Files.Count - 2, "and both jobs' result files (plus the prepared pair)");
+        var report = JobHistoryReset.Execute(plan, w.Paths);
+        Check(!report.AnyFailure && report.FoldersDeleted == 2, "both folders deleted: " + report.Describe());
+        Check(!Directory.Exists(w.JobFolder(first, "2026-09-18")) && !Directory.Exists(w.JobFolder(second, "2026-09-19")), "gone");
+
+        // One folder holding revisions of a CLEARED job and a KEPT job is left alone.
+        var mixed = NewResetWorld("duplicates-mixed");
+        var cleared = ResetJob(mixed, "RB-KEEP-A", company, title, documentsOn: "2026-09-19");
+        var folder = mixed.JobFolder(cleared, "2026-09-19");
+        File.WriteAllText(Path.Combine(folder, "resume-info (2).json"), """{ "jobId": "RB-NOT-CLEARED" }""");
+        var mixedPlan = JobHistoryReset.Plan(mixed.Tasks, mixed.Settings, includeDocuments: true, mixed.Paths);
+        Equal(0, mixedPlan.Folders.Count, "a folder shared with a job that stays is never deleted");
+        JobHistoryReset.Execute(mixedPlan, mixed.Paths);
+        Check(Directory.Exists(folder), "and it survives");
+    }
+
+    static void ResetWithoutDocuments() {
+        var w = NewResetWorld("nodocs");
+        var job = ResetJob(w, "RB-1", documentsOn: "2026-09-19");
+
+        var plan = JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: false, w.Paths);
+        Check(!plan.IncludesDocuments && plan.Folders.Count == 0 && plan.DateFolders.Count == 0, "no folders planned");
+        var report = JobHistoryReset.Execute(plan, w.Paths);
+        Equal(0, report.FoldersDeleted, "no folder deleted");
+        Check(File.Exists(job.ResumePath), "the DOCX is still there");
+        Check(File.Exists(Path.ChangeExtension(job.ResumePath, ".pdf")), "the PDF is still there");
+        Equal(6, report.FilesDeleted, "results and prepared-request files were still cleared");
+    }
+
+    static void ResetReportsFailures() {
+        var w = NewResetWorld("failures");
+        ResetJob(w, "RB-1");
+        var locked = Path.Combine(w.Results, "RB-1.json");
+        var plan = JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: false, w.Paths);
+
+        ResetReport report;
+        using (File.Open(locked, FileMode.Open, FileAccess.Read, FileShare.None))
+            report = JobHistoryReset.Execute(plan, w.Paths);
+
+        Check(report.AnyFailure, "the locked file is reported as a failure");
+        Equal(1, report.Failures.Count, "exactly one failure");
+        Equal(locked, report.Failures[0].Path, "and it names the file");
+        Check(report.Failures[0].Reason.Length > 0, "with a reason: " + report.Failures[0].Reason);
+        Check(report.Describe().Contains("could NOT be deleted", StringComparison.Ordinal), "the message says so plainly");
+        Check(report.FilesDeleted == plan.Files.Count - 1, "the others were still deleted");
+        Check(File.Exists(locked), "and the locked file is still there");
+    }
+
+    static void ResetLeavesEverythingElseAlone() {
+        var w = NewResetWorld("survivors");
+        ResetJob(w, "RB-1", documentsOn: "2026-09-19");
+
+        // Files that must never be involved, written next to the ones that are.
+        var survivors = new Dictionary<string, string> {
+            [Path.Combine(w.Dir, "settings.json")] = """{ "PromptMode": "Normal", "NormalPrompt": "C:\\mine.txt" }""",
+            [Path.Combine(w.Dir, "candidate-profile.json")] = """{ "info": {} }""",
+            [Path.Combine(w.Dir, "baseline-profile.json")] = "baseline",
+            [Path.Combine(w.Dir, "diagnostics.log")] = "log line",
+            [Path.Combine(w.Dir, "my-master-prompt.txt")] = "master",
+            [Path.Combine(w.Dir, "my-normal-prompt.txt")] = "normal",
+        };
+        var browser = Path.Combine(w.Dir, "JobBrowserWebView2");
+        Directory.CreateDirectory(browser);
+        survivors[Path.Combine(browser, "Cookies")] = "session";
+        var incoming = Path.Combine(w.Dir, "Incoming"); Directory.CreateDirectory(incoming);
+        survivors[Path.Combine(incoming, "job-1.json")] = "{}";
+        var imported = Path.Combine(w.Dir, "Imported"); Directory.CreateDirectory(imported);
+        survivors[Path.Combine(imported, "job-0.json")] = "{}";
+        foreach (var (path, text) in survivors) File.WriteAllText(path, text);
+        var before = survivors.Keys.ToDictionary(p => p, File.ReadAllBytes);
+
+        JobHistoryReset.Execute(JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: true, w.Paths), w.Paths);
+
+        foreach (var (path, bytes) in before) {
+            Check(File.Exists(path), "still exists: " + Path.GetFileName(path));
+            Check(File.ReadAllBytes(path).SequenceEqual(bytes), "byte-identical: " + Path.GetFileName(path));
+        }
+        Check(Directory.Exists(browser) && Directory.Exists(incoming) && Directory.Exists(imported),
+              "the browser profile and the input folders survive");
+    }
+
+    static void ResetRefusedWhileProcessing() {
+        var w = NewResetWorld("processing");
+        ResetJob(w, "RB-1", status: "Completed");
+        Check(!JobHistoryReset.IsProcessing(w.Tasks), "no job in flight");
+
+        ResetJob(w, "RB-2", status: "Processing");
+        Check(JobHistoryReset.IsProcessing(w.Tasks), "a Processing job blocks the reset");
+        Check(JobHistoryReset.IsProcessing(new List<JobTask>()) == false, "an empty list is fine");
+
+        // The plan itself stays honest about what it would cover.
+        var plan = JobHistoryReset.Plan(w.Tasks, w.Settings, includeDocuments: false, w.Paths);
+        Check(plan.JobSummary().Contains("1 processing", StringComparison.Ordinal), "the summary names it: " + plan.JobSummary());
+    }
+
+    // ---------- prompt modes ----------
+
+    /// <summary>The job the golden fixture was captured with. Any change here invalidates the fixture.</summary>
+    static JobTask PromptJob() => new() {
+        JobId = "RB-20260919-101500-abcdef01",
+        Company = "Cogniify",
+        Title = "Senior Generative AI Engineer",
+        Jd = "Build and ship generative AI features.\nOwn evaluation and reliability.",
+        Link = "https://jobright.ai/jobs/info/6aada17fde327d3e210d3913",
+        About = "Cogniify builds AI tooling for small teams."
+    };
+
+    static AppSettings PromptSettings(string mode, string? normalPrompt = null) => new() {
+        MasterPrompt = Fixture("prepare-master-prompt.txt"),
+        CandidateProfile = Fixture("prepare-profile.json"),
+        PromptMode = mode,
+        NormalPrompt = normalPrompt ?? ""
+    };
+
+    /// <summary>Prepare writes prepared-request.json/.txt in the live data folder; both are restored.</summary>
+    static void WithPreparedFiles(Action body) {
+        var paths = new[] { RequestPreparation.PreparedPath, RequestPreparation.PreparedTextPath };
+        var backup = paths.ToDictionary(p => p, p => File.Exists(p) ? File.ReadAllBytes(p) : null);
+        try { body(); }
+        finally {
+            foreach (var (p, b) in backup) { if (b is not null) File.WriteAllBytes(p, b); else if (File.Exists(p)) File.Delete(p); }
+        }
+    }
+
+    static string NormalPromptFile(string text) {
+        var path = Path.Combine(NewDir("normal-prompt-" + Math.Abs(text.GetHashCode())), "my-prompt.txt");
+        File.WriteAllText(path, text);
+        return path;
+    }
+
+    static void ResumePromptUnchanged() => WithPreparedFiles(() => {
+        // The fixture was captured from the build BEFORE prompt modes existed.
+        var expected = File.ReadAllText(Fixture("prepare-resume-expected.txt"));
+        var prepared = RequestPreparation.Prepare(PromptJob(), PromptSettings(PromptModes.Resume));
+        Equal(expected.Length, prepared.Text.Length, "prepared length");
+        Check(expected == prepared.Text, "the Resume prompt must be byte-for-byte unchanged");
+
+        // The same through the explicit entry point, and with no mode stored at all (older settings).
+        Check(RequestPreparation.PrepareResume(PromptJob(), PromptSettings(PromptModes.Resume)).Text == expected, "PrepareResume");
+        var older = PromptSettings(PromptModes.Resume); older.PromptMode = "";
+        Check(RequestPreparation.Prepare(PromptJob(), older).Text == expected, "older settings with no mode");
+
+        // The job identity travels with the request, as before.
+        Equal("RB-20260919-101500-abcdef01", prepared.JobId, "job id");
+        Equal("Cogniify", prepared.Company, "company");
+        Equal("Senior Generative AI Engineer", prepared.Title, "title");
+    });
+
+    static void NormalPromptAssembly() => WithPreparedFiles(() => {
+        const string mine = "Write me a bold, modern resume.\r\nUse short sentences.\r\nBe specific about impact.";
+        var settings = PromptSettings(PromptModes.Normal, NormalPromptFile(mine + "\r\n\r\n"));
+        var text = RequestPreparation.Prepare(PromptJob(), settings).Text;
+
+        Check(text.StartsWith(mine, StringComparison.Ordinal), "the user's prompt comes first, unchanged");
+        Check(text.IndexOf(mine, StringComparison.Ordinal) < text.IndexOf("===== COMPLETE JOB PAYLOAD =====", StringComparison.Ordinal),
+              "prompt, then payload");
+        Check(text.IndexOf("===== COMPLETE JOB PAYLOAD =====", StringComparison.Ordinal) <
+              text.IndexOf("===== EXECUTION INSTRUCTION =====", StringComparison.Ordinal), "payload, then contract");
+
+        // The SAME full payload as Resume mode: job fields and the whole candidate profile.
+        var resume = RequestPreparation.Prepare(PromptJob(), PromptSettings(PromptModes.Resume)).Text;
+        string Payload(string all) {
+            var from = all.IndexOf("===== COMPLETE JOB PAYLOAD =====", StringComparison.Ordinal);
+            return all[from..all.IndexOf("===== EXECUTION INSTRUCTION =====", StringComparison.Ordinal)];
+        }
+        Check(Payload(text) == Payload(resume), "the payload block is identical in both modes");
+        foreach (var expected in new[] { "\"company\": \"Cogniify\"", "\"title\": \"Senior Generative AI Engineer\"",
+                                         "Build and ship generative AI features.", "\"link\": \"https://jobright.ai",
+                                         "Cogniify builds AI tooling for small teams.", "\"profile\":",
+                                         "Jordan Lee", "\"experience\":", "\"education\":" })
+            Check(text.Contains(expected, StringComparison.Ordinal), "the payload carries " + expected);
+
+        // Nothing about style is injected: an absent style object is handled by the renderer's default.
+        Check(!text.Contains("style", StringComparison.OrdinalIgnoreCase) || text.IndexOf("style", StringComparison.OrdinalIgnoreCase) > text.IndexOf("\"profile\"", StringComparison.Ordinal),
+              "no style instructions are added to the prompt");
+    });
+
+    static void BothModesShareTheContract() => WithPreparedFiles(() => {
+        var resume = RequestPreparation.Prepare(PromptJob(), PromptSettings(PromptModes.Resume)).Text;
+        var normal = RequestPreparation.Prepare(PromptJob(), PromptSettings(PromptModes.Normal, NormalPromptFile("Anything at all."))).Text;
+
+        string Contract(string all) => all[all.IndexOf("===== EXECUTION INSTRUCTION =====", StringComparison.Ordinal)..];
+        var resumeContract = Contract(resume);
+        var normalContract = Contract(normal);
+
+        // One schema: the two blocks differ only in their first sentence.
+        Equal(resumeContract.Replace(PromptContract.ResumeOpening, PromptContract.NormalOpening), normalContract,
+              "only the opening sentence differs");
+        Check(resumeContract.Contains(PromptContract.ResumeOpening, StringComparison.Ordinal), "Resume names the Master Prompt");
+        Check(normalContract.Contains(PromptContract.NormalOpening, StringComparison.Ordinal), "Normal names the user's instructions");
+
+        foreach (var rule in new[] { "Return ONLY the updated profile object in a Markdown code block fenced with json.",
+                                     "info, summary, skills, experience, certifications, and education",
+                                     "experience must use startDate, endDate, and descriptionLines",
+                                     "any text outside the JSON code block" })
+            Check(normalContract.Contains(rule, StringComparison.Ordinal), "Normal mode still demands: " + rule);
+    });
+
+    static void PromptModeFallsBackToResume() {
+        foreach (var mode in new[] { null, "", "   ", "resume", "RESUME", "Whatever", "normal-ish", "0" })
+            Equal(PromptModes.Resume, PromptModes.Normalize(mode), "mode '" + (mode ?? "null") + "'");
+        foreach (var mode in new[] { "Normal", "normal", " NORMAL " })
+            Equal(PromptModes.Normal, PromptModes.Normalize(mode), "mode '" + mode + "'");
+        Check(!PromptModes.IsNormal(null) && PromptModes.IsNormal("Normal"), "IsNormal");
+        Equal(PromptModes.Resume, new AppSettings().PromptMode, "a new settings object defaults to Resume");
+        Equal("", new AppSettings().NormalPrompt, "and has no normal prompt");
+
+        // An older settings.json (no mode, no normal prompt) still loads and stays on Resume.
+        var older = JsonSerializer.Deserialize<AppSettings>(
+            """{ "MasterPrompt": "C:\\prompt.txt", "Docx": true, "AutoSend": false }""",
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+        Equal(PromptModes.Resume, PromptModes.Normalize(older.PromptMode), "older settings read as Resume");
+        Equal("C:\\prompt.txt", older.MasterPrompt, "and keep their paths");
+        Check(!older.AutoSend, "and their switches");
+    }
+
+    static void NormalPromptFileIsRequired() => WithPreparedFiles(() => {
+        foreach (var path in new[] { "", "   ", Path.Combine(TempRoot, "does-not-exist.txt") }) {
+            var threw = "";
+            try { RequestPreparation.Prepare(PromptJob(), PromptSettings(PromptModes.Normal, path)); }
+            catch (InvalidOperationException ex) { threw = ex.Message; }
+            Check(threw.Contains("Normal Prompt", StringComparison.Ordinal), "clear message, got: " + threw);
+            Check(threw.Contains("Settings", StringComparison.Ordinal), "and says where to fix it");
+        }
+
+        // Resume mode keeps its own message, and neither mode invents a prompt.
+        var missingMaster = PromptSettings(PromptModes.Resume); missingMaster.MasterPrompt = "";
+        var masterError = "";
+        try { RequestPreparation.Prepare(PromptJob(), missingMaster); }
+        catch (InvalidOperationException ex) { masterError = ex.Message; }
+        Equal("Configure an existing Master Prompt text file in Settings.", masterError, "the Master Prompt message is unchanged");
+    });
+
+    static void BothModesSaveTheSameArtifacts() => WithPreparedFiles(() => {
+        foreach (var settings in new[] { PromptSettings(PromptModes.Resume),
+                                         PromptSettings(PromptModes.Normal, NormalPromptFile("My own prompt.")) }) {
+            if (File.Exists(RequestPreparation.PreparedPath)) File.Delete(RequestPreparation.PreparedPath);
+            if (File.Exists(RequestPreparation.PreparedTextPath)) File.Delete(RequestPreparation.PreparedTextPath);
+
+            var prepared = RequestPreparation.Prepare(PromptJob(), settings);
+            var mode = PromptModes.Normalize(settings.PromptMode);
+
+            Check(File.Exists(RequestPreparation.PreparedPath), mode + ": prepared-request.json written");
+            Check(File.Exists(RequestPreparation.PreparedTextPath), mode + ": prepared-request.txt written");
+            Equal(prepared.Text, File.ReadAllText(RequestPreparation.PreparedTextPath), mode + ": the text sidecar matches");
+
+            var reloaded = RequestPreparation.Load()!;
+            Equal(prepared.Text, reloaded.Text, mode + ": reloads");
+            Equal("RB-20260919-101500-abcdef01", reloaded.JobId, mode + ": job id");
+            Equal("Cogniify", reloaded.Company, mode + ": company");
+            Equal("Senior Generative AI Engineer", reloaded.Title, mode + ": title");
+        }
+    });
+
+    static void NormalModeAnswerRunsThePipeline() {
+        // The pipeline never sees the prompt mode: the same answer text must behave identically.
+        var settings = new AppSettings { ResumeRootFolder = NewDir("normal-mode-output"), Docx = true, Pdf = true };
+
+        // (a) No style in the answer -> the promV4.12 default.
+        var plain = Path.Combine(NewDir("normal-plain"), "result.json");
+        var answer = "Sure! Here is the resume:\n\n```json\n" + File.ReadAllText(Fixture("resume-basic.json")) + "\n```\n";
+        CandidateProfileStore.NormalizeAndSaveTo(answer, plain);
+        CandidateProfileStore.Validate(JsonDocument.Parse(File.ReadAllText(plain)).RootElement);
+        var plainStyle = StyleNormalizer.Normalize(JsonNode.Parse(File.ReadAllText(plain))!["style"]);
+        Equal(StylePresets.Default, plainStyle.Style.Preset, "no style in the answer -> promV4.12");
+
+        var docs = ResumeGenerator.Generate("Cogniify", "Senior Generative AI Engineer", plain, settings, null, "RB-NORMAL-1");
+        Check(!docs.AnyFailure, "DOCX and PDF generate from a Normal-mode answer: " + docs.Describe());
+        Check(File.Exists(docs.DocxPath!) && File.Exists(docs.PdfPath!), "both documents exist");
+
+        // (b) A valid style in the answer -> that style is used.
+        var styled = Path.Combine(NewDir("normal-styled"), "result.json");
+        var styledAnswer = "```json\n" + File.ReadAllText(Fixture("resume-custom-style.json")) + "\n```";
+        CandidateProfileStore.NormalizeAndSaveTo(styledAnswer, styled);
+        var custom = StyleNormalizer.Normalize(JsonNode.Parse(File.ReadAllText(styled))!["style"]);
+        Equal("#17365D", custom.Style.Colors.Primary, "the answer's own colour is used");
+        Check(custom.Style.Colors.Primary != StylePresets.Get(null).Colors.Primary, "and it is not the default");
+        var styledDocs = ResumeGenerator.Generate("Cogniify", "Senior Generative AI Engineer", styled, settings, null, "RB-NORMAL-2");
+        Check(!styledDocs.AnyFailure, "a styled Normal-mode answer also generates: " + styledDocs.Describe());
     }
 
     // ---------- generation workflow ----------
@@ -1505,14 +2324,17 @@ static class Program {
     }
 
     static void JobImportDataIsNotATask() {
-        // The canonical input: five fields, no external id, no location. It is not a JobTask, so a
-        // file or a page reader can never write to storage or the queue itself.
+        // The canonical input: the five fields plus the optional applyUrl (added for import-time apply
+        // link discovery), no external id, no location. It is not a JobTask, so a file or a page reader
+        // can never write to storage or the queue itself.
         var names = typeof(JobImportData).GetProperties().Select(p => p.Name).OrderBy(n => n).ToArray();
-        Equal("Company,CompanyUrl,Description,JobUrl,Title", string.Join(",", names), "the five canonical fields");
+        Equal("ApplyUrl,Company,CompanyUrl,Description,JobUrl,Title", string.Join(",", names),
+              "the five canonical fields plus the optional ApplyUrl");
 
         var data = new JobImportData();
         Equal("", data.Company, "company defaults empty");
         Check(data.CompanyUrl is null, "companyUrl defaults to none");
+        Check(data.ApplyUrl is null, "applyUrl defaults to none");
         Check(!typeof(JobTask).IsAssignableFrom(typeof(JobImportData)), "JobImportData must not be a JobTask");
         Check(typeof(IJobPageExtractor).GetMethods().Length == 1, "the extractor interface stays minimal");
 
@@ -1712,6 +2534,1352 @@ static class Program {
             Check(!script.Contains(forbidden, StringComparison.OrdinalIgnoreCase), "the read script must not touch " + forbidden);
         Check(script.Contains("application/ld+json") && script.Contains("__NEXT_DATA__") && script.Contains("canonical"),
               "it reads JSON-LD, the page data and the canonical link");
+    }
+
+    // ---------- application link capture ----------
+
+    const string ApplyJobPage = "https://jobright.ai/jobs/info/6a5f372bd5c3a14fb34ec73a";
+    const string ApplyOtherJobPage = "https://jobright.ai/jobs/info/69d0abea366bb95ba5520be8";
+
+    /// <summary>Runs a check against the real Storage path, restoring the user's tasks.json afterwards.</summary>
+    static void WithLiveTasksFile(Action body) {
+        var live = Storage.TasksPath;
+        var backup = File.Exists(live) ? File.ReadAllBytes(live) : null;
+        try { body(); }
+        finally {
+            if (backup is byte[] content) File.WriteAllBytes(live, content);
+            else if (File.Exists(live)) File.Delete(live);
+        }
+    }
+
+    static void ApplyUrlOldTasksLoad() => WithLiveTasksFile(() => {
+        // The shape tasks.json had just before ApplyUrl existed, read through the real loader.
+        Directory.CreateDirectory(Storage.DataDir);
+        File.WriteAllText(Storage.TasksPath, $$"""
+        [
+          { "JobId": "RB-OLD-1", "Source": "jobright-browser", "Company": "Oracle", "Title": "ML Engineer",
+            "Jd": "...", "Link": "{{ApplyJobPage}}", "CompanyUrl": "https://www.oracle.com/",
+            "Status": "Completed", "ApplicationStatus": "Ready" },
+          { "JobId": "RB-OLD-2", "Company": "Stripe", "Title": "Backend Engineer", "Jd": "...", "Status": "Queued" }
+        ]
+        """);
+
+        var tasks = Storage.LoadTasks();
+        Equal(2, tasks.Count, "every older task loads");
+        foreach (var task in tasks) {
+            Equal("", task.ApplyUrl, task.JobId + " has no application link");
+            Check(task.ApplyUrlCapturedAt is null, task.JobId + " has no capture time");
+        }
+        Equal("Completed", tasks[0].Status, "queue status untouched");
+        Equal(ApplicationStatus.Ready, tasks[0].ApplicationStatus, "application status untouched");
+        Equal(ApplyJobPage, tasks[0].Link, "job link untouched");
+    });
+
+    static void ApplyUrlSurvivesReload() => WithLiveTasksFile(() => {
+        var at = new DateTime(2026, 9, 18, 14, 30, 0);
+        var captured = Job("RB-APPLY-1", "Oracle", "ML Engineer", ApplyJobPage);
+        captured.ApplyUrl = "https://careers.oracle.com/jobs/12345";
+        captured.ApplyUrlCapturedAt = at;
+
+        Storage.SaveTasks(new[] { captured, Job("RB-APPLY-2") });
+        var reloaded = Storage.LoadTasks();
+
+        Equal(2, reloaded.Count, "task count");
+        Equal("https://careers.oracle.com/jobs/12345", reloaded[0].ApplyUrl, "ApplyUrl survived");
+        Equal(at, reloaded[0].ApplyUrlCapturedAt, "ApplyUrlCapturedAt survived");
+        Equal(ApplyJobPage, reloaded[0].Link, "Link keeps its meaning");
+        Equal("", reloaded[1].ApplyUrl, "an uncaptured task stays empty");
+        Check(reloaded[1].ApplyUrlCapturedAt is null, "an uncaptured task has no time");
+    });
+
+    static void ApplyUrlCaptureRule() {
+        foreach (var good in new[] {
+                     "https://boards.greenhouse.io/acme/jobs/123",
+                     "https://acme.wd5.myworkdayjobs.com/en-US/Careers/job/Remote/ML-Engineer_R1",
+                     "https://jobs.lever.co/acme/abc-def",
+                     "https://www.linkedin.com/jobs/view/4012345678",
+                     "http://careers.example.com/apply?id=7" })
+            Check(ApplyCapture.IsApplicationUrl(good), "captured: " + good);
+
+        foreach (var bad in new[] {
+                     null, "", "not a url", "/jobs/apply", "about:blank", "javascript:void(0)",
+                     "mailto:jobs@acme.com", "file:///C:/secret.txt",
+                     "https://jobright.ai/jobs/info/6a5f372bd5c3a14fb34ec73a",
+                     "https://www.jobright.ai/redirect?to=x", "https://api.jobright.ai/apply",
+                     "https://www.linkedin.com/in/someone/", "https://www.linkedin.com/company/1028",
+                     "https://x.com/Oracle", "https://www.crunchbase.com/organization/oracle",
+                     "https://www.glassdoor.com/Overview/Working-at-Oracle-EI_IE1737.11,17.htm" })
+            Check(!ApplyCapture.IsApplicationUrl(bad), "not captured: " + (bad ?? "null"));
+
+        // A look-alike host is not jobright.ai.
+        Check(ApplyCapture.IsApplicationUrl("https://notjobright.ai/apply"), "a look-alike host is outside jobright.ai");
+    }
+
+    static void ApplyUrlMatchesJob() {
+        var now = new DateTime(2026, 9, 18, 15, 0, 0);
+        var oracle = Job("RB-MATCH-1", "Oracle", "ML Engineer", ApplyJobPage);
+        var other = Job("RB-MATCH-2", "Acme", "Engineer", ApplyOtherJobPage);
+        var incoming = Job("RB-MATCH-3", "Local", "Engineer", "https://example.com/job/3");
+        var tasks = new List<JobTask> { incoming, other, oracle };
+        var before = tasks.ToList();
+
+        // The job page address may carry tracking; the Jobright job id is what matches.
+        Equal(ApplyCaptureResult.Recorded,
+              ApplyCapture.Record(tasks, ApplyJobPage + "?utm_source=1101", "https://boards.greenhouse.io/oracle/jobs/1?gh_src=abc&utm_medium=x", now),
+              "recorded on the viewed job");
+        Equal("https://boards.greenhouse.io/oracle/jobs/1?gh_src=abc", oracle.ApplyUrl, "stored normalized, tracking dropped");
+        Equal(now, oracle.ApplyUrlCapturedAt, "capture time stamped");
+        Equal("", other.ApplyUrl, "another job is untouched");
+        Equal("", incoming.ApplyUrl, "a non-Jobright job is untouched");
+
+        // Same address again: nothing changes, not even the time.
+        Equal(ApplyCaptureResult.Unchanged,
+              ApplyCapture.Record(tasks, ApplyJobPage, "https://boards.greenhouse.io/oracle/jobs/1?gh_src=abc", now.AddHours(1)),
+              "the same address is not a change");
+        Equal(now, oracle.ApplyUrlCapturedAt, "the time is kept");
+
+        // Not a single job page: the job is unknown.
+        Equal(ApplyCaptureResult.NotJobPage,
+              ApplyCapture.Record(tasks, "https://jobright.ai/jobs/recommend", "https://jobs.lever.co/x/1", now), "results page");
+        Equal(ApplyCaptureResult.NotJobPage,
+              ApplyCapture.Record(tasks, null, "https://jobs.lever.co/x/1", now), "no page");
+
+        // A non-application destination records nothing.
+        Equal(ApplyCaptureResult.NotApplicationUrl,
+              ApplyCapture.Record(tasks, ApplyOtherJobPage, "https://www.linkedin.com/in/someone/", now), "a profile link");
+        Equal("", other.ApplyUrl, "still untouched");
+
+        // A job that is not imported: nothing is created.
+        Equal(ApplyCaptureResult.UnknownJob,
+              ApplyCapture.Record(tasks, "https://jobright.ai/jobs/info/aaaaaaaaaaaaaaaaaaaaaaaa", "https://jobs.lever.co/x/1", now),
+              "an unknown job");
+        Equal(3, tasks.Count, "no task was added");
+        Check(tasks.SequenceEqual(before), "the task list is unchanged");
+
+        // A later, different address replaces the old one.
+        Equal(ApplyCaptureResult.Recorded,
+              ApplyCapture.Record(tasks, ApplyJobPage, "https://careers.oracle.com/jobs/9", now.AddDays(1)), "a new address");
+        Equal("https://careers.oracle.com/jobs/9", oracle.ApplyUrl, "replaced");
+        Equal(now.AddDays(1), oracle.ApplyUrlCapturedAt, "restamped");
+    }
+
+    // ---------- open application ----------
+
+    static void OpenApplicationIsSafe() {
+        // Only refusals are exercised here, so no browser is ever launched by the test run.
+        Check(JobTracker.ApplyUrlToOpen(null) is null, "no job");
+        Check(!JobTracker.OpenApplyUrl(null), "no job is not opened");
+
+        // Missing ApplyUrl: refused even though the job has a perfectly good Jobright link.
+        var noApply = Job("OA-1", "Cogniify", "Engineer", "https://jobright.ai/jobs/info/6aada17fde327d3e210d3913");
+        Check(JobTracker.ApplyUrlToOpen(noApply) is null, "an empty ApplyUrl is never replaced by Link");
+        Check(!JobTracker.OpenApplyUrl(noApply), "an empty ApplyUrl opens nothing");
+
+        foreach (var bad in new[] { " ", "not a url", "/apply/1", "file:///C:/Windows/System32/calc.exe",
+                                    "javascript:alert(1)", "mailto:jobs@example.com", "ftp://example.com/apply",
+                                    @"C:\Users\someone\apply.html", "about:blank" }) {
+            var job = Job("OA-BAD", "Acme", "Engineer", "https://jobright.ai/jobs/info/6aada17fde327d3e210d3913");
+            job.ApplyUrl = bad;
+            Check(JobTracker.ApplyUrlToOpen(job) is null, "refused: " + bad);
+            Check(!JobTracker.OpenApplyUrl(job), "not launched: " + bad);
+        }
+
+        // A usable ApplyUrl is what would be opened — never Link, even when both are set.
+        var both = Job("OA-2", "Cogniify", "Engineer", "https://jobright.ai/jobs/info/6aada17fde327d3e210d3913");
+        both.ApplyUrl = "  https://app.dover.com/apply/Cogniify/1e3fc78f?jr_id=6aada17f  ";
+        Equal("https://app.dover.com/apply/Cogniify/1e3fc78f?jr_id=6aada17f", JobTracker.ApplyUrlToOpen(both), "ApplyUrl, trimmed");
+        both.Link = "";
+        Equal("https://app.dover.com/apply/Cogniify/1e3fc78f?jr_id=6aada17f", JobTracker.ApplyUrlToOpen(both), "Link plays no part");
+        Check(JobTracker.IsOpenableUrl("http://careers.example.com/apply"), "plain http is allowed, as for Open Job");
+    }
+
+    // ---------- application readiness ----------
+
+    static JobTask ReadinessJob(string? resumePath, string applyUrl) {
+        var job = Job("RD-1", "Cogniify", "Engineer", "https://jobright.ai/jobs/info/6aada17fde327d3e210d3913");
+        job.ResumePath = resumePath ?? "";
+        job.ApplyUrl = applyUrl;
+        return job;
+    }
+
+    static void ReadinessStates() {
+        const string resume = @"C:\Resumes\2026-09-18\Cogniify - Engineer\Resume.docx";
+        const string dover = "https://app.dover.com/apply/Cogniify/1e3fc78f";
+
+        var none = ReadinessJob(null, "");
+        Equal(ApplicationReadiness.NeedsResume, JobTracker.GetReadiness(none), "no resume, no link");
+        Equal("Needs resume", none.ReadinessDisplay, "its text");
+
+        var linkOnly = ReadinessJob(null, dover);
+        Equal(ApplicationReadiness.NeedsResume, JobTracker.GetReadiness(linkOnly), "a link without a resume still needs the resume");
+
+        var resumeOnly = ReadinessJob(resume, "");
+        Equal(ApplicationReadiness.NeedsApplyLink, JobTracker.GetReadiness(resumeOnly), "resume, no link");
+        Equal("Needs apply link", resumeOnly.ReadinessDisplay, "its text");
+
+        var both = ReadinessJob(resume, dover);
+        Equal(ApplicationReadiness.ReadyToApply, JobTracker.GetReadiness(both), "resume and link");
+        Equal("Ready to apply", both.ReadinessDisplay, "its text");
+        Equal(ApplicationReadiness.ReadyToApply, both.Readiness, "the task property agrees with JobTracker");
+
+        // The wording never reuses the bare application-status word.
+        foreach (var r in Enum.GetValues<ApplicationReadiness>()) {
+            Check(!ApplicationStatus.Ordered.Contains(JobTracker.ReadinessText(r)), r + " text is not a status name");
+            Check(JobTracker.ReadinessHint(r).Length > 0, r + " has a hint");
+        }
+    }
+
+    static void ReadinessRejectsInvalidApplyUrl() {
+        const string resume = @"C:\Resumes\Resume.docx";
+        foreach (var bad in new[] { " ", "not a url", "/apply/1", "file:///C:/apply.html", "javascript:alert(1)",
+                                    "mailto:jobs@example.com", "ftp://example.com/apply", "about:blank" })
+            Equal(ApplicationReadiness.NeedsApplyLink, JobTracker.GetReadiness(ReadinessJob(resume, bad)), "unusable: " + bad);
+
+        // The job link is not an application link.
+        var jobright = ReadinessJob(resume, "");
+        Check(JobTracker.IsOpenableUrl(jobright.Link), "the Jobright link itself is valid");
+        Equal(ApplicationReadiness.NeedsApplyLink, JobTracker.GetReadiness(jobright), "but Link never makes a job ready");
+        Equal(ApplicationReadiness.ReadyToApply, JobTracker.GetReadiness(ReadinessJob(resume, "http://careers.example.com/a")), "plain http counts");
+    }
+
+    static void ReadinessIsDisplayOnly() {
+        var job = ReadinessJob(@"C:\Resumes\Resume.docx", "https://jobs.lever.co/acme/1");
+        job.Status = "Completed";
+        JobTracker.UpdateStatus(job, ApplicationStatus.Applied, new DateTime(2026, 9, 18, 10, 0, 0));
+        var appliedAt = job.AppliedAt;
+
+        Equal(ApplicationReadiness.ReadyToApply, job.Readiness, "ready");
+        _ = job.ReadinessDisplay; _ = job.ReadinessHint;
+        Equal("Completed", job.Status, "queue status untouched");
+        Equal(ApplicationStatus.Applied, job.ApplicationStatus, "application status untouched");
+        Equal(appliedAt, job.AppliedAt, "timestamps untouched");
+
+        // Not in the saved JSON, under any name.
+        var json = JsonSerializer.Serialize(new[] { job });
+        foreach (var name in new[] { "Readiness", "ReadinessDisplay", "ReadinessHint", "Ready to apply" })
+            Check(!json.Contains(name, StringComparison.Ordinal), "tasks.json must not carry " + name);
+        Check(json.Contains("\"ApplyUrl\""), "the stored fields are still written");
+
+        // Change notification covers the readiness text, so an open dashboard row updates live.
+        var raised = new List<string>();
+        job.PropertyChanged += (_, e) => raised.Add(e.PropertyName ?? "");
+        job.NotifyTrackingChanged();
+        Check(raised.Contains(nameof(JobTask.ReadinessDisplay)) && raised.Contains(nameof(JobTask.Readiness)),
+              "NotifyTrackingChanged raises the readiness properties");
+    }
+
+    // ---------- mark applied ----------
+
+    static void MarkAppliedFromViewedAndReady() {
+        var viewedAt = new DateTime(2026, 9, 17, 9, 0, 0);
+        var appliedAt = new DateTime(2026, 9, 18, 15, 40, 0);
+
+        // Viewed -> Applied: ReadyAt was skipped, so it is backfilled with the same time.
+        var viewed = Job("MA-1");
+        viewed.ViewedAt = viewedAt;
+        Check(JobTracker.CanMarkApplied(viewed), "offered from Viewed");
+        Check(JobTracker.MarkApplied(viewed, appliedAt), "Viewed -> Applied changes the job");
+        Equal(ApplicationStatus.Applied, viewed.ApplicationStatus, "now Applied");
+        Equal(appliedAt, viewed.AppliedAt, "AppliedAt stamped");
+        Equal(appliedAt, viewed.ReadyAt, "skipped ReadyAt backfilled");
+        Equal(viewedAt, viewed.ViewedAt, "ViewedAt kept");
+
+        // Ready -> Applied: ReadyAt already set, kept as it was.
+        var readyAt = new DateTime(2026, 9, 18, 10, 0, 0);
+        var ready = Job("MA-2");
+        JobTracker.UpdateStatus(ready, ApplicationStatus.Ready, readyAt);
+        Check(JobTracker.CanMarkApplied(ready), "offered from Ready");
+        Check(JobTracker.MarkApplied(ready, appliedAt), "Ready -> Applied changes the job");
+        Equal(ApplicationStatus.Applied, ready.ApplicationStatus, "now Applied");
+        Equal(appliedAt, ready.AppliedAt, "AppliedAt stamped");
+        Equal(readyAt, ready.ReadyAt, "ReadyAt not rewritten");
+    }
+
+    static void MarkAppliedPreservesHistory() {
+        var first = new DateTime(2026, 9, 1, 12, 0, 0);
+        var later = new DateTime(2026, 9, 18, 12, 0, 0);
+
+        // Already Applied / Interview / Done: not offered, no change, no timestamp touched.
+        foreach (var stage in new[] { ApplicationStatus.Applied, ApplicationStatus.Interview, ApplicationStatus.Done }) {
+            var job = Job("MA-" + stage);
+            JobTracker.UpdateStatus(job, stage, first);
+            var before = (job.ReadyAt, job.AppliedAt, job.InterviewAt, job.DoneAt, job.UpdatedAt);
+            Check(!JobTracker.CanMarkApplied(job), stage + " is not offered Mark Applied");
+            Check(!JobTracker.MarkApplied(job, later), stage + ": Mark Applied changes nothing");
+            Equal(stage, job.ApplicationStatus, stage + " is not moved backwards");
+            Equal(before, (job.ReadyAt, job.AppliedAt, job.InterviewAt, job.DoneAt, job.UpdatedAt), stage + ": timestamps untouched");
+        }
+
+        // Moved back to Ready by hand after applying, then Mark Applied again: the original AppliedAt stays.
+        var corrected = Job("MA-BACK");
+        JobTracker.MarkApplied(corrected, first);
+        JobTracker.UpdateStatus(corrected, ApplicationStatus.Ready, later);
+        Check(JobTracker.MarkApplied(corrected, later), "re-applied after a correction");
+        Equal(first, corrected.AppliedAt, "AppliedAt is never rewritten");
+
+        Check(JobTracker.CanMarkApplied((string?)null), "missing status reads as Viewed, so it is offered");
+        Check(!JobTracker.CanMarkApplied("Interview"), "by status string too");
+    }
+
+    static void MarkAppliedTouchesNothingElse() {
+        foreach (var queue in new[] { "Queued", "Processing", "Completed", "Failed" }) {
+            var job = ReadinessJob(@"C:\Resumes\Resume.docx", "https://jobs.lever.co/acme/1");
+            job.Status = queue;
+            var readiness = job.Readiness;
+            var platform = job.ApplicationPlatform;
+            JobTracker.MarkApplied(job);
+            Equal(queue, job.Status, "queue status " + queue + " untouched");
+            Equal(readiness, job.Readiness, "readiness unchanged for " + queue);
+            Equal(platform, job.ApplicationPlatform, "platform unchanged");
+            Equal("https://jobs.lever.co/acme/1", job.ApplyUrl, "ApplyUrl unchanged");
+        }
+        var notReady = ReadinessJob(null, "");
+        JobTracker.MarkApplied(notReady);
+        Equal(ApplicationReadiness.NeedsResume, notReady.Readiness, "applying does not make a job 'ready'");
+    }
+
+    static void AppliedDateDisplay() {
+        var job = Job("MA-DATES");
+        job.CreatedAt = new DateTime(2026, 9, 10, 8, 5, 0);
+        job.ViewedAt = null;
+        Equal("Added Sep 10, 2026, 8:05 AM", JobTracker.StageDatesText(job), "a task with no stage dates falls back to Added");
+        Equal(job.TrackingDateDisplay, JobTracker.BoardDateText(job), "Board shows the tracking date before applying");
+
+        job.ViewedAt = new DateTime(2026, 9, 17, 9, 0, 0);
+        JobTracker.MarkApplied(job, new DateTime(2026, 9, 18, 15, 40, 0));
+        Equal(string.Join(Environment.NewLine, "Viewed Sep 17, 2026, 9:00 AM", "Ready Sep 18, 2026, 3:40 PM", "Applied Sep 18, 2026, 3:40 PM"),
+              JobTracker.StageDatesText(job), "every recorded stage, in order");
+        Equal("Applied Sep 18", JobTracker.BoardDateText(job), "Board labels the applied date");
+
+        // Moving on to Interview keeps the Board showing the applied date.
+        JobTracker.UpdateStatus(job, ApplicationStatus.Interview, new DateTime(2026, 9, 25, 11, 0, 0));
+        Equal("Applied Sep 18", JobTracker.BoardDateText(job), "still the applied date at Interview");
+        Check(JobTracker.StageDatesText(job).EndsWith("Interview Sep 25, 2026, 11:00 AM"), "Interview appended");
+    }
+
+    // ---------- platform filter ----------
+
+    static JobTask PlatformJob(string id, ApplicationPlatform platform, string status = ApplicationStatus.Viewed,
+                               string company = "Acme", string title = "Engineer", DateTime? created = null) {
+        var job = Job(id, company, title);
+        job.ApplicationPlatform = platform;
+        if (created is DateTime at) job.CreatedAt = at;
+        if (status != ApplicationStatus.Viewed) JobTracker.UpdateStatus(job, status, job.CreatedAt);
+        return job;
+    }
+
+    static List<JobTask> PlatformSet() => new() {
+        PlatformJob("GH-1", ApplicationPlatform.Greenhouse),
+        PlatformJob("WD-1", ApplicationPlatform.Workday),
+        PlatformJob("WD-2", ApplicationPlatform.Workday),
+        PlatformJob("LI-1", ApplicationPlatform.LinkedIn),
+        PlatformJob("OT-1", ApplicationPlatform.Other),
+        PlatformJob("UN-1", ApplicationPlatform.Unknown),
+    };
+
+    static string Ids(IEnumerable<JobTask> tasks) => string.Join(",", tasks.Select(t => t.JobId));
+
+    static void PlatformFilterEmptySelection() {
+        var tasks = PlatformSet();
+        Equal(6, JobTracker.ApplyFilters(tasks, null, null, null).Count, "the parameter left out");
+        Equal(6, JobTracker.ApplyFilters(tasks, null, null, null, platforms: null).Count, "null");
+        Equal(6, JobTracker.ApplyFilters(tasks, null, null, null, platforms: new HashSet<ApplicationPlatform>()).Count, "empty");
+        Equal(6, JobTracker.ApplyFilters(tasks, null, null, null, platforms: JobTracker.PlatformFilterOrder.ToList()).Count,
+              "every choice ticked");
+        Equal(Ids(tasks), Ids(JobTracker.ApplyFilters(tasks, null, null, null, platforms: new List<ApplicationPlatform>())),
+              "order is kept");
+    }
+
+    static void PlatformFilterSinglePlatform() {
+        var tasks = PlatformSet();
+        Equal("WD-1,WD-2", Ids(JobTracker.ApplyFilters(tasks, null, null, null, platforms: new[] { ApplicationPlatform.Workday })), "Workday");
+        Equal("UN-1", Ids(JobTracker.ApplyFilters(tasks, null, null, null, platforms: new[] { ApplicationPlatform.Unknown })), "Unknown");
+        Equal("OT-1", Ids(JobTracker.ApplyFilters(tasks, null, null, null, platforms: new[] { ApplicationPlatform.Other })), "Other");
+        Equal(0, JobTracker.ApplyFilters(tasks, null, null, null, platforms: new[] { ApplicationPlatform.Lever }).Count, "no Lever jobs");
+    }
+
+    static void PlatformFilterOrMatching() {
+        var tasks = PlatformSet();
+        Equal("GH-1,WD-1,WD-2",
+              Ids(JobTracker.ApplyFilters(tasks, null, null, null,
+                  platforms: new HashSet<ApplicationPlatform> { ApplicationPlatform.Workday, ApplicationPlatform.Greenhouse })),
+              "Greenhouse OR Workday");
+        Equal("LI-1,OT-1,UN-1",
+              Ids(JobTracker.ApplyFilters(tasks, null, null, null,
+                  platforms: new[] { ApplicationPlatform.Unknown, ApplicationPlatform.Other, ApplicationPlatform.LinkedIn })),
+              "three platforms, selection order does not matter");
+        Equal("WD-1,WD-2",
+              Ids(JobTracker.ApplyFilters(tasks, null, null, null, platforms: new[] { ApplicationPlatform.Workday, ApplicationPlatform.Lever })),
+              "a platform with no jobs adds nothing");
+    }
+
+    static void PlatformFilterCombined() {
+        var now = new DateTime(2026, 9, 18, 12, 0, 0);
+        var tasks = new List<JobTask> {
+            PlatformJob("C-1", ApplicationPlatform.Workday, ApplicationStatus.Applied, "Caterpillar", "AI Engineer", now),
+            PlatformJob("C-2", ApplicationPlatform.Workday, ApplicationStatus.Viewed, "Caterpillar", "Data Engineer", now),
+            PlatformJob("C-3", ApplicationPlatform.Greenhouse, ApplicationStatus.Applied, "Stripe", "AI Engineer", now.AddDays(-10)),
+            PlatformJob("C-4", ApplicationPlatform.LinkedIn, ApplicationStatus.Applied, "Caterpillar", "AI Engineer", now),
+        };
+        var workdayOrGreenhouse = new[] { ApplicationPlatform.Workday, ApplicationPlatform.Greenhouse };
+
+        Equal("C-1,C-3", Ids(JobTracker.ApplyFilters(tasks, null, ApplicationStatus.Applied, null, now, null, workdayOrGreenhouse)),
+              "platform AND status");
+        Equal("C-1,C-2", Ids(JobTracker.ApplyFilters(tasks, "caterpillar", null, null, now, null, workdayOrGreenhouse)),
+              "platform AND search");
+        Equal("C-1", Ids(JobTracker.ApplyFilters(tasks, "caterpillar ai", ApplicationStatus.Applied, null, now, null, workdayOrGreenhouse)),
+              "platform AND search AND status");
+        Equal("C-1,C-2", Ids(JobTracker.ApplyFilters(tasks, null, null, DateFilter.Last7, now, null, workdayOrGreenhouse)),
+              "platform AND date range");
+        Equal("C-3", Ids(JobTracker.ApplyFilters(tasks, null, null, DateFilter.AllDates, now, now.AddDays(-10).Date, workdayOrGreenhouse)),
+              "platform AND exact day");
+
+        // Board columns are GetTasksByStatus over the same filtered list, so they agree with the List.
+        var filtered = JobTracker.ApplyFilters(tasks, null, null, null, now, null, workdayOrGreenhouse);
+        var board = ApplicationStatus.Ordered.SelectMany(status => JobTracker.GetTasksByStatus(filtered, status)).Select(t => t.JobId);
+        Equal("C-1,C-2,C-3", string.Join(",", board.OrderBy(id => id)), "the board shows exactly the list's jobs");
+
+        // The platform filter never changes a task.
+        Equal(ApplicationPlatform.LinkedIn, tasks[3].ApplicationPlatform, "tasks untouched");
+    }
+
+    static void PlatformFilterLabelAndOrder() {
+        Equal("Greenhouse,Workday,Lever,LinkedIn,Ashby,SmartRecruiters,ICims,Other,Unknown",
+              string.Join(",", JobTracker.PlatformFilterOrder), "the explicit choice order");
+        Equal(Enum.GetValues<ApplicationPlatform>().Length, JobTracker.PlatformFilterOrder.Count, "every platform is a choice");
+        Equal(JobTracker.PlatformFilterOrder.Count, JobTracker.PlatformFilterOrder.Distinct().Count(), "no choice twice");
+
+        Equal("All platforms", JobTracker.PlatformFilterLabel(null), "null");
+        Equal("All platforms", JobTracker.PlatformFilterLabel(new HashSet<ApplicationPlatform>()), "nothing ticked");
+        Equal("All platforms", JobTracker.PlatformFilterLabel(JobTracker.PlatformFilterOrder.ToList()), "everything ticked");
+        Equal("Workday", JobTracker.PlatformFilterLabel(new[] { ApplicationPlatform.Workday }), "one");
+        Equal("iCIMS", JobTracker.PlatformFilterLabel(new[] { ApplicationPlatform.ICims }), "display name");
+        Equal("Greenhouse, Workday",
+              JobTracker.PlatformFilterLabel(new[] { ApplicationPlatform.Workday, ApplicationPlatform.Greenhouse }),
+              "two, in the fixed order whatever the tick order");
+        Equal("3 platforms",
+              JobTracker.PlatformFilterLabel(new[] { ApplicationPlatform.Unknown, ApplicationPlatform.Lever, ApplicationPlatform.Ashby }),
+              "three or more");
+        Equal("8 platforms", JobTracker.PlatformFilterLabel(JobTracker.PlatformFilterOrder.Skip(1).ToList()), "all but one");
+
+        // The badge and the filter share these display names.
+        Equal("Other", JobTracker.PlatformDisplayName(ApplicationPlatform.Other), "Other badge text");
+        Equal("SmartRecruiters", JobTracker.PlatformDisplayName(ApplicationPlatform.SmartRecruiters), "SmartRecruiters badge text");
+        foreach (var platform in JobTracker.PlatformFilterOrder)
+            Check(JobTracker.PlatformDisplayName(platform).Length > 0, platform + " has display text");
+    }
+
+    // ---------- readiness filter ----------
+
+    const string RfResume = @"C:\Resumes\Resume.docx";
+
+    static JobTask RfJob(string id, bool resume, string applyUrl, ApplicationPlatform platform = ApplicationPlatform.Unknown,
+                         string company = "Acme", string status = ApplicationStatus.Viewed, DateTime? created = null) {
+        var job = PlatformJob(id, platform, status, company, "Engineer", created);
+        job.ResumePath = resume ? RfResume : "";
+        job.ApplyUrl = applyUrl;
+        return job;
+    }
+
+    static List<JobTask> ReadinessSet() => new() {
+        RfJob("R-READY", true, "https://jobs.lever.co/acme/1"),
+        RfJob("R-LINK", true, ""),
+        RfJob("R-BAD", true, "javascript:alert(1)"),          // an unusable link still needs one
+        RfJob("R-RESUME", false, "https://jobs.lever.co/acme/2"),
+        RfJob("R-NONE", false, ""),
+    };
+
+    static void ReadinessFilterSingleStates() {
+        var tasks = ReadinessSet();
+        Equal("R-READY", Ids(JobTracker.ApplyFilters(tasks, null, null, null, readiness: new[] { ApplicationReadiness.ReadyToApply })), "ready to apply");
+        Equal("R-LINK,R-BAD", Ids(JobTracker.ApplyFilters(tasks, null, null, null, readiness: new[] { ApplicationReadiness.NeedsApplyLink })), "needs apply link");
+        Equal("R-RESUME,R-NONE", Ids(JobTracker.ApplyFilters(tasks, null, null, null, readiness: new[] { ApplicationReadiness.NeedsResume })), "needs resume");
+
+        Equal(5, JobTracker.ApplyFilters(tasks, null, null, null).Count, "parameter left out");
+        Equal(5, JobTracker.ApplyFilters(tasks, null, null, null, readiness: null).Count, "null");
+        Equal(5, JobTracker.ApplyFilters(tasks, null, null, null, readiness: new HashSet<ApplicationReadiness>()).Count, "empty");
+        Equal(5, JobTracker.ApplyFilters(tasks, null, null, null, readiness: JobTracker.ReadinessFilterOrder.ToList()).Count, "all three");
+
+        // Evaluated now, never stored: gaining a resume moves a job between states.
+        tasks[1].ResumePath = "";
+        Equal("R-LINK,R-RESUME,R-NONE",
+              Ids(JobTracker.ApplyFilters(tasks, null, null, null, readiness: new[] { ApplicationReadiness.NeedsResume })),
+              "readiness follows the job's current data");
+    }
+
+    static void ReadinessFilterOrMatching() {
+        var tasks = ReadinessSet();
+        Equal("R-READY,R-LINK,R-BAD",
+              Ids(JobTracker.ApplyFilters(tasks, null, null, null,
+                  readiness: new HashSet<ApplicationReadiness> { ApplicationReadiness.NeedsApplyLink, ApplicationReadiness.ReadyToApply })),
+              "ready OR needs link, in list order");
+        Equal("R-READY,R-RESUME,R-NONE",
+              Ids(JobTracker.ApplyFilters(tasks, null, null, null,
+                  readiness: new[] { ApplicationReadiness.NeedsResume, ApplicationReadiness.ReadyToApply })),
+              "ready OR needs resume");
+    }
+
+    static void ReadinessFilterCombined() {
+        var now = new DateTime(2026, 9, 18, 12, 0, 0);
+        var tasks = new List<JobTask> {
+            RfJob("X-1", true, "https://jobs.lever.co/a/1", ApplicationPlatform.Lever, "Caterpillar", ApplicationStatus.Ready, now),
+            RfJob("X-2", true, "https://boards.greenhouse.io/b/1", ApplicationPlatform.Greenhouse, "Stripe", ApplicationStatus.Ready, now),
+            RfJob("X-3", true, "", ApplicationPlatform.Unknown, "Caterpillar", ApplicationStatus.Ready, now),
+            RfJob("X-4", true, "https://jobs.lever.co/a/2", ApplicationPlatform.Lever, "Caterpillar", ApplicationStatus.Applied, now.AddDays(-20)),
+            RfJob("X-5", false, "https://jobs.lever.co/a/3", ApplicationPlatform.Lever, "Caterpillar", ApplicationStatus.Viewed, now),
+        };
+        var ready = new[] { ApplicationReadiness.ReadyToApply };
+
+        Equal("X-1,X-2,X-4", Ids(JobTracker.ApplyFilters(tasks, null, null, null, now, null, null, ready)), "readiness alone");
+        Equal("X-1,X-2", Ids(JobTracker.ApplyFilters(tasks, null, ApplicationStatus.Ready, null, now, null, null, ready)), "AND status");
+        Equal("X-1,X-4", Ids(JobTracker.ApplyFilters(tasks, "caterpillar", null, null, now, null, null, ready)), "AND search");
+        Equal("X-1,X-4", Ids(JobTracker.ApplyFilters(tasks, null, null, null, now, null, new[] { ApplicationPlatform.Lever }, ready)), "AND platform");
+        Equal("X-1,X-2", Ids(JobTracker.ApplyFilters(tasks, null, null, DateFilter.Last7, now, null, null, ready)), "AND date range");
+        Equal("X-4", Ids(JobTracker.ApplyFilters(tasks, null, null, DateFilter.AllDates, now, now.AddDays(-20).Date, null, ready)), "AND exact day");
+        Equal("X-1", Ids(JobTracker.ApplyFilters(tasks, "caterpillar", ApplicationStatus.Ready, DateFilter.Last7, now, null,
+                                                 new[] { ApplicationPlatform.Lever, ApplicationPlatform.Greenhouse }, ready)), "all five together");
+
+        // List and Board come from the same filtered list.
+        var filtered = JobTracker.ApplyFilters(tasks, null, null, null, now, null, null,
+                                               new[] { ApplicationReadiness.ReadyToApply, ApplicationReadiness.NeedsApplyLink });
+        var board = ApplicationStatus.Ordered.SelectMany(s => JobTracker.GetTasksByStatus(filtered, s)).Select(t => t.JobId).OrderBy(x => x);
+        Equal(string.Join(",", filtered.Select(t => t.JobId).OrderBy(x => x)), string.Join(",", board), "Board shows exactly the List's jobs");
+        Equal("X-1,X-2,X-3,X-4", string.Join(",", board), "and they are the right ones");
+
+        // Filtering changes nothing on a task.
+        Equal(ApplicationStatus.Ready, tasks[0].ApplicationStatus, "status untouched");
+        Equal(RfResume, tasks[0].ResumePath, "resume untouched");
+    }
+
+    static void CountReadyToApplyMatchesFilter() {
+        Equal(0, JobTracker.CountReadyToApply(new List<JobTask>()), "no jobs");
+        Equal(0, JobTracker.CountReadyToApply(null!), "null list");
+
+        var tasks = ReadinessSet();                             // 1 ready, 2 need a link, 2 need a resume
+        Equal(1, JobTracker.CountReadyToApply(tasks), "one ready to apply");
+
+        // Every application status counts alike: readiness ignores status, as the filter does.
+        var statuses = new List<JobTask>();
+        foreach (var status in ApplicationStatus.Ordered)
+            statuses.Add(RfJob("S-" + status, true, "https://jobs.lever.co/acme/" + status, status: status));
+        statuses.Add(RfJob("S-NOLINK", true, ""));
+        Equal(5, JobTracker.CountReadyToApply(statuses), "ready at every status, not the one without a link");
+
+        foreach (var set in new[] { tasks, statuses }) {
+            var shown = JobTracker.ApplyFilters(set, null, null, null, readiness: new[] { ApplicationReadiness.ReadyToApply });
+            Equal(JobTracker.CountReadyToApply(set), shown.Count, "card count == Readiness filter result");
+        }
+
+        // Computed now: gaining a link or losing a resume changes the count; nothing is stored.
+        tasks[1].ApplyUrl = "https://jobs.lever.co/acme/new";
+        Equal(2, JobTracker.CountReadyToApply(tasks), "a new link makes a job ready");
+        tasks[0].ResumePath = "";
+        Equal(1, JobTracker.CountReadyToApply(tasks), "no resume, not ready");
+    }
+
+    /// <summary>Ready to apply (resume + link) at each application status, plus two that are not ready.</summary>
+    static List<JobTask> ActionQueueSet() {
+        var tasks = ApplicationStatus.Ordered
+            .Select(status => RfJob("AQ-" + status, true, "https://jobs.lever.co/acme/" + status, status: status)).ToList();
+        tasks.Add(RfJob("AQ-NOLINK", true, ""));                            // Viewed, needs a link
+        tasks.Add(RfJob("AQ-NORESUME", false, "https://jobs.lever.co/acme/x"));   // Viewed, needs a resume
+        return tasks;
+    }
+
+    static void NeedsActionRule() {
+        foreach (var job in ActionQueueSet()) {
+            var ready = JobTracker.GetReadiness(job) == ApplicationReadiness.ReadyToApply;
+            var notApplied = job.ApplicationStatus is ApplicationStatus.Viewed or ApplicationStatus.Ready;
+            Equal(ready && notApplied, JobTracker.NeedsAction(job), $"{job.JobId} ({job.ApplicationStatus})");
+        }
+
+        // Exactly the two early stages, and only when ready.
+        var set = ActionQueueSet();
+        Equal("AQ-Viewed,AQ-Ready", string.Join(",", set.Where(JobTracker.NeedsAction).Select(t => t.JobId)), "the action queue");
+        Equal(2, JobTracker.CountNeedsAction(set), "count");
+        Equal(0, JobTracker.CountNeedsAction(new List<JobTask>()), "no jobs");
+        Equal(0, JobTracker.CountNeedsAction(null!), "null list");
+
+        // Readiness itself is untouched by status: all five stages stay ReadyToApply.
+        Equal(5, JobTracker.CountReadyToApply(set), "CountReadyToApply still ignores status");
+    }
+
+    static void NotAppliedYetGroupFilter() {
+        const string group = ApplicationStatus.Filter.NotAppliedYet;
+        var set = ActionQueueSet();
+
+        Equal("AQ-Viewed,AQ-Ready,AQ-NOLINK,AQ-NORESUME",
+              Ids(JobTracker.GetTasksByStatus(set, group)), "Viewed and Ready only, ready or not");
+        Check(ApplicationStatus.Filter.IsGroup(group) && ApplicationStatus.Filter.IsGroup(" not applied YET "), "recognised, trimmed and case-insensitive");
+        Check(!ApplicationStatus.Filter.IsGroup(ApplicationStatus.All) && !ApplicationStatus.Filter.IsGroup(ApplicationStatus.Viewed), "a real status is not the group");
+
+        // It is a filter value only: never stored, never produced by Normalize, never written by UpdateStatus.
+        Equal(ApplicationStatus.Viewed, ApplicationStatus.Normalize(group), "Normalize never returns the group");
+        Check(!ApplicationStatus.Ordered.Contains(group), "not a real status");
+        Check(!ApplicationStatus.Filters.Contains(group), "the original filter list is untouched");
+        var job = RfJob("AQ-WRITE", true, "https://jobs.lever.co/acme/1", status: ApplicationStatus.Ready);
+        Check(!JobTracker.UpdateStatus(job, group), "UpdateStatus refuses the group");
+        Equal(ApplicationStatus.Ready, job.ApplicationStatus, "and stores nothing");
+
+        // Every existing status filter behaves exactly as before.
+        Equal(7, ApplicationStatus.Filter.Options.Length, "All + the group + five statuses");
+        Equal(6, ApplicationStatus.Filters.Length, "the pre-existing filter list is unchanged");
+        Equal(5, ApplicationStatus.Ordered.Length, "Ordered is unchanged");
+        Equal(set.Count, JobTracker.GetTasksByStatus(set, ApplicationStatus.All).Count, "All");
+        foreach (var status in ApplicationStatus.Ordered)
+            Equal(set.Count(t => t.ApplicationStatus == status), JobTracker.GetTasksByStatus(set, status).Count, "filter " + status);
+
+        // The pipeline and the statistics still see the five real stages only.
+        var stages = JobTracker.GetPipelineCounts(set);
+        Equal("Viewed,Ready,Applied,Interview,Done", string.Join(",", stages.Select(s => s.Status)), "pipeline stages");
+        Equal(set.Count, stages.Sum(s => s.Count), "every job in exactly one stage");
+        var stats = JobTracker.GetStatistics(set);
+        Equal(set.Count, stats.Total, "statistics total");
+        Equal(3, stats.Viewed, "statistics count real statuses only");
+    }
+
+    static void ActionQueueCardMatchesItsFilters() {
+        foreach (var set in new[] { ActionQueueSet(), ReadinessSet(), new List<JobTask>() }) {
+            var shown = JobTracker.ApplyFilters(set, null, ApplicationStatus.Filter.NotAppliedYet, null,
+                                                readiness: new[] { ApplicationReadiness.ReadyToApply });
+            Equal(JobTracker.CountNeedsAction(set), shown.Count, "card count == the card's own filters");
+            Check(shown.All(JobTracker.NeedsAction), "and every shown job needs action");
+        }
+
+        // The Readiness filter on its own is unchanged: it still shows applied jobs too.
+        var tasks = ActionQueueSet();
+        Equal(5, JobTracker.ApplyFilters(tasks, null, null, null, readiness: new[] { ApplicationReadiness.ReadyToApply }).Count,
+              "readiness filter alone ignores status");
+    }
+
+    static void MarkAppliedLeavesActionQueue() {
+        var applied = new DateTime(2026, 9, 19, 9, 30, 0);
+        var tasks = ActionQueueSet();
+        var job = tasks.Single(t => t.JobId == "AQ-Ready");
+        var before = JobTracker.CountNeedsAction(tasks);
+
+        Check(JobTracker.NeedsAction(job), "in the queue first");
+        Check(JobTracker.MarkApplied(job, applied), "marked applied");
+
+        Equal(before - 1, JobTracker.CountNeedsAction(tasks), "the count drops by one");
+        Check(!JobTracker.NeedsAction(job), "the job leaves the queue");
+        Check(!JobTracker.ApplyFilters(tasks, null, ApplicationStatus.Filter.NotAppliedYet, null,
+                                       readiness: new[] { ApplicationReadiness.ReadyToApply }).Contains(job),
+              "and leaves the card's list");
+
+        // What must NOT change.
+        Equal(ApplicationReadiness.ReadyToApply, JobTracker.GetReadiness(job), "readiness stays ReadyToApply");
+        Equal("Ready to apply", job.ReadinessDisplay, "and so does its text");
+        Equal("Queued", job.Status, "queue status untouched");
+        Equal(applied, job.AppliedAt, "AppliedAt stamped once");
+        Check(JobTracker.ApplyFilters(tasks, null, null, null, readiness: new[] { ApplicationReadiness.ReadyToApply }).Contains(job),
+              "the readiness filter alone still shows it");
+
+        // A second Mark Applied changes nothing, including the timestamp.
+        Check(!JobTracker.MarkApplied(job, applied.AddDays(1)), "already applied");
+        Equal(applied, job.AppliedAt, "AppliedAt is never rewritten");
+        Equal(before - 1, JobTracker.CountNeedsAction(tasks), "count unchanged by the second click");
+    }
+
+    static void ReadinessFilterLabelAndOrder() {
+        Equal("ReadyToApply,NeedsApplyLink,NeedsResume", string.Join(",", JobTracker.ReadinessFilterOrder), "explicit order");
+        Equal(Enum.GetValues<ApplicationReadiness>().Length, JobTracker.ReadinessFilterOrder.Count, "every state is a choice");
+        Equal(JobTracker.ReadinessFilterOrder.Count, JobTracker.ReadinessFilterOrder.Distinct().Count(), "no state twice");
+
+        Equal("All readiness", JobTracker.ReadinessFilterLabel(null), "null");
+        Equal("All readiness", JobTracker.ReadinessFilterLabel(new HashSet<ApplicationReadiness>()), "nothing ticked");
+        Equal("All readiness", JobTracker.ReadinessFilterLabel(JobTracker.ReadinessFilterOrder.ToList()), "all three ticked");
+        Equal("Ready to apply", JobTracker.ReadinessFilterLabel(new[] { ApplicationReadiness.ReadyToApply }), "one");
+        Equal("Ready to apply, Needs apply link",
+              JobTracker.ReadinessFilterLabel(new[] { ApplicationReadiness.NeedsApplyLink, ApplicationReadiness.ReadyToApply }),
+              "two, in the fixed order whatever the tick order");
+        Equal("Needs apply link, Needs resume",
+              JobTracker.ReadinessFilterLabel(new[] { ApplicationReadiness.NeedsResume, ApplicationReadiness.NeedsApplyLink }), "another pair");
+
+        // The shared helper directly: its "N noun" branch, which three states never reach.
+        var order = new[] { "a", "b", "c", "d" };
+        Equal("3 things", JobTracker.MultiSelectLabel(new[] { "a", "c", "d" }, order, s => s.ToUpperInvariant(), "All", "things"), "N noun");
+        Equal("A, C", JobTracker.MultiSelectLabel(new[] { "c", "a" }, order, s => s.ToUpperInvariant(), "All", "things"), "names via displayName");
+        Equal("All", JobTracker.MultiSelectLabel(order, order, s => s, "All", "things"), "every choice");
+    }
+
+    // ---------- apply link discovered at import ----------
+
+    static string PayloadWithLinks(string? applyLink, string? originalUrl) => ScriptResultWith(p => {
+        var next = p["next"]!.AsObject();
+        next["applyLink"] = applyLink is null ? null : JsonValue.Create(applyLink);
+        next["originalUrl"] = originalUrl is null ? null : JsonValue.Create(originalUrl);
+    });
+
+    static void ExtractorReadsApplyLink() {
+        // The script asks for exactly these two named fields, from the same page-data object.
+        Check(JobrightPageExtractor.ReadScript.Contains("applyLink: typeof j.applyLink === 'string'"), "script reads applyLink");
+        Check(JobrightPageExtractor.ReadScript.Contains("originalUrl: typeof j.originalUrl === 'string'"), "script reads originalUrl");
+
+        Equal("https://app.dover.com/apply/Cogniify/1e3fc78f?jr_id=6aada17f",
+              JobrightPageExtractor.Parse(PayloadWithLinks("https://app.dover.com/apply/Cogniify/1e3fc78f?jr_id=6aada17f",
+                                                           "https://boards.greenhouse.io/other/jobs/1")).ApplyUrl,
+              "applyLink wins, as on Jobright's own Apply button");
+        Equal("https://boards.greenhouse.io/acme/jobs/7",
+              JobrightPageExtractor.Parse(PayloadWithLinks(null, "https://boards.greenhouse.io/acme/jobs/7")).ApplyUrl,
+              "originalUrl when applyLink is absent");
+        Equal("https://jobs.lever.co/acme/9",
+              JobrightPageExtractor.Parse(PayloadWithLinks("https://jobright.ai/redirect/9", "https://jobs.lever.co/acme/9")).ApplyUrl,
+              "originalUrl when applyLink is not an application address");
+
+        // Stale page data (another job's) is not used, so its link is not either.
+        var stale = JobrightPageExtractor.Parse(ScriptResultWith(p => {
+            p["next"]!["jobId"] = "aaaaaaaaaaaaaaaaaaaaaaaa";
+            p["next"]!["applyLink"] = "https://jobs.lever.co/someone-else/1";
+        }));
+        Check(stale.ApplyUrl is null, "a link from stale page data is never attributed to this job");
+    }
+
+    static void ExtractorApplyLinkMissingOrInvalid() {
+        Check(JobrightPageExtractor.Parse(ScriptResult()).ApplyUrl is null, "signed-out shape: no link fields at all");
+        Check(JobrightPageExtractor.Parse(ScriptResult("jobright-page-payload-no-jsonld.json")).ApplyUrl is null, "no link fields, no JSON-LD");
+        Check(JobrightPageExtractor.Parse(PayloadWithLinks("", "")).ApplyUrl is null, "empty strings");
+        foreach (var bad in new[] { "javascript:alert(1)", "file:///C:/x.html", "/apply/1", "not a url",
+                                    "https://jobright.ai/jobs/info/6aac7fec95c707f49dff195f", "https://www.linkedin.com/company/1028" })
+            Check(JobrightPageExtractor.Parse(PayloadWithLinks(bad, bad)).ApplyUrl is null, "refused: " + bad);
+        Equal("ClearlyRated", JobrightPageExtractor.Parse(PayloadWithLinks("javascript:alert(1)", null)).Company,
+              "a bad link never stops the job being read");
+    }
+
+    static JobImportData ImportData(string url, string? applyUrl) => new() {
+        Company = "Cogniify", Title = "Senior Generative AI Engineer", JobUrl = url,
+        Description = "Build things.", ApplyUrl = applyUrl
+    };
+
+    static void ImportRecordsApplyUrl() => WithLiveTasksFile(() => {
+        var tasks = new List<JobTask>();
+        var before = DateTime.Now;
+        var outcome = JobImporter.ImportOne(ImportData("https://jobright.ai/jobs/info/6aada17fde327d3e210d3913",
+                                                       "https://app.dover.com/apply/Cogniify/1e3fc78f?utm_source=jr"),
+                                            JobImporter.BrowserSource, tasks);
+        Equal(JobImportKind.Imported, outcome.Kind, "imported");
+        Check(outcome.ApplyUrlRecorded, "the outcome says a link was recorded");
+        var task = tasks.Single();
+        Equal("https://app.dover.com/apply/Cogniify/1e3fc78f", task.ApplyUrl, "saved, normalized (tracking dropped)");
+        Check(task.ApplyUrlCapturedAt is DateTime at && at >= before, "capture time stamped");
+        Equal(ApplicationPlatform.Other, task.ApplicationPlatform, "Dover is detected as Other");
+        Equal("https://jobright.ai/jobs/info/6aada17fde327d3e210d3913", task.Link, "Link keeps the Jobright posting");
+
+        // Recognised platforms are detected at import too.
+        var gh = JobImporter.ImportOne(ImportData("https://jobright.ai/jobs/info/6aac7fec95c707f49dff195f",
+                                                  "https://boards.greenhouse.io/acme/jobs/7"), JobImporter.BrowserSource, tasks);
+        Equal(ApplicationPlatform.Greenhouse, tasks.Single(t => t.JobId == gh.JobId).ApplicationPlatform, "Greenhouse detected at import");
+
+        // And it is all in the saved file.
+        var saved = Storage.LoadTasks().Single(t => t.JobId == outcome.JobId);
+        Equal(task.ApplyUrl, saved.ApplyUrl, "ApplyUrl saved");
+        Equal(ApplicationPlatform.Other, saved.ApplicationPlatform, "platform saved");
+        Check(saved.ApplyUrlCapturedAt is not null, "time saved");
+    });
+
+    static void ImportWithoutApplyUrl() => WithLiveTasksFile(() => {
+        var tasks = new List<JobTask>();
+        foreach (var (i, link) in new[] { null, "", "javascript:alert(1)", "https://jobright.ai/jobs/info/abc", "not a url" }.Select((l, i) => (i, l))) {
+            var outcome = JobImporter.ImportOne(ImportData($"https://example.com/job/{i}", link), JobImporter.IncomingSource, tasks);
+            Equal(JobImportKind.Imported, outcome.Kind, $"imported despite link '{link}'");
+            Check(!outcome.ApplyUrlRecorded, "nothing recorded");
+            var task = tasks.Last();
+            Equal("", task.ApplyUrl, "ApplyUrl stays empty");
+            Check(task.ApplyUrlCapturedAt is null, "no capture time");
+            Equal(ApplicationPlatform.Unknown, task.ApplicationPlatform, "platform Unknown");
+        }
+
+        // An Incoming file written before applyUrl existed still deserializes and imports.
+        var old = JsonSerializer.Deserialize<JobImportData>(
+            """{ "company": "Acme", "title": "Engineer", "jobUrl": "https://example.com/job/old", "description": "x" }""")!;
+        Check(old.ApplyUrl is null, "older input has no applyUrl");
+        Equal(JobImportKind.Imported, JobImporter.ImportOne(old, JobImporter.IncomingSource, tasks).Kind, "older input imports");
+    });
+
+    static void ImportFillsOnlyEmptyApplyUrl() => WithLiveTasksFile(() => {
+        const string page = "https://jobright.ai/jobs/info/6aada17fde327d3e210d3913";
+        var capturedAt = new DateTime(2026, 9, 18, 14, 35, 43);
+
+        // Already has a link (e.g. from an Apply click): a re-import never replaces it.
+        var existing = Job("RB-KEEP", "Cogniify", "Engineer", page);
+        existing.ApplyUrl = "https://app.dover.com/apply/Cogniify/original";
+        existing.ApplyUrlCapturedAt = capturedAt;
+        existing.ApplicationPlatform = ApplicationPlatform.Other;
+        var tasks = new List<JobTask> { existing };
+        var outcome = JobImporter.ImportOne(ImportData(page, "https://boards.greenhouse.io/acme/jobs/7"), JobImporter.BrowserSource, tasks);
+        Equal(JobImportKind.Duplicate, outcome.Kind, "still a duplicate");
+        Check(!outcome.ApplyUrlRecorded, "nothing recorded");
+        Equal("https://app.dover.com/apply/Cogniify/original", existing.ApplyUrl, "ApplyUrl not overwritten");
+        Equal(capturedAt, existing.ApplyUrlCapturedAt, "capture time not overwritten");
+        Equal(ApplicationPlatform.Other, existing.ApplicationPlatform, "platform not overwritten");
+        Equal(1, tasks.Count, "no task added");
+
+        // Has no link yet: the re-import fills it, and saves.
+        var empty = Job("RB-FILL", "Acme", "Engineer", "https://jobright.ai/jobs/info/6aac7fec95c707f49dff195f");
+        empty.ApplicationStatus = ApplicationStatus.Applied;
+        tasks = new List<JobTask> { empty };
+        outcome = JobImporter.ImportOne(ImportData(empty.Link, "https://jobs.lever.co/acme/1"), JobImporter.BrowserSource, tasks);
+        Equal(JobImportKind.Duplicate, outcome.Kind, "duplicate");
+        Check(outcome.ApplyUrlRecorded, "the empty link was filled");
+        Equal("https://jobs.lever.co/acme/1", empty.ApplyUrl, "filled");
+        Equal(ApplicationPlatform.Lever, empty.ApplicationPlatform, "platform detected");
+        Equal(ApplicationStatus.Applied, empty.ApplicationStatus, "application status untouched");
+        Equal("https://jobs.lever.co/acme/1", Storage.LoadTasks().Single().ApplyUrl, "and saved");
+
+        // A duplicate with no usable link changes and saves nothing.
+        File.Delete(Storage.TasksPath);
+        var none = Job("RB-NONE", "Acme", "Engineer", "https://jobright.ai/jobs/info/bbbbbbbbbbbbbbbbbbbbbbbb");
+        JobImporter.ImportOne(ImportData(none.Link, "javascript:alert(1)"), JobImporter.BrowserSource, new List<JobTask> { none });
+        Equal("", none.ApplyUrl, "still empty");
+        Check(!File.Exists(Storage.TasksPath), "a duplicate with nothing new is not saved");
+    });
+
+    // ---------- application platform detection ----------
+
+    static void PlatformIs(ApplicationPlatform expected, string? url) =>
+        Equal(expected, ApplicationPlatformDetector.Detect(url), url ?? "null");
+
+    static void PlatformMatching() {
+        PlatformIs(ApplicationPlatform.Greenhouse, "https://boards.greenhouse.io/company/jobs/12345");
+        PlatformIs(ApplicationPlatform.Greenhouse, "https://job-boards.greenhouse.io/company/jobs/12345");
+        PlatformIs(ApplicationPlatform.Greenhouse, "https://boards.eu.greenhouse.io/company/jobs/12345");
+        PlatformIs(ApplicationPlatform.Workday, "https://company.wd5.myworkdayjobs.com/job/12345");
+        PlatformIs(ApplicationPlatform.Workday, "https://COMPANY.WD1.MYWORKDAYJOBS.COM/en-US/External/job/X_R1");
+        PlatformIs(ApplicationPlatform.Workday, "https://wd3.myworkdaysite.com/recruiting/company/External/job/1");
+        PlatformIs(ApplicationPlatform.Lever, "https://jobs.lever.co/company/12345");
+        PlatformIs(ApplicationPlatform.Lever, "https://jobs.eu.lever.co/company/12345/apply");
+        PlatformIs(ApplicationPlatform.LinkedIn, "https://www.linkedin.com/jobs/view/12345");
+        PlatformIs(ApplicationPlatform.Ashby, "https://jobs.ashbyhq.com/company/12345");
+        PlatformIs(ApplicationPlatform.SmartRecruiters, "https://jobs.smartrecruiters.com/Company/12345-engineer");
+        PlatformIs(ApplicationPlatform.ICims, "https://careers-company.icims.com/jobs/12345/engineer/job");
+        PlatformIs(ApplicationPlatform.Greenhouse, "http://boards.greenhouse.io/company/jobs/1");
+    }
+
+    static void PlatformLookAlikes() {
+        PlatformIs(ApplicationPlatform.Other, "https://notgreenhouse.io/company/jobs/1");
+        PlatformIs(ApplicationPlatform.Other, "https://greenhouse.io.evil.com/company/jobs/1");
+        PlatformIs(ApplicationPlatform.Other, "https://mylever.co/jobs/1");
+        PlatformIs(ApplicationPlatform.Other, "https://fakemyworkdayjobs.com/job/1");
+        PlatformIs(ApplicationPlatform.Other, "https://example.com/boards.greenhouse.io/jobs/1");
+        PlatformIs(ApplicationPlatform.Other, "https://example.com/apply?next=https://jobs.lever.co/x/1");
+        // LinkedIn counts only for its job postings.
+        PlatformIs(ApplicationPlatform.Other, "https://www.linkedin.com/company/1028");
+        PlatformIs(ApplicationPlatform.Other, "https://www.linkedin.com/in/someone/");
+    }
+
+    static void PlatformEmbeddedLinks() {
+        PlatformIs(ApplicationPlatform.Greenhouse, "https://careers.example.com/jobs?gh_jid=4012345");
+        PlatformIs(ApplicationPlatform.Greenhouse, "https://www.example.com/open-roles/?utm_source=x&GH_JID=7");
+        PlatformIs(ApplicationPlatform.Ashby, "https://example.com/careers?ashby_jid=5b1c-22");
+        // A parameter that only contains the name is not the embed id.
+        PlatformIs(ApplicationPlatform.Other, "https://example.com/careers?not_gh_jid=1");
+        PlatformIs(ApplicationPlatform.Other, "https://example.com/careers#gh_jid=1");
+    }
+
+    static void PlatformMissingOrUnknown() {
+        foreach (var missing in new[] { null, "", "   ", "not a url", "/jobs/1", "about:blank", "mailto:jobs@x.com", "ftp://jobs.lever.co/x" })
+            PlatformIs(ApplicationPlatform.Unknown, missing);
+        PlatformIs(ApplicationPlatform.Other, "https://careers.oracle.com/jobs/12345");
+        PlatformIs(ApplicationPlatform.Other, "https://example.com/");
+        Equal(ApplicationPlatform.Unknown, new JobTask().ApplicationPlatform, "a new task starts Unknown");
+    }
+
+    static void PlatformTolerantLoading() => WithLiveTasksFile(() => {
+        Directory.CreateDirectory(Storage.DataDir);
+        File.WriteAllText(Storage.TasksPath, """
+        [
+          { "JobId": "P-1", "ApplicationPlatform": "Greenhouse" },
+          { "JobId": "P-2", "ApplicationPlatform": "greenhouse" },
+          { "JobId": "P-3", "ApplicationPlatform": "Taleo" },
+          { "JobId": "P-4", "ApplicationPlatform": null },
+          { "JobId": "P-5", "ApplicationPlatform": 999 },
+          { "JobId": "P-6", "ApplicationPlatform": 2 },
+          { "JobId": "P-7", "ApplicationPlatform": "3" },
+          { "JobId": "P-8", "ApplicationPlatform": { "name": "Lever" } },
+          { "JobId": "P-9", "ApplicationPlatform": [ "Lever" ] },
+          { "JobId": "P-10", "ApplicationPlatform": "" }
+        ]
+        """);
+
+        var tasks = Storage.LoadTasks();
+        Equal(10, tasks.Count, "no task is lost to an unreadable platform");
+        Equal(ApplicationPlatform.Greenhouse, tasks[0].ApplicationPlatform, "a known name");
+        Equal(ApplicationPlatform.Greenhouse, tasks[1].ApplicationPlatform, "case does not matter");
+        Equal(ApplicationPlatform.Unknown, tasks[2].ApplicationPlatform, "a name this version does not know");
+        Equal(ApplicationPlatform.Unknown, tasks[3].ApplicationPlatform, "null");
+        Equal(ApplicationPlatform.Unknown, tasks[4].ApplicationPlatform, "an out-of-range number");
+        Equal(ApplicationPlatform.Workday, tasks[5].ApplicationPlatform, "a defined number");
+        Equal(ApplicationPlatform.Unknown, tasks[6].ApplicationPlatform, "a number written as text");
+        Equal(ApplicationPlatform.Unknown, tasks[7].ApplicationPlatform, "an object");
+        Equal(ApplicationPlatform.Unknown, tasks[8].ApplicationPlatform, "an array");
+        Equal(ApplicationPlatform.Unknown, tasks[9].ApplicationPlatform, "empty text");
+        Equal("P-10", tasks[9].JobId, "reading continues correctly after skipped values");
+    });
+
+    static void PlatformSaveReload() => WithLiveTasksFile(() => {
+        var captured = Job("RB-PLAT-1", "Oracle", "ML Engineer", ApplyJobPage);
+        captured.ApplyUrl = "https://jobs.lever.co/oracle/1";
+        captured.ApplicationPlatform = ApplicationPlatform.Lever;
+        Storage.SaveTasks(new[] { captured, Job("RB-PLAT-2") });
+
+        var text = File.ReadAllText(Storage.TasksPath);
+        Check(text.Contains("\"ApplicationPlatform\": \"Lever\""), "stored as the name, not a number");
+
+        var reloaded = Storage.LoadTasks();
+        Equal(ApplicationPlatform.Lever, reloaded[0].ApplicationPlatform, "platform survived");
+        Equal("https://jobs.lever.co/oracle/1", reloaded[0].ApplyUrl, "ApplyUrl survived");
+        Equal(ApplicationPlatform.Unknown, reloaded[1].ApplicationPlatform, "an uncaptured task stays Unknown");
+
+        // The shape tasks.json had before the platform existed.
+        File.WriteAllText(Storage.TasksPath, $$"""
+        [ { "JobId": "RB-OLD-P", "Link": "{{ApplyJobPage}}", "ApplyUrl": "https://boards.greenhouse.io/o/jobs/1",
+            "ApplyUrlCapturedAt": "2026-09-18T14:00:00", "Status": "Completed" },
+          { "JobId": "RB-OLD-Q", "Status": "Queued" } ]
+        """);
+        var older = Storage.LoadTasks();
+        Equal(2, older.Count, "older tasks load");
+        Equal(ApplicationPlatform.Unknown, older[0].ApplicationPlatform, "no stored platform reads as Unknown");
+        Equal("https://boards.greenhouse.io/o/jobs/1", older[0].ApplyUrl, "its ApplyUrl is kept");
+        Equal(ApplicationPlatform.Unknown, older[1].ApplicationPlatform, "no ApplyUrl, Unknown");
+    });
+
+    static void PlatformDerivedFromApplyUrl() {
+        var now = new DateTime(2026, 9, 18, 16, 0, 0);
+        var job = Job("RB-DER-1", "Oracle", "ML Engineer", ApplyJobPage);
+        var tasks = new List<JobTask> { job };
+
+        ApplyCapture.Record(tasks, ApplyJobPage, "https://jobs.ashbyhq.com/oracle/1", now);
+        Equal(ApplicationPlatform.Ashby, job.ApplicationPlatform, "capture detects the platform");
+
+        ApplyCapture.Record(tasks, ApplyJobPage, "https://careers.oracle.com/jobs/2", now);
+        Equal(ApplicationPlatform.Other, job.ApplicationPlatform, "a replaced address re-detects");
+
+        // An unknown job and a refused address leave the platform alone.
+        ApplyCapture.Record(tasks, ApplyJobPage, "https://www.linkedin.com/in/someone/", now);
+        Equal(ApplicationPlatform.Other, job.ApplicationPlatform, "a refused address changes nothing");
+
+        // Startup refresh: a task loaded with an ApplyUrl but no platform gets one; the rest are untouched.
+        var loaded = Job("RB-DER-2"); loaded.ApplyUrl = "https://boards.greenhouse.io/x/jobs/1";
+        var stale = Job("RB-DER-3"); stale.ApplyUrl = "https://jobs.lever.co/x/1"; stale.ApplicationPlatform = ApplicationPlatform.Workday;
+        var none = Job("RB-DER-4");
+        var set = new List<JobTask> { loaded, stale, none };
+
+        Equal(2, ApplicationPlatformDetector.Refresh(set), "two tasks needed a platform");
+        Equal(ApplicationPlatform.Greenhouse, loaded.ApplicationPlatform, "filled in");
+        Equal(ApplicationPlatform.Lever, stale.ApplicationPlatform, "corrected from its ApplyUrl");
+        Equal(ApplicationPlatform.Unknown, none.ApplicationPlatform, "no ApplyUrl stays Unknown");
+        Equal(0, ApplicationPlatformDetector.Refresh(set), "a second refresh changes nothing (no needless save)");
+    }
+
+    // ---------- critical pipeline (isolated component chain) ----------
+
+    /// <summary>
+    /// The production path without ChatGPT or Jobright: ImportOne → Prepare → ResultCapture.Accept →
+    /// ResumeGenerator → MarkResumeReady. Uses temp ResumeRoot and restores anything written under
+    /// the live DataDir (tasks, prepared-request, results\&lt;id&gt;.*).
+    /// </summary>
+    static void CriticalPipelineChain() => WithTasksFileRestored(() => WithPreparedFiles(() => {
+        var tasks = new List<JobTask>();
+        var jobUrl = "https://example.com/sample/e2e-pipeline/" + Guid.NewGuid().ToString("N");
+        var outcome = JobImporter.ImportOne(new JobImportData {
+            Company = "Pipeline Test Co",
+            Title = "Senior Validation Engineer",
+            JobUrl = jobUrl,
+            CompanyUrl = "https://example.com/",
+            Description = "Validate the Resume Builder end-to-end document path."
+        }, JobImporter.BrowserSource, tasks);
+
+        Equal(JobImportKind.Imported, outcome.Kind, "import succeeded");
+        var job = tasks.Single();
+        Equal("Queued", job.Status, "new job is Queued");
+        Equal(ApplicationStatus.Viewed, job.ApplicationStatus, "new job is Viewed");
+
+        // Clean any leftover result files for this id after the run.
+        var resultArtifacts = new[] {
+            ProfileResultStore.ResultPath(job.JobId),
+            ProfileResultStore.RawPath(job.JobId),
+            ProfileResultStore.DocGenLogPath(job.JobId),
+            ProfileResultStore.EffectiveStylePath(job.JobId)
+        };
+        foreach (var p in resultArtifacts) if (File.Exists(p)) File.Delete(p);
+
+        try {
+            var prepared = RequestPreparation.Prepare(job, PromptSettings(PromptModes.Resume));
+            Equal(job.JobId, prepared.JobId, "prepared request is for this job");
+            Check(prepared.Text.Contains(job.Company, StringComparison.Ordinal), "prepared text names the company");
+            Check(prepared.Text.Contains(job.Title, StringComparison.Ordinal), "prepared text names the title");
+            Check(prepared.Text.Contains("===== COMPLETE JOB PAYLOAD =====", StringComparison.Ordinal), "payload section present");
+            Check(File.Exists(RequestPreparation.PreparedPath), "prepared-request.json written");
+
+            // Simulate a successful clipboard capture with a known-good profile fixture.
+            var answer = File.ReadAllText(Fixture("resume-prom-v4.12.json"));
+            Check(ResultCapture.ShouldCapture(answer), "fixture looks like a capturable profile");
+            var captured = ResultCapture.Accept(answer, job.JobId);
+            Check(captured.Saved, "capture saved: " + captured.Message);
+            Equal(ProfileResultStore.ResultPath(job.JobId), captured.TargetPath, "tailored result path");
+            Check(File.Exists(captured.TargetPath), "results\\<jobId>.json exists");
+            Check(!File.Exists(CandidateProfileStore.CandidateProfilePath) ||
+                  !File.ReadAllText(CandidateProfileStore.CandidateProfilePath).Equals(File.ReadAllText(captured.TargetPath), StringComparison.Ordinal),
+                  "baseline candidate-profile is not overwritten by a job result");
+
+            job.Status = "Completed";
+
+            var resumeRoot = NewDir("pipeline-resume-root");
+            var settings = PromptSettings(PromptModes.Resume);
+            settings.ResumeRootFolder = resumeRoot;
+            settings.Docx = true;
+            settings.Pdf = true;
+
+            var generation = ResumeGenerator.Generate(
+                job.Company, job.Title, captured.TargetPath, settings,
+                ProfileResultStore.EffectiveStylePath(job.JobId), job.JobId, job.Link);
+
+            Check(generation.DocxGenerated, "DOCX generated: " + (generation.DocxError ?? generation.FatalError ?? "ok"));
+            Check(generation.PdfGenerated, "PDF generated: " + (generation.PdfError ?? generation.FatalError ?? "ok"));
+            Check(File.Exists(generation.DocxPath!), "DOCX file on disk");
+            Check(File.Exists(generation.PdfPath!), "PDF file on disk");
+            Check(File.Exists(Path.Combine(generation.OutputFolder!, "resume-info.json")) ||
+                  Directory.GetFiles(generation.OutputFolder!, "resume-info*.json").Length > 0,
+                  "resume-info.json written");
+
+            // Content smoke: DOCX opens and carries candidate name from the fixture.
+            using (var doc = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(generation.DocxPath!, false)) {
+                var body = doc.MainDocumentPart?.Document?.Body?.InnerText ?? "";
+                Check(body.Contains("BILLY", StringComparison.OrdinalIgnoreCase) ||
+                      body.Contains("Billy", StringComparison.OrdinalIgnoreCase),
+                      "DOCX carries the fixture candidate name");
+            }
+
+            Check(JobTracker.MarkResumeReady(job, generation.DocxPath), "MarkResumeReady moves Viewed → Ready");
+            Equal(ApplicationStatus.Ready, job.ApplicationStatus, "application status is Ready");
+            Check(!string.IsNullOrWhiteSpace(job.ResumePath), "ResumePath recorded");
+            Equal("Completed", job.Status, "queue Status stays Completed");
+        }
+        finally {
+            foreach (var p in resultArtifacts) {
+                try { if (File.Exists(p)) File.Delete(p); } catch { }
+            }
+        }
+    }));
+
+    static void CaptureGateRefusals() {
+        Check(!ResultCapture.ShouldCapture(null), "null clipboard");
+        Check(!ResultCapture.ShouldCapture(""), "empty clipboard");
+        Check(!ResultCapture.ShouldCapture("hello world"), "plain text is not a profile");
+        Check(!ResultCapture.ShouldCapture("{ \"foo\": 1 }"), "unrelated JSON is not a profile");
+
+        var prepared = "===== COMPLETE JOB PAYLOAD =====\r\n" + new string('x', 80);
+        Check(PromptEchoGuard.IsEchoOfPrompt(prepared, prepared), "verbatim prompt echo is refused");
+        Check(!PromptEchoGuard.IsEchoOfPrompt("{\"info\":{},\"summary\":\"A real answer with enough length here.\"}", prepared),
+              "a real answer is not treated as an echo");
+
+        // Invalid shape that looks like a failed attempt: kept as raw, never saved as profile.
+        WithTasksFileRestored(() => {
+            var jobId = "RB-CAPTURE-REFUSE-" + Guid.NewGuid().ToString("N")[..8];
+            var raw = "```json\n{\"info\": {}, \"summary\": }\n```"; // broken JSON with markers
+            Check(ResultCapture.LooksLikeFailedProfileAttempt(raw) || !ResultCapture.LooksLikeProfileResult(raw),
+                  "broken fence is not a valid profile");
+            var result = ResultCapture.Accept(raw, jobId);
+            Check(!result.Saved, "invalid capture is not saved");
+            Check(!File.Exists(ProfileResultStore.ResultPath(jobId)), "no results json for a failed capture");
+            try {
+                var rawPath = ProfileResultStore.RawPath(jobId);
+                if (File.Exists(rawPath)) File.Delete(rawPath);
+            } catch { }
+        });
+    }
+
+    /// <summary>
+    /// Mirrors MainWindow page hosting: Visibility changes call EnsureAsync again without Release.
+    /// A second Ensure while alive must not create another browser.
+    /// </summary>
+    static void ChatHostSurvivesNavigation() {
+        var creates = 0; var disposes = 0;
+        var host = new ChatHost(
+            create: () => { creates++; return Task.FromResult(1000 + creates); },
+            dispose: () => { disposes++; return Task.FromResult(true); });
+
+        host.EnsureAsync().GetAwaiter().GetResult();
+        host.EnsureAsync().GetAwaiter().GetResult(); // "navigate away and back"
+        host.EnsureAsync().GetAwaiter().GetResult();
+
+        Equal(1, creates, "one browser for repeated Ensure while alive");
+        Equal(1, host.Creations, "ChatHost creation counter");
+        Equal(0, disposes, "navigation does not dispose");
+        Check(host.IsAlive, "browser still alive");
+
+        host.ReleaseAsync().GetAwaiter().GetResult();
+        Equal(1, disposes, "explicit release disposes once");
+        Check(!host.IsAlive, "released");
+    }
+
+    static void ChatHostDesyncDetection() {
+        Check(ChatHost.IsDesynced(hostReportsAlive: true, coreWebViewAvailable: false),
+              "alive without a core view is desynced");
+        Check(!ChatHost.IsDesynced(hostReportsAlive: true, coreWebViewAvailable: true),
+              "alive with a core view is fine");
+        Check(!ChatHost.IsDesynced(hostReportsAlive: false, coreWebViewAvailable: false),
+              "dead host is not desynced — Ensure will create");
+    }
+
+    static string FindThemesFile(string fileName) {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null) {
+            var candidate = Path.Combine(dir.FullName, "Themes", fileName);
+            if (File.Exists(candidate)) return candidate;
+            dir = dir.Parent;
+        }
+        throw new FileNotFoundException("Themes/" + fileName);
+    }
+
+    /// <summary>
+    /// Dark-theme regression: Text.Primary on Bg.Input must stay readable in both palettes.
+    /// Parses the theme XAML color literals (no live UI) and requires WCAG AA contrast (≥ 4.5).
+    /// </summary>
+    static void ThemeInputContrast() {
+        foreach (var name in new[] { "Colors.Dark.xaml", "Colors.Light.xaml" }) {
+            var path = FindThemesFile(name);
+            var xaml = File.ReadAllText(path);
+            var bg = ThemeBrushHex(xaml, "Bg.Input");
+            var fg = ThemeBrushHex(xaml, "Text.Primary");
+            var muted = ThemeBrushHex(xaml, "Text.Muted");
+            var ratio = RelativeLuminanceContrast(bg, fg);
+            Check(ratio >= 4.5, $"{name}: Text.Primary on Bg.Input contrast {ratio:0.00} (need ≥ 4.5)");
+            var mutedRatio = RelativeLuminanceContrast(bg, muted);
+            Check(mutedRatio >= 3.0, $"{name}: Text.Muted on Bg.Input contrast {mutedRatio:0.00} (need ≥ 3.0)");
+        }
+    }
+
+    static void ThemeControlStylesUseDynamicResources() {
+        var path = FindThemesFile("Controls.xaml");
+        var xaml = File.ReadAllText(path);
+        Check(xaml.Contains("TargetType=\"TextBox\""), "TextBox style present");
+        Check(xaml.Contains("TargetType=\"ComboBox\""), "ComboBox style present");
+        Check(xaml.Contains("TargetType=\"PasswordBox\""), "PasswordBox style present");
+        Check(xaml.Contains("PART_ContentHost"), "TextBox/PasswordBox content host templated");
+        Check(xaml.Contains("TextElement.Foreground=\"{TemplateBinding Foreground}\""),
+              "foreground applied on content host");
+        // Input chrome must use DynamicResource so a theme switch updates without restart.
+        var inputBlock = xaml.IndexOf("TargetType=\"TextBox\"", StringComparison.Ordinal);
+        Check(inputBlock >= 0, "TextBox style index");
+        var slice = xaml.Substring(inputBlock, Math.Min(900, xaml.Length - inputBlock));
+        Check(slice.Contains("DynamicResource Bg.Input"), "TextBox Background is DynamicResource Bg.Input");
+        Check(slice.Contains("DynamicResource Text.Primary"), "TextBox Foreground is DynamicResource Text.Primary");
+        Check(!slice.Contains("Background=\"White\"") && !slice.Contains("Background=\"#FFFFFF\""),
+              "TextBox style does not hardcode white background");
+    }
+
+    static string ThemeBrushHex(string xaml, string key) {
+        var marker = $"x:Key=\"{key}\"";
+        var i = xaml.IndexOf(marker, StringComparison.Ordinal);
+        Check(i >= 0, "brush " + key);
+        var colorIdx = xaml.IndexOf("Color=\"#", i, StringComparison.Ordinal);
+        Check(colorIdx >= 0 && colorIdx < i + 120, "Color near " + key);
+        return xaml.Substring(colorIdx + 8, 6);
+    }
+
+    static double RelativeLuminanceContrast(string bgHex, string fgHex) {
+        double L(string hex) {
+            double Chan(int offset) {
+                var c = Convert.ToInt32(hex.Substring(offset, 2), 16) / 255.0;
+                return c <= 0.03928 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4);
+            }
+            return 0.2126 * Chan(0) + 0.7152 * Chan(2) + 0.0722 * Chan(4);
+        }
+        var a = L(bgHex); var b = L(fgHex);
+        var lighter = Math.Max(a, b); var darker = Math.Min(a, b);
+        return (lighter + 0.05) / (darker + 0.05);
+    }
+
+    /// <summary>
+    /// The production sequence after a completed job: RecycleAsync then EnsureAsync for the next
+    /// job must create a second browser, not no-op on a stale IsAlive.
+    /// </summary>
+    static void ChatHostRecycleThenEnsure() {
+        var creates = 0; var disposes = 0;
+        var host = new ChatHost(
+            create: () => { creates++; return Task.FromResult(2000 + creates); },
+            dispose: () => { disposes++; return Task.FromResult(true); });
+
+        host.EnsureAsync().GetAwaiter().GetResult();
+        Equal(1, creates, "job 1 browser");
+
+        host.RecycleAsync().GetAwaiter().GetResult();
+        Equal(1, disposes, "job 1 recycled");
+        Check(!host.IsAlive, "dead after recycle");
+
+        // Simulate the desync MainWindow guards against: host wrongly still "alive".
+        Check(ChatHost.IsDesynced(true, false), "desync helper matches the guard");
+
+        host.EnsureAsync().GetAwaiter().GetResult();
+        Equal(2, creates, "job 2 gets a new browser");
+        Check(host.IsAlive, "alive for job 2");
+        Equal(2, host.Creations, "creation counter");
+    }
+
+    static void CopyShortcutIsSemicolon() {
+        Equal((ushort)0xBA, KeyboardSimulator.CopyShortcutVk, "VK_OEM_1 / semicolon");
+        Equal("Ctrl+Shift+;", KeyboardSimulator.CopyShortcutText, "display text");
+        Check(!string.Equals(KeyboardSimulator.CopyShortcutText, "Ctrl+Shift+I", StringComparison.Ordinal),
+              "must not claim letter I");
+    }
+
+    static void ComposerReadyWaitsForProbe() {
+        var calls = 0;
+        var delays = new List<int>();
+        var ready = ChatComposer.WaitForComposerAsync(
+            probe: () => {
+                calls++;
+                return Task.FromResult(calls >= 3 ? "ready" : "missing");
+            },
+            budgetMs: 5000,
+            delay: (ms, _) => { delays.Add(ms); return Task.CompletedTask; }).GetAwaiter().GetResult();
+        Check(ready, "becomes ready on third poll");
+        Equal(3, calls, "polled until ready");
+        Check(delays.Count >= 1, "used poll delays after the first try");
+
+        var never = ChatComposer.WaitForComposerAsync(
+            probe: () => Task.FromResult("missing"),
+            budgetMs: 300,
+            delay: (ms, _) => Task.CompletedTask).GetAwaiter().GetResult();
+        Check(!never, "budget expiry returns false");
+    }
+
+    static void QueueStartRefusesWhileRunning() {
+        var a = new JobTask { JobId = "RB-S-1", Company = "A", Title = "T", Status = "Queued" };
+        var b = new JobTask { JobId = "RB-S-2", Company = "B", Title = "T", Status = "Queued" };
+        var queue = new QueueRunner();
+        Equal(2, queue.Start(new[] { a, b }), "first start");
+        Equal(0, queue.Start(new[] { a, b }), "second start refused while running");
+        Check(queue.IsRunning, "still running");
+        var first = queue.Next();
+        Equal("RB-S-1", first!.JobId, "first job");
+        a.Status = "Failed";
+        queue.AbandonActive();
+        var second = queue.Next();
+        Equal("RB-S-2", second!.JobId, "advances to second Queued job");
+        queue.Stop();
+    }
+
+    static void QueueNextSkipsFailed() {
+        var a = new JobTask { JobId = "RB-F-1", Company = "A", Title = "T", Status = "Queued" };
+        var queue = new QueueRunner();
+        Equal(1, queue.Start(new[] { a }), "one job");
+        Equal(a, queue.Next(), "selected");
+        a.Status = "Failed";
+        a.FailureReason = JobTask.CaptureTimeoutReason;
+        queue.OnCaptureTimedOut(null);
+        Check(queue.Next() is null, "no further Queued jobs — Finished");
+        Check(!queue.IsRunning, "queue finished after terminal job");
+        // A new Start after Finished is how Retry Failed + Start Queue works — only Queued jobs enter.
+        Equal(0, queue.Start(new[] { a }), "Failed job is not eligible for a new Start");
+        a.Status = "Queued"; // explicit Retry Failed
+        a.FailureReason = "";
+        Equal(1, queue.Start(new[] { a }), "after explicit re-queue it is eligible again");
+        queue.Stop();
+    }
+
+    static void ClipboardChangedSinceArm() {
+        // Same predicate as ClipboardWatcher.ChangedSinceArm (kept pure here so the harness does not
+        // pull in the full WPF clipboard implementation).
+        static bool Changed(uint armed, uint current) =>
+            armed == 0 || current == 0 || current != armed;
+        Check(Changed(10, 11), "sequence moved");
+        Check(!Changed(10, 10), "sequence unchanged");
+        Check(Changed(0, 10), "unknown armed seq does not block");
+        Check(Changed(10, 0), "unknown current seq does not block");
+    }
+
+    static void BrowserGenerationInvalidatesStaleOps() {
+        var gen = new BrowserGeneration();
+        Equal(0, gen.Current, "starts at zero");
+        var g1 = gen.BeginNew();
+        Equal(1, g1, "first browser");
+        Check(gen.IsCurrent(g1), "g1 is live");
+        Check(CopyFocusPolicy.MayTouchBrowser(g1, gen.Current, cancelled: false, viewExists: true), "may touch");
+
+        gen.Invalidate(); // dispose begins
+        Check(!gen.IsCurrent(g1), "g1 stale after invalidate");
+        Check(!CopyFocusPolicy.MayTouchBrowser(g1, gen.Current, cancelled: false, viewExists: false),
+              "null view + stale gen");
+
+        var g2 = gen.BeginNew();
+        Check(g2 > g1, "replacement has a new generation");
+        Check(!CopyFocusPolicy.MayTouchBrowser(g1, gen.Current, cancelled: false, viewExists: true),
+              "old gen must not touch the replacement view");
+        Check(CopyFocusPolicy.MayTouchBrowser(g2, gen.Current, cancelled: false, viewExists: true),
+              "new gen may touch");
+        Check(!CopyFocusPolicy.MayTouchBrowser(g2, gen.Current, cancelled: true, viewExists: true),
+              "cancelled token blocks");
+    }
+
+    static void CopyFocusPolicyDecisions() {
+        Check(!CopyFocusPolicy.ShouldFocusOnAnswerReady(
+                  copyPathAlreadyFocused: true, captureStillArmed: true, jobStillActive: true),
+              "skip ShowAnswerReady focus after RequestCopyAsync");
+        Check(CopyFocusPolicy.ShouldFocusOnAnswerReady(
+                  copyPathAlreadyFocused: false, captureStillArmed: true, jobStillActive: true),
+              "focus when copy path did not run");
+        Check(!CopyFocusPolicy.ShouldFocusOnAnswerReady(
+                  copyPathAlreadyFocused: false, captureStillArmed: false, jobStillActive: true),
+              "skip when capture already accepted");
+
+        Check(CopyFocusPolicy.ShouldRetryCopyOnForeground(
+                  nowOwned: true, sameGeneration: true, jobStillProcessing: true,
+                  captureArmed: true, alreadyCopied: false),
+              "retry when we regain foreground");
+        Check(!CopyFocusPolicy.ShouldRetryCopyOnForeground(
+                  nowOwned: true, sameGeneration: true, jobStillProcessing: true,
+                  captureArmed: true, alreadyCopied: true),
+              "no retry after clipboard already changed");
+        Check(!CopyFocusPolicy.ShouldRetryCopyOnForeground(
+                  nowOwned: false, sameGeneration: true, jobStillProcessing: true,
+                  captureArmed: true, alreadyCopied: false),
+              "no retry while another app owns foreground");
+    }
+
+    static void StaleGenerationCannotTouchReplacement() {
+        // Simulates: Job A Ready → copy → capture → recycle (invalidate) → Job B create (BeginNew).
+        // A delayed FocusChatPane from Job A must not act on Job B's view.
+        var gen = new BrowserGeneration();
+        var jobA = gen.BeginNew();
+        gen.Invalidate();
+        var jobB = gen.BeginNew();
+        Check(!CopyFocusPolicy.MayTouchBrowser(jobA, gen.Current, false, true),
+              "Job A focus after recycle must not touch Job B");
+        Check(CopyFocusPolicy.MayTouchBrowser(jobB, gen.Current, false, true),
+              "Job B may focus its own browser");
+    }
+
+    static void QueueRunnerCaptureAttribution() {
+        var a = new JobTask { JobId = "RB-Q-A", Company = "A", Title = "T", Status = "Queued" };
+        var b = new JobTask { JobId = "RB-Q-B", Company = "B", Title = "T", Status = "Processing" }; // stale
+        var tasks = new List<JobTask> { a, b };
+
+        Equal(1, QueueRunner.RecoverStaleProcessing(tasks), "one stale Processing recovered");
+        Equal("Queued", b.Status, "stale job re-queued");
+
+        var queue = new QueueRunner();
+        Equal(2, queue.Start(tasks), "two queued jobs");
+        var first = queue.Next();
+        Equal(a.JobId, first!.JobId, "first job is active");
+        Equal(a.JobId, queue.ActiveJobId, "ActiveJobId set");
+
+        const string prepared = "prepared request body that is long enough for echo detection xxxxxxxx";
+        Equal(CaptureDecision.Accept, queue.Classify("profile-answer-one", prepared), "first capture accepted");
+        queue.OnCaptureSucceeded("profile-answer-one");
+
+        // Activate the next job so Classify has somewhere to attribute to.
+        a.Status = "Completed";
+        var second = queue.Next();
+        Equal(b.JobId, second!.JobId, "second job becomes active");
+        Equal(CaptureDecision.Duplicate, queue.Classify("profile-answer-one", prepared), "same text refused for next job");
+
+        queue.OnCaptureTimedOut("late-clipboard-text");
+        // After timeout ActiveJobId is null — begin again to test late quarantine.
+        queue.BeginJob(b.JobId);
+        Equal(CaptureDecision.LateResponse, queue.Classify("late-clipboard-text", prepared), "timed-out clipboard quarantined");
+        Equal(CaptureDecision.PromptEcho, queue.Classify(prepared, prepared), "prompt echo classified");
     }
 
     // ---------- the importer ----------

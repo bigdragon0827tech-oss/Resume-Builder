@@ -89,6 +89,10 @@ public sealed class ChatHost {
         }
     }
 
+    /// <summary>True when the host still thinks a browser is alive but the view/core is gone.</summary>
+    public static bool IsDesynced(bool hostReportsAlive, bool coreWebViewAvailable) =>
+        hostReportsAlive && !coreWebViewAvailable;
+
     /// <summary>
     /// Hard recycle after a completed job: destroy now, wait for the process to go, rebuild lazily at
     /// the next job. Callers must only invoke this once the response is captured — never while one is

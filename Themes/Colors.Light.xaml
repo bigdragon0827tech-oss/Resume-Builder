@@ -1,0 +1,45 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <!-- Tuned light theme: cool grey canvas, white raised surfaces, strong text contrast. -->
+  <SolidColorBrush x:Key="Bg.App" Color="#F0F2F5"/>
+  <SolidColorBrush x:Key="Bg.Sidebar" Color="#E4E8EE"/>
+  <SolidColorBrush x:Key="Bg.Surface" Color="#FFFFFF"/>
+  <SolidColorBrush x:Key="Bg.SurfaceRaised" Color="#FFFFFF"/>
+  <SolidColorBrush x:Key="Bg.Input" Color="#F7F8FA"/>
+  <SolidColorBrush x:Key="Bg.Hover" Color="#DDE3EC"/>
+  <SolidColorBrush x:Key="Bg.Selected" Color="#C9DFF5"/>
+  <SolidColorBrush x:Key="Border.Subtle" Color="#D0D7E0"/>
+  <SolidColorBrush x:Key="Border.Strong" Color="#A8B3C2"/>
+  <SolidColorBrush x:Key="Text.Primary" Color="#111827"/>
+  <SolidColorBrush x:Key="Text.Secondary" Color="#374151"/>
+  <SolidColorBrush x:Key="Text.Muted" Color="#6B7280"/>
+  <SolidColorBrush x:Key="Accent.Default" Color="#0B6BCB"/>
+  <SolidColorBrush x:Key="Accent.Hover" Color="#0958A8"/>
+  <SolidColorBrush x:Key="Accent.Muted" Color="#D6E8FA"/>
+  <SolidColorBrush x:Key="Success" Color="#157347"/>
+  <SolidColorBrush x:Key="Warning" Color="#9A5B00"/>
+  <SolidColorBrush x:Key="Danger" Color="#B42318"/>
+  <SolidColorBrush x:Key="Info" Color="#0B6BCB"/>
+  <SolidColorBrush x:Key="Overlay.Busy" Color="#AAF0F2F5"/>
+
+  <SolidColorBrush x:Key="StatusViewedBg" Color="#E8ECF1"/>
+  <SolidColorBrush x:Key="StatusViewedFg" Color="#4B5563"/>
+  <SolidColorBrush x:Key="StatusReadyBg" Color="#D6E8FA"/>
+  <SolidColorBrush x:Key="StatusReadyFg" Color="#0B6BCB"/>
+  <SolidColorBrush x:Key="StatusAppliedBg" Color="#D8F0DE"/>
+  <SolidColorBrush x:Key="StatusAppliedFg" Color="#157347"/>
+  <SolidColorBrush x:Key="StatusInterviewBg" Color="#FCEFD9"/>
+  <SolidColorBrush x:Key="StatusInterviewFg" Color="#9A5B00"/>
+  <SolidColorBrush x:Key="StatusDoneBg" Color="#E8DFF5"/>
+  <SolidColorBrush x:Key="StatusDoneFg" Color="#5B2F91"/>
+
+  <!-- Compat aliases used by Settings dashboard markup -->
+  <SolidColorBrush x:Key="Accent" Color="#0B6BCB"/>
+  <SolidColorBrush x:Key="AccentSoft" Color="#0958A8"/>
+  <SolidColorBrush x:Key="Muted" Color="#6B7280"/>
+  <SolidColorBrush x:Key="Ink" Color="#111827"/>
+  <SolidColorBrush x:Key="CardBorder" Color="#D0D7E0"/>
+  <SolidColorBrush x:Key="CardFill" Color="#FFFFFF"/>
+  <SolidColorBrush x:Key="PanelFill" Color="#F0F2F5"/>
+  <SolidColorBrush x:Key="GridLine" Color="#E4E8EE"/>
+</ResourceDictionary>

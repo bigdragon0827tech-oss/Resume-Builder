@@ -26,6 +26,16 @@
     <Compile Include="..\..\Normalization.cs" Link="Normalization.cs" />
     <Compile Include="..\..\ResultCapture.cs" Link="ResultCapture.cs" />
     <Compile Include="..\..\Clipboard.cs" Link="Clipboard.cs" />
+    <!-- Dependencies pulled in by Models/Services/JobTracker as the app grew. -->
+    <Compile Include="..\..\JobBrowser.cs" Link="JobBrowser.cs" />
+    <Compile Include="..\..\JobTracker.cs" Link="JobTracker.cs" />
+    <Compile Include="..\..\ApplyCapture.cs" Link="ApplyCapture.cs" />
+    <Compile Include="..\..\ApplicationPlatformDetector.cs" Link="ApplicationPlatformDetector.cs" />
+    <Compile Include="..\..\PromptContract.cs" Link="PromptContract.cs" />
+    <Compile Include="..\..\JobrightPageExtractor.cs" Link="JobrightPageExtractor.cs" />
+    <Compile Include="..\..\ResumeOutputManager.cs" Link="ResumeOutputManager.cs" />
+    <Compile Include="..\..\ResumeStyle.cs" Link="ResumeStyle.cs" />
+    <Compile Include="..\..\ResumeStyleNormalizer.cs" Link="ResumeStyleNormalizer.cs" />
   </ItemGroup>
 
 </Project>

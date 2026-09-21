@@ -180,9 +180,77 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 | `QueueRunner.cs` | `QueueRunner`, `QueueState`, `FailureOutcome` — sequencing state machine, no I/O |
 | `Diagnostics.cs` | `PerfLog` (timing/memory log), `PollPolicy` (shared adaptive poll cadence) |
 | `ReadyToast.cs` | `ReadyToast` (right-side, non-activating "answer ready" notification), `WindowAttention` (taskbar flash) |
-| `CaptureWatchdog.cs` | `CaptureWatchdog` — 30 s bounded wait for the Copy after a confirmed READY (no I/O, injectable delay) |
+| `CaptureWatchdog.cs` | `CaptureWatchdog` — 10 s bounded wait for the Copy after a confirmed READY (no I/O, injectable delay) |
+| `GptAttempts.cs` | `GptAttempts`, `GptFailure`, `AttemptDecision` — the ChatGPT retry policy: 3 sends, reasons, log lines |
 | `GlobalHotkey.cs` | `GlobalHotkey` — system-wide Ctrl+Shift+' that only brings Resume Builder forward |
+| `JobHistoryReset.cs` | `JobHistoryReset`, `ResetPlan`, `ResetReport`, `ResetPaths` — the testing reset: plan, guards, execute, per-path failures |
+| `PromptContract.cs` | `PromptModes` (Resume / Normal, tolerant), `PromptContract` — the one output contract and job payload both modes send |
+| `ApplyCapture.cs` | `ApplyCapture`, `ApplyCaptureResult` — decides whether a user's Apply destination is recorded, and on which task |
+| `ApplicationPlatformDetector.cs` | `ApplicationPlatform` enum, `ApplicationPlatformDetector` (ApplyUrl -> platform), `TolerantPlatformConverter` |
+| `TaskViews.cs` | `TaskViews` — the Active / History display filter over the one task collection |
 | `Models.cs` | `JobBatch`, `JobInput`, `JobTask`, `AppSettings`, `PreparedRequest` |
+
+## Clear Job History (testing reset)
+
+- **Settings → Development → "Clear Job History…"**, with an opt-in checkbox *"Also delete generated
+  resume folders (DOCX/PDF) for these jobs"* (default OFF). The narrow old action stays beside it,
+  relabelled **"Remove Sample Jobs"** (synthetic jobs only) so the two cannot be confused.
+- **Always cleared**: every `JobTask` (Active and History, with all tracking and timestamps, since
+  they live on the task), `results\<jobId>.{json,raw.txt,docgen.txt,effective-style.json}` for those
+  jobs, and `prepared-request.json` / `.txt`.
+- **Never touched**: `settings.json` (PromptMode and both prompt paths included), the prompt files
+  themselves, `candidate-profile.json`, `baseline-profile.json`, `results\BASELINE.*`, the style
+  presets, the Job Browser WebView2 profile, **`diagnostics.log`** (kept deliberately: it is the
+  record of what the reset did), and the Incoming/Imported input files.
+- **Two guards make it safe.** `IsUnderRoot` checks every path at plan time AND again at delete time,
+  and a generated folder is identified by **its own `resume-info.json`** — `JobTask.ResumePath` is
+  never authority, because a task is data that could name any path. A folder qualifies only when it
+  sits under `<ResumeRoot>\<yyyy-MM-dd>\`, its name equals `ResumeOutputManager.JobFolderName`, and
+  **every** `resume-info*.json` in it names a job being cleared (so a folder shared with a job that
+  stays is left alone). A date folder is removed only if it is empty afterwards; the Resume Root never is.
+- **Several jobs can share one company + role** (a re-imported job), so folder name -> **set** of job
+  ids. Keying a dictionary by folder name alone throws on the duplicate — that bug was found against
+  real data and is covered by a test.
+- **Sequence**: build the immutable `ResetPlan` -> confirm (No is default; a second confirmation names
+  the Resume Root when documents are included) -> `Execute` deletes and collects per-path failures ->
+  only then `MainWindow.ClearJobHistoryInPlace()` clears the ONE live collection on the UI thread and
+  saves `[]`. No restart: the Active/History view, counts, selection, buttons, summary, dashboard and
+  the job browser's duplicate check all follow from that collection.
+- **Refused while the queue is running or any task is Processing**; a running job is never cancelled.
+- A failure is always reported (`ResetReport.Describe`), never hidden behind a success message.
+- `ResetPaths` makes the results folder and prepared-request paths injectable, so tests run entirely
+  in temporary folders. Tests: `ResumeStyleTests` "Clear job history" (9 checks).
+- Orphaned artifacts from jobs deleted earlier are deliberately **left** — ownership must be proven.
+
+## Prompt modes — Resume and Normal
+
+- **Two prompt FILES, one pipeline.** `RequestPreparation.Prepare` stays THE entry point and picks the
+  file by `AppSettings.PromptMode`: **Resume** = the Master Prompt (`MasterPrompt`), **Normal** = the
+  user's own prompt (`NormalPrompt`). Everything after it — clipboard, armed capture, fresh
+  conversation per job, queue, normalize -> strict validate -> save, DOCX/PDF — is untouched and
+  mode-blind. There is no chat textbox and no second pipeline.
+- **Assembly order, both modes**: the user's prompt file (only `TrimEnd()`, never edited or reordered)
+  -> `===== COMPLETE JOB PAYLOAD =====` + the SAME payload (company, title, jd, link, about and the
+  full candidate profile) -> `===== EXECUTION INSTRUCTION =====`.
+- **One output contract**, in `PromptContract.ExecutionInstruction(resumeMode)`. The two texts differ
+  in exactly ONE sentence: `ResumeOpening` ("Execute Resume Master Prompt v2 …") vs `NormalOpening`
+  ("Execute the resume instructions above …"). Do not fork the rules; `docs\GPT_JSON_CONTRACT.md`
+  documents the same shape for humans and `ProfileNormalizer` + strict validation enforce it.
+- **Resume mode's prepared text is byte-for-byte what it was.** `tests\fixtures\prepare-resume-expected.txt`
+  was captured from the build BEFORE prompt modes existed, and `ResumePromptUnchanged` compares against
+  it. The contract is built from explicit `\r\n` breaks, not a verbatim literal, so the file's line
+  endings can never change the bytes. Regenerate that fixture only for a deliberate contract change.
+- **No style text is ever sent.** Style is optional in the ANSWER; `StyleNormalizer` falls back to the
+  `promV4.12` preset when it is absent — identical in both modes. Never add style detection or inject
+  style instructions into a user's prompt.
+- **`PromptMode` is a STRING** (`PromptModes.Normalize`: unknown/missing/odd case -> Resume), not an
+  enum: `Storage.LoadSettings` turns any exception into DEFAULT settings, which would silently drop
+  the user's configured paths. `PromptMode` and `NormalPrompt` persist in `settings.json` and are
+  additive — older files load and stay on Resume.
+- Settings → General: a **Prompt Mode: Resume | Normal** pair of radio buttons, the existing Master
+  Prompt row, and a **Normal Prompt** row with Browse. Save refuses Normal mode without an existing
+  file; `Prepare` throws the same plain message if it is missing later.
+- Tests: `ResumeStyleTests` "Prompt modes" (7 checks).
 
 ## Document generation (A6.6.9)
 
@@ -202,6 +270,23 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 - Documents are written to a temp file and moved into place, so a crash cannot leave a truncated file.
 - The `Docx` / `Pdf` checkboxes are authoritative; both off means "disabled", which is reported as a
   skip, not a failure.
+
+## Task queue Active / History view
+
+- **Display only.** `MainWindow._tasks` stays the one task collection; `tasks.json`, `JobTask`, the
+  queue, the importer and the Settings dashboard (which reads `MainWindow.Tasks`, the full list) are
+  untouched. Never delete a Completed task to tidy the list — results, Resume buttons and the dashboard
+  depend on it.
+- `TaskList` keeps its single ListBox; its `ItemsSource` is `TaskViews.CreateView` — a live-filtering
+  `ListCollectionView` over `_tasks`. **Active** = every status except Completed (Queued, Processing,
+  Failed — Failed stays so Retry is reachable). **History** = Completed only. Do not add a second list:
+  Prepare & Send and Generate Documents depend on `TaskList.SelectedItem`.
+- Live filtering applies on the dispatcher, so a job that completes leaves Active on its own. A test
+  that checks this without a running app must pump the dispatcher first.
+- **A Processing task is never hidden**: `Task_PropertyChanged` switches to Active when a task becomes
+  Processing while History is shown (re-running a completed job via Prepare & Send).
+- The switch sits under "TASK QUEUE" as `Active (n) | History (n)`; the shown view is SemiBold. Default
+  is Active. Switching keeps the selection when the selected task is still on show.
 
 ## Job application tracking
 
@@ -234,6 +319,14 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 - **The dashboard is the Settings "Applications" tab.** Summary cards (today / last 30 days / total),
   a WPF-native bar chart, the five-stage pipeline, conversion rates, search + status + date filters,
   and a List/Board pair over the same filtered set.
+- **How the dashboard stays in sync.** Every view shares the same `JobTask` objects, and their
+  `INotifyPropertyChanged` (`Status`, and `NotifyTrackingChanged` after a JobTracker edit) updates rows
+  live. The aggregates — cards, chart, pipeline, board columns, filter membership — are rebuilt only by
+  `SettingsWindow.RefreshTracking`. When `MainWindow` changes tracking data it calls
+  `RefreshDashboardIfOpen()` once, after the save: Job Browser import, `MarkResumeReady`, and a Refresh
+  Input that queued new jobs. It does nothing when Settings is closed. Do not add events or a second
+  task store for this; queue `Status` changes need no dashboard refresh, since the dashboard never
+  shows them.
 - **Its look is defined by named styles in `SettingsWindow.xaml`** — `DashboardCardStyle`,
   `SectionHeaderStyle`, `StatusBadgeStyle`, `FilterControlStyle`, `BoardCardStyle`,
   `SegmentToggleStyle` — plus `Status<Name>Bg`/`Status<Name>Fg` brushes for the five statuses. The
@@ -276,8 +369,11 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
   to `DataGrid.MinColumnWidth` (20 px) *before* it will scroll, so fixed columns with no floor were
   crushed to 57/37/20 px in a narrow window while the extent never exceeded the viewport — the content
   looked clipped and offset, and there was no scrollbar to bring it back. With a floor on each column
-  the grid scrolls honestly instead. Current floors: Job 150, Company 110, Status 140, Resume 116,
-  Date 88, Actions 196 — 800 px total, which fits the ~900 px grid at a 1000 px window.
+  the grid scrolls honestly instead. Current floors: Job 150, Company 110, Status 140, Readiness 116,
+  Date 88, Actions 336 — 940 px total. The Settings window's default width is **1100 px** (raised from
+  1000 when Mark Applied was added), giving a ~983 px grid with no horizontal scroll. Actions grew
+  196 -> 246 (Apply) -> 336 (Mark Applied); its five buttons measure ~309 px. Do not add a column or
+  an Actions button without revisiting this.
 - **The DataGrid is the only horizontal scroll owner.** The dashboard's outer `ScrollViewer` is
   vertical only (its default `HorizontalScrollBarVisibility` is Disabled); do not enable horizontal
   scrolling there, or the two will fight. `TrackingGrid_SizeChanged` clamps the grid's horizontal
@@ -293,16 +389,204 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
   that naming rather than duplicating it, prefers the most recently written file (sorting by name
   would put `Resume.docx` ahead of `Resume (2).docx`), and only writes when something changed. The
   Resume and Folder buttons are disabled while `ResumeGenerated` is false.
+- **Mark Applied** (phase 7) is a one-click shortcut to the existing tracking, not new state: it
+  reuses `ApplicationStatus` and the existing `AppliedAt` (no new fields) and never touches the queue
+  `Status`. `JobTracker.MarkApplied` = `CanMarkApplied` (Viewed or Ready only, so it can never move an
+  Interview/Done job backwards) + `UpdateStatus(job, Applied)` — which stamps `AppliedAt` only if
+  empty (never rewritten) and backfills a skipped `ReadyAt`. UI: a Mark Applied button after Apply in
+  the List's Actions (enabled via `CanMarkAppliedConverter`), and "Mark Applied" under Open
+  Application in both context menus; unavailable -> "… is already <status> (applied <date>)." It goes
+  through `SettingsWindow.ChangeStatus` (optional `change` delegate), so save + refresh are shared.
+  Readiness is unaffected by applying.
+- **Applied date display**: the Board card date is `JobTracker.BoardDateText` ("Applied Sep 18" once
+  `AppliedAt` exists, else the tracking date); the List's Date cell and the Board date carry
+  `StageDatesText` as tooltip (every recorded stage, one per line; "Added …" for an untracked task).
+  Both via `JobDateTextConverter`.
+- **The row status dropdown ignores a "change" to the job's current status.** After a rebuild WPF
+  recycles rows and re-binds each dropdown to its new job's current value; answering that as a choice
+  overwrote the real confirmation with "… is already <status>". Keep that guard in
+  `TrackingStatusBox_Changed`.
 - Diagnostics: `TRACKING status <jobId> <old> -> <new>`, `TRACKING open URL <jobId>`,
   `TRACKING dashboard refreshed total=… applied=… interview=… done=…`. One line per refresh, never
   per UI frame.
 
 ## Built-in job browser (phase 1)
 
-- **Currently HIDDEN at the user's request** ("hide job browser until I ask again, don't remove it").
-  Only the header button is collapsed (`JobBrowserButton`, `Visibility="Collapsed"` in
-  `MainWindow.xaml`); every file, test and behaviour below is intact. Do not delete or unhide it until
-  the user asks — then just make that button visible again.
+- **Visible again.** It was hidden at the user's request for a while; the `JobBrowserButton` in
+  `MainWindow.xaml` is shown once more.
+
+### Find Jobs / Auto Import (user-started batch on a Jobright results page)
+
+These buttons are the one deliberate exception to "no batch, no crawling" below: they run only when
+the user clicks them, and every job still goes through `JobrightPageExtractor` and `ImportJob`.
+
+- **Jobright scrolls an internal container, not the window**: `div.index_jobs-page-main-content__qd__a`.
+  `ScrollDownAsync` scrolls with `container.scrollTop += amount` (80% of `clientHeight`) and waits for
+  more results to load. **Never use `window.scrollTo` / `window.scrollBy`** — the window does not
+  scroll there, so no new jobs load.
+- `FindJobsUntilTargetAsync(target)` repeats collect `a[href*="/jobs/info/"]` links -> scroll until
+  the target is reached or Stop is pressed. Verified: it collected 50 jobs with a target of 50.
+- The scan target is chosen in `JobTargetBox` (20 / 50 / 100 / 200 / 500, default 50) and read by
+  `GetJobTarget`, which falls back to 50.
+- **The target counts NEW jobs only** — jobs not already in Resume Builder. While scanning,
+  `CollectJobsFromCurrentPageAsync` checks each link with `JobExists` and skips existing ones (counted
+  and reported as "skipped … already in Resume Builder", never toward the target); each link is keyed by
+  `JobUrls.Normalize` so a card seen again after a scroll is counted once. The scan keeps scrolling
+  until it has that many unseen jobs, the user presses Stop, or it reaches the end of the list —
+  `EndOfListRounds` (3) rounds in a row with no new job and no scroll movement — so it can never loop
+  forever when Jobright runs out.
+- **`AutoImportFoundJobsAsync` skips URLs already in the queue before navigating to them**, through
+  the `JobExists` delegate (`MainWindow` compares with `JobUrls.Normalize`), so existing jobs cost no
+  page load. New ones are opened one at a time and imported through the normal `ImportJob` path, which
+  still refuses duplicates on its own.
+
+### Application link capture (ATS platform, phase 1)
+
+- **Jobright's page data holds no application address** (verified on a live job page: 53 `jobResult`
+  keys, only flags such as `isCompanySiteLink`; APPLY NOW is a plain button). The address exists only
+  once the USER clicks Apply, so it is captured then — never by clicking, fetching or reading the page.
+- `JobBrowserWindow` observes `NavigationStarting` (same-page) and `NewWindowRequested` (new window,
+  `Handled` never set) and calls `ReportApplyDestination` only when a single job page heads off
+  jobright.ai. It hands (job page, destination) to the `RecordApplyUrl` delegate; `MainWindow`
+  runs `ApplyCapture.Record` on `_tasks` and saves through `Storage.SaveTasks` when it returns Recorded.
+- **Rules (`ApplyCapture`)**: http/https only; never jobright.ai or a subdomain; never a known
+  non-application link Jobright shows (LinkedIn `/in/`, `/company/`, `/school/`, X/Twitter,
+  Crunchbase, Glassdoor, Facebook, Instagram, YouTube — LinkedIn `/jobs/` IS captured); only on a
+  single job page; the task is matched by **Jobright job id** (`JobIdFromUrl` of page vs `Link`);
+  an unknown job records nothing and creates nothing. Stored via `JobUrls.Normalize`. The same
+  address again is Unchanged (time kept); a different one replaces it and restamps.
+- `JobTask.ApplyUrl` ("" = none) and `ApplyUrlCapturedAt` (null = none) are additive; older
+  `tasks.json` loads with them empty. Informational only — never a duplicate key; `Link` keeps its
+  meaning.
+- Diagnostics: `JOBBROWSER apply seen <scheme+host+path> via <navigation|new-window> -> <result>`.
+- Tests: `ResumeStyleTests` "Job browser: application link capture" (4 checks).
+
+### Application link discovered at import
+
+- **Correction to the note above:** signed-OUT page data has no application address, but **signed-in
+  page data does** — `jobResult.applyLink` and `jobResult.originalUrl`, in both
+  `jobright-helper-job-detail-info` and `__NEXT_DATA__` (verified read-only on the user's signed-in
+  profile: 60 `jobResult` keys vs 53 signed out). Jobright's own Apply handler is
+  `window.open(applyLink ?? originalUrl)`; no API call produces the link.
+- `JobrightPageExtractor.ReadScript` returns those two named fields; `Parse` sets
+  `JobImportData.ApplyUrl` to `applyLink`, else `originalUrl` — each only if it passes
+  `ApplyCapture.IsApplicationUrl`, and only from page data that describes this job (stale data gives
+  none). Still one script per Import click: no fetch, no click, no navigation.
+- `JobImporter.ImportOne` calls `ApplyCapture.FillIfEmpty`: a new task gets `ApplyUrl` (normalized),
+  `ApplyUrlCapturedAt` and its `ApplicationPlatform`; a missing/invalid link leaves them empty and
+  never fails the import. A **duplicate** import fills an EMPTY `ApplyUrl` (and saves, and
+  `MainWindow` refreshes the dashboard) but **never replaces** an existing one. The outcome's
+  `ApplyUrlRecorded` says whether it wrote. Log: `IMPORT apply link found|added <jobId> <platform>`
+  (no URL).
+- Auto Import skips jobs already in the queue before opening them, so only a manual Import Current
+  Job fills an existing job's empty link. The Apply-click capture (`ApplyCapture.Record`) stays as the
+  fallback for pages without the fields.
+- Tests: 5 checks in that group (extractor fields + fallback, missing/invalid, import records,
+  import without link, fill-only-empty).
+
+### Application platform detection (phase 2)
+
+- `JobTask.ApplicationPlatform` is an `ApplicationPlatform` enum — Unknown, Greenhouse, Workday,
+  Lever, LinkedIn, Ashby, SmartRecruiters, ICims, Other. **Unknown = no ApplyUrl; Other = an ApplyUrl
+  on a site not recognised.** It is **always derived** from `ApplyUrl` by
+  `ApplicationPlatformDetector.Detect`, never entered by hand.
+- Detection is by host, exact or subdomain (look-alikes such as `notgreenhouse.io` are Other):
+  greenhouse.io; myworkdayjobs.com / myworkdaysite.com / myworkday.com; lever.co; ashbyhq.com;
+  smartrecruiters.com; icims.com; linkedin.com only for `/jobs/` paths. A company careers page with a
+  `gh_jid` or `ashby_jid` query parameter is Greenhouse / Ashby (embedded boards). Pure; never throws.
+- Runs in `ApplyCapture.Record` whenever it records an address, and at startup
+  (`ApplicationPlatformDetector.Refresh` next to `RecoverStaleProcessing`), which re-derives every task
+  and saves once only if something changed — so older jobs and detector updates are applied.
+- **Stored as the name** (`"Greenhouse"`), read by `TolerantPlatformConverter`: missing, null,
+  misspelled, future or wrongly-typed values become Unknown instead of throwing. This matters because
+  `Storage.LoadTasks` turns any exception into an EMPTY list, which the next save would write over the
+  user's jobs. Any future enum field on `JobTask` needs the same tolerant treatment.
+- Tests: `ResumeStyleTests` "Application platform detection" (7 checks).
+
+### Application platform filter (phase 3)
+
+- **Same pipeline, optional trailing parameters**: `JobTracker.ApplyFilters(..., exactDate, platforms,
+  readiness)`. Order: status -> search -> platforms (`FilterByPlatforms`) -> readiness
+  (`FilterByReadiness`) -> date. Null or empty = no restriction; otherwise **OR** within each filter
+  (and AND between filters). Readiness is evaluated with `GetReadiness` at filter time — it is never
+  stored. List and Board both use the one `filtered` result, so they cannot disagree. Cards, pipeline
+  and chart still describe ALL jobs.
+- **Readiness filter** (phase 6B): `ReadinessFilterButton` + popup, LEFT of Platforms. Choices in
+  `JobTracker.ReadinessFilterOrder` (Ready to apply, Needs apply link, Needs resume); label via
+  `ReadinessFilterLabel` — "All readiness" for none or all three, else one or two names.
+- **Both multi-select filters are one component**: `SettingsWindow.MultiSelectFilter<T>` builds the
+  checkboxes, wires button/popup/Clear and holds the selection (`_platformFilter`, `_readinessFilter`);
+  there are no per-filter click handlers in XAML. Labels share `JobTracker.MultiSelectLabel`. A third
+  multi-select filter should reuse both rather than copy them. **`SelectOnly(choices, refresh)` is the
+  one way to set a selection from code** (ticks exactly those boxes, refreshes once or not at all);
+  Clear is `SelectOnly(nothing)`.
+- **"Ready to apply" card** (phase 8A/8B): the fourth summary card (`ReadyToApplyCard`, a real `Button`
+  templated with `DashboardCardStyle`, so it is focusable and Enter/Space work). It is an **action
+  queue**: its number is `JobTracker.CountNeedsAction` over ALL jobs — `NeedsAction` = ReadyToApply
+  **and** not applied for yet (Viewed or Ready). Hint: "Ready, not applied yet".
+  Click (`ReadyToApplyCard_Click`): List view; search, platforms and date cleared; **Status = the
+  "Not applied yet" group**; Readiness = only Ready to apply; ONE `RefreshTracking` (the controls'
+  handlers are inert under `_refreshingTracking`). Both filters stay **visible**, so the user can undo
+  them — there is deliberately no hidden "queue mode" flag. Nothing is stored.
+- **`ApplicationStatus.Filter` holds filter-ONLY values**, kept apart from the five real statuses:
+  `NotAppliedYet` ("Not applied yet" = Viewed or Ready), `Options` (the dropdown: All, the group, then
+  the five). `ApplicationStatus.Ordered`, `Filters`, the pipeline, the board columns, the statistics
+  and stored data are unchanged. `GetTasksByStatus` answers the group **before** `Normalize`, which
+  would otherwise read an unknown value as Viewed; `UpdateStatus` refuses a group value, so it can
+  never be written to a task. A future status group belongs here too.
+- **After Mark Applied in the queue** the job leaves the list and the count drops on the existing
+  single refresh; its readiness stays ReadyToApply (it still has a resume and a link) and it is still
+  shown by the Readiness filter alone. Applying changes no readiness and no timestamp beyond the
+  usual `AppliedAt ??=`.
+- The toolbar now reads `[Search] [Readiness] [Platforms] [Status] [Date] [List|Board]`; at a
+  1000 px window the search box keeps ~220 px. Another toolbar control needs that revisited.
+- **Choice order is `JobTracker.PlatformFilterOrder`**, explicit and never the enum's declaration
+  order: Greenhouse, Workday, Lever, LinkedIn, Ashby, SmartRecruiters, iCIMS, Other, Unknown.
+  `PlatformDisplayName` shows `ICims` as "iCIMS". A new enum value must be added there too (a test
+  asserts every platform is a choice, exactly once).
+- **Label** (`PlatformFilterLabel`): "All platforms" for none or all ticked; one or two names in that
+  order ("Greenhouse, Workday"); "N platforms" for three or more.
+- UI: `PlatformFilterButton` + `PlatformFilterPopup` left of the Status dropdown, built like the date
+  filter. Checkboxes are created in `InitTracking` from `PlatformFilterOrder`; each tick refreshes at
+  once, the popup stays open until an outside click, and Clear unticks all with a single refresh.
+- **The selection is `SettingsWindow._platformFilter` only** — never tasks.json, settings or a task.
+- **Platform badge** (display only): one shared `PlatformBadgeStyle` (a templated `ContentControl`,
+  neutral colours so it never reads as a status) used in the List's Job cell (right-docked after the
+  title, which trims first — no extra column, so the 800 px column floors still hold) and on the Board
+  card's company line. Text goes through `PlatformDisplayConverter` -> `JobTracker.PlatformDisplayName`;
+  **Unknown is hidden and carries no tooltip**; Other and every recognised platform show, with the
+  `ApplyUrl` as tooltip. `RecordApplyUrlFromBrowser` calls `RefreshDashboardIfOpen()` after a
+  successful record, so a new badge appears without a manual refresh.
+- **Application readiness** (display only): `JobTracker.GetReadiness` -> `ApplicationReadiness`
+  NeedsResume (no `ResumeGenerated`) / NeedsApplyLink (resume, but `ApplyUrl` fails `IsOpenableUrl` —
+  `Link` never counts) / ReadyToApply. Shown as "Needs resume" / "Needs apply link" / "Ready to apply"
+  — never the bare word "Ready", which is an application status. `JobTask.Readiness`,
+  `ReadinessDisplay` and `ReadinessHint` are `[JsonIgnore]` and raised by `NotifyTrackingChanged`.
+  It replaced the old resume text: the List column is now **Readiness** (same 116 px) and the Board
+  card's bottom-right "Resume: …" is the readiness text. One shared `ReadinessTextStyle`: coloured
+  TEXT, not a badge (`StatusAppliedFg` green / `StatusInterviewFg` amber / `Muted` grey), tooltip =
+  what is missing. It never changes `Status`, `ApplicationStatus` or any timestamp.
+- **Open Application** (`JobTracker.OpenApplyUrl`): opens the recorded `ApplyUrl` through the same
+  `IsOpenableUrl` (http/https only) and `Launch` as Open Job, and logs `TRACKING open apply URL <jobId>`
+  (id only). `ApplyUrlToOpen` **never falls back to `Link`** — the Jobright posting is Open Job's. UI:
+  an Apply button between Open Job and Resume in the List's Actions column (disabled via
+  `OpenableUrlConverter` unless the ApplyUrl is usable; tooltip = ApplyUrl), and "Open Application"
+  under "Open Job Posting" in the List and Board context menus, which show a status message instead of
+  opening when no link is recorded. Test: `OpenApplicationIsSafe` (refusals only — it never launches).
+- Tests: 5 checks in the "Tracking dashboard" group of `ResumeStyleTests`.
+
+### Design direction — agreed, NOT yet built
+
+Do not implement these without the user starting the work; they record intent, not current behaviour.
+
+- **Jobright "Remove From List"** makes a card disappear from Jobright's results, so future scans stop
+  finding it. It is the candidate mechanism for keeping unwanted jobs out of later scans. Clicking it
+  changes the user's Jobright account, so automating it needs the user's explicit go-ahead and must
+  stay a user-started action — never a side effect of a scan or an import.
+- **"Already Applied" stays a local application status** (`ApplicationStatus`), not a deletion — the
+  job and its history remain in Resume Builder.
+
+### Core job-browser rules
 
 - **It is a SECOND WebView2 and shares nothing with the ChatGPT one.** Its user-data folder is
   `%LOCALAPPDATA%\ResumeBuilder\JobBrowserWebView2` — a sibling of the ChatGPT profile, never inside
@@ -363,7 +647,9 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 - **`JobImportData` is the canonical input** and both sources produce it: an Incoming JSON file
   deserializes straight into it, and the job browser's extractor returns it. Required: company,
   title, jobUrl (an absolute http/https address), description. Optional: companyUrl (kept only if it
-  is a real web address; a bad one is dropped, it never fails the job). There is **no external jobId
+  is a real web address; a bad one is dropped, it never fails the job) and **applyUrl** (added for
+  import-time link discovery; kept only if it passes `ApplyCapture.IsApplicationUrl`, never a
+  duplicate key, never fails the job). There is **no external jobId
   and no location** — neither is required, read or invented.
 - **One job per input, always.** No batches, arrays, lists, pages or crawling. An Incoming file that
   is an array — even an array of one — or an object with a `jobs` list (the retired batch format) is
@@ -566,11 +852,13 @@ Rules that keep it that way:
   asserts the probe script contains none of `innerText`, `innerHTML`, `textContent`,
   `data-message-author-role`, `conversation-turn`, `markdown`, `copy`, `click(`, `dispatchEvent`,
   `clipboard`, and that it only returns `generating` / `idle` / `unknown`.
-- **The copy stays a human action by ChatGPT's own feature.** The app tells the user to press
-  Ctrl+Shift+; (ChatGPT's "Copy last code block"; there is no "copy last response" shortcut); the
-  keystroke goes from Windows to the page. Never send it with `SendInput`,
-  `SendKeys`, CDP `Input.dispatchKeyEvent` or a scripted event — that would be programmatic extraction
-  under another name.
+- **The copy uses ChatGPT's own shortcut, and the app now presses it** (`KeyboardSimulator`, from
+  `WatchForAnswerAsync` on a confirmed Ready, commit `25a1034` "feat: version-auto-input"). It brings
+  the window forward, focuses the pane and sends the keystroke through Windows; the user's own
+  Ctrl+Shift+; still works and remains the fallback. **This is a deliberate change from the earlier
+  "human action only" rule — do not silently revert it, and do not expand it**: there is still no
+  reading of assistant turns, no Copy-button click and no DOM read of a reply. The answer still
+  reaches the app only through the clipboard.
 - Idle must hold for 3 consecutive 1-second polls after generation was seen, so reasoning-model pauses
   do not fire early. If generation is never seen, notify only after the 30 s start budget. Give up
   after 20 minutes with a status message. Always cancellable.
@@ -591,18 +879,65 @@ Rules that keep it that way:
   owns the combination, Win32 error 1409) is reported in the status line, never thrown. Verified with a
   real keypress: with another window in front, the hotkey fired once and brought the window forward.
 
+## ChatGPT retries
+
+- **Three sends per job, one budget** (`GptAttempts.MaxAttempts`). `GptAttempts` is pure policy —
+  decide, reason, stored `FailureReason`, log lines, status text — and `MainWindow` performs the
+  effects, like `QueueRunner` and `CaptureWatchdog`.
+- **Retryable** (`GptFailure`): SendSide (no WebView, fresh-chat navigation failed, composer fill
+  failed, Send failed), ResponseStartTimeout, ResponseStalled, ResponseCeiling, InvalidOutput.
+  **Never retried**: prepare/config failures, capture timeout, storage and document failures.
+- **`Prepare` runs ONCE per job.** `_activePrepared` holds the request; every retry re-sends the same
+  `Text` and nothing rewrites `prepared-request.*`. `SendAttemptAsync` is one attempt;
+  `HandleGptFailureAsync` is the only place that retries or gives up.
+- **Before a retry** (`ResetForRetryAsync`): cancel the send, the completion watch and the capture
+  watchdog, clear `_readyJobId`, dismiss the toast, disarm the watcher, recycle the WebView2, then
+  re-arm and navigate to a fresh conversation. The job, its prepared text and **all** application
+  tracking (status, ViewedAt/ReadyAt/AppliedAt/InterviewAt/DoneAt, ApplyUrl, platform, readiness) are
+  untouched — only the QUEUE `Status` ever changes.
+- **On exhaustion** `FailActiveJobAsync` sets queue `Status = Failed` with a token reason
+  (`GptSendFailed` / `GptNoResponse` / `GptStalled` / `GptInvalidOutput`), saves, recycles and
+  advances to the next Queued job.
+- **Invalid output shares the same budget** — the old two-strike counter in `QueueRunner` is no longer
+  used by MainWindow, so a job can never be sent more than three times.
+- **Timing** (`ChatCompletionWatcher`): `ResponseStartMs` 180 s from a confirmed Send;
+  `InactivityMs` 120 s measured from the last `generating` poll, so a long answer that keeps
+  generating is never failed; `MaxWaitMs` 20 min stays the absolute backstop. New outcomes
+  `NoResponseStart` and `Stalled`.
+- **ReadyUnconfirmed is ambiguous and is never treated as success.** At the 30 s start budget the
+  watcher fires `onUnconfirmedReady`: the user is told once, the state stays UNCONFIRMED (no Ready, no
+  capture watchdog, no queue advance) and the watch **keeps going**. It also gets **one** copy
+  opportunity — `RequestCopyAsync`, the same keystroke the confirmed path sends — because the answer
+  may have finished before the first poll; without it a successful fast answer would be re-sent at
+  180 s. A capture cancels the watch and completes the job; silence ends as `NoResponseStart` and is
+  retried.
+- **One copy keystroke per attempt** (`CaptureRequestGate`, reset in `SendAttemptAsync`): if the
+  ambiguous state already asked, a later confirmed Ready must not press it again for the same answer.
+  Every capture rule still applies to whatever lands (prompt echo, non-profile text, wrong or late
+  job, invalid output). No DOM reading was added.
+- **Capture timeout is NOT retried in v1**: ChatGPT may have answered and only the Copy failed. The
+  job is marked Failed (`CaptureTimeout`) and the queue advances, as before.
+- Logs carry the job id, the attempt and a fixed reason only: `GPT attempt 2/3 response-start timeout
+  <jobId>`, `GPT retries exhausted <jobId>; queue job marked Failed`, `GPT capture timeout <jobId>;
+  queue job marked Failed`. Never prompt text, answer text or a URL.
+- The queue status line shows `Processing — GPT attempt 2/3`. No new controls.
+- Tests: `ResumeStyleTests` "ChatGPT retries" (7 checks, a scripted probe on a virtual clock — no real
+  sends). The test project compiles `ChatAutomation.cs`, so it references the WebView2 package.
+
 ## Capture watchdog (A6.6.13)
 
-- **The Copy is awaited for 30 s, never forever.** `CaptureWatchdog` starts only on a *confirmed*
+- **The Copy is awaited for 10 s** (`CaptureWatchdog.DefaultTimeout`; the message says 10 s too). It
+  was 30 s when this was written. It times the CAPTURE stage only — never ChatGPT itself, which has
+  its own budgets above. `CaptureWatchdog` starts only on a *confirmed*
   `CompletionOutcome.Ready` (generation seen, then idle) while the capture is armed. `ReadyUnconfirmed`
   (generation never observed — could be a drifted selector while ChatGPT is still writing) notifies but
   never starts it, so a page change can never fail every job.
 - On timeout: disarm, mark the job `Failed` with `FailureReason = "CaptureTimeout"`, log
-  `CAPTURE TIMEOUT <jobId> after 30s` plus the exact message, recycle the WebView2 as after a completed
+  `CAPTURE TIMEOUT <jobId> after 10s` plus the exact message, recycle the WebView2 as after a completed
   job, and advance. **The job is never re-sent automatically**; Retry Failed re-queues it and clears the reason.
 - Cancelled (logged as `CAPTURE watchdog cancelled <jobId> (<reason>)`) on capture received, Stop, Skip,
   Pause, queue finish, second-strike failure, a new active job, and app close. Resume restarts a fresh
-  30 s wait for a job whose answer was already READY. After a first-strike rejection the completion
+  10 s wait for a job whose answer was already READY. After a first-strike rejection the completion
   watch restarts, so the corrected answer's Copy is bounded too.
 - The watchdog holds no I/O: `MainWindow` performs every effect, and a timer from an earlier job can only
   ever report `Cancelled` (generation counter), so it cannot fail the job active now.
@@ -611,5 +946,5 @@ Rules that keep it that way:
   `Classify` refuses it as `LateResponse`; and `ClipboardWatcher` ignores any update whose clipboard
   sequence number has not moved since arming (`ChangedSinceArm`), so a delayed WM_CLIPBOARDUPDATE can
   never read an older copy for the job armed now. Verified with the real clipboard.
-- Diagnostics: `READY <jobId>`, `CAPTURE watchdog started <jobId> 30s`, `CAPTURE received <jobId>`,
-  `CAPTURE TIMEOUT <jobId> after 30s`.
+- Diagnostics: `READY <jobId>`, `CAPTURE watchdog started <jobId> 10s`, `CAPTURE received <jobId>`,
+  `CAPTURE TIMEOUT <jobId> after 10s`.

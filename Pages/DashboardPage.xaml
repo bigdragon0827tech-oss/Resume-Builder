@@ -1,0 +1,111 @@
+<UserControl x:Class="ResumeBuilder.DashboardPage"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+ <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24">
+  <StackPanel>
+   <TextBlock Text="Dashboard" Style="{DynamicResource PageTitleStyle}"/>
+   <TextBlock Text="Queue health, applications, and shortcuts into your workflow." Style="{DynamicResource PageSubtitleStyle}"/>
+
+   <UniformGrid Columns="4" Margin="0,0,0,16">
+    <Border Style="{DynamicResource CardStyle}" Margin="0,0,8,0">
+     <StackPanel>
+      <TextBlock Text="Today's applications" Style="{DynamicResource CardLabelStyle}"/>
+      <TextBlock x:Name="TodayCountText" Text="0" Style="{DynamicResource CardValueStyle}"/>
+     </StackPanel>
+    </Border>
+    <Border Style="{DynamicResource CardStyle}" Margin="4,0">
+     <StackPanel>
+      <TextBlock Text="Last 30 days" Style="{DynamicResource CardLabelStyle}"/>
+      <TextBlock x:Name="MonthCountText" Text="0" Style="{DynamicResource CardValueStyle}"/>
+     </StackPanel>
+    </Border>
+    <Border Style="{DynamicResource CardStyle}" Margin="4,0">
+     <StackPanel>
+      <TextBlock Text="Total applied" Style="{DynamicResource CardLabelStyle}"/>
+      <TextBlock x:Name="TotalCountText" Text="0" Style="{DynamicResource CardValueStyle}"/>
+     </StackPanel>
+    </Border>
+    <Border Style="{DynamicResource CardStyle}" Margin="8,0,0,0">
+     <StackPanel>
+      <TextBlock Text="Ready to apply" Style="{DynamicResource CardLabelStyle}"/>
+      <TextBlock x:Name="ReadyToApplyCountText" Text="0" Style="{DynamicResource CardValueStyle}"/>
+      <TextBlock Text="Ready, not applied yet" Style="{DynamicResource MutedTextStyle}"/>
+     </StackPanel>
+    </Border>
+   </UniformGrid>
+
+   <Grid Margin="0,0,0,16">
+    <Grid.ColumnDefinitions>
+     <ColumnDefinition Width="*"/>
+     <ColumnDefinition Width="16"/>
+     <ColumnDefinition Width="*"/>
+    </Grid.ColumnDefinitions>
+    <Border Grid.Column="0" Style="{DynamicResource CardStyle}">
+     <StackPanel>
+      <TextBlock Text="Queue" Style="{DynamicResource SectionTitleStyle}"/>
+      <TextBlock x:Name="QueueStateText" FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource Accent.Default}"/>
+      <TextBlock x:Name="QueueDetailText" Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{DynamicResource Text.Secondary}"/>
+     </StackPanel>
+    </Border>
+    <Border Grid.Column="2" Style="{DynamicResource CardStyle}">
+     <StackPanel>
+      <TextBlock Text="Pipeline" Style="{DynamicResource SectionTitleStyle}"/>
+      <ItemsControl x:Name="PipelineView">
+       <ItemsControl.ItemsPanel>
+        <ItemsPanelTemplate>
+         <UniformGrid Columns="5"/>
+        </ItemsPanelTemplate>
+       </ItemsControl.ItemsPanel>
+       <ItemsControl.ItemTemplate>
+        <DataTemplate>
+         <Border Background="{DynamicResource Bg.SurfaceRaised}" CornerRadius="6" Padding="10,8" Margin="0,0,6,0">
+          <StackPanel>
+           <TextBlock Text="{Binding Status}" FontSize="11" Foreground="{DynamicResource Text.Muted}"/>
+           <TextBlock Text="{Binding Count}" FontSize="20" FontWeight="Bold"/>
+           <TextBlock Text="{Binding Conversion}" FontSize="10" Foreground="{DynamicResource Text.Secondary}"
+                      Visibility="{Binding ConversionVisibility}"/>
+          </StackPanel>
+         </Border>
+        </DataTemplate>
+       </ItemsControl.ItemTemplate>
+      </ItemsControl>
+     </StackPanel>
+    </Border>
+   </Grid>
+
+   <Grid>
+    <Grid.ColumnDefinitions>
+     <ColumnDefinition Width="2*"/>
+     <ColumnDefinition Width="16"/>
+     <ColumnDefinition Width="*"/>
+    </Grid.ColumnDefinitions>
+    <Border Grid.Column="0" Style="{DynamicResource CardStyle}">
+     <StackPanel>
+      <TextBlock Text="Recent activity" Style="{DynamicResource SectionTitleStyle}"/>
+      <ItemsControl x:Name="RecentList">
+       <ItemsControl.ItemTemplate>
+        <DataTemplate>
+         <Border BorderBrush="{DynamicResource Border.Subtle}" BorderThickness="0,0,0,1" Padding="0,10">
+          <StackPanel>
+           <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+           <TextBlock Text="{Binding Meta}" Foreground="{DynamicResource Text.Muted}" FontSize="11" Margin="0,2,0,0"/>
+          </StackPanel>
+         </Border>
+        </DataTemplate>
+       </ItemsControl.ItemTemplate>
+      </ItemsControl>
+     </StackPanel>
+    </Border>
+    <Border Grid.Column="2" Style="{DynamicResource CardStyle}">
+     <StackPanel>
+      <TextBlock Text="Quick actions" Style="{DynamicResource SectionTitleStyle}"/>
+      <Button Content="Refresh Input" Margin="0,0,0,8" Click="RefreshInput_Click"/>
+      <Button Content="Open Job Browser" Margin="0,0,0,8" Click="OpenBrowser_Click"/>
+      <Button Content="Start Queue" Style="{DynamicResource BtnPrimary}" Margin="0,0,0,8" Click="StartQueue_Click"/>
+      <Button Content="Ready to apply" Style="{DynamicResource BtnGhost}" Click="ReadyToApply_Click"/>
+     </StackPanel>
+    </Border>
+   </Grid>
+  </StackPanel>
+ </ScrollViewer>
+</UserControl>

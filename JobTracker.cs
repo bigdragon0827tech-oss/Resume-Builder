@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 
 namespace ResumeBuilder;
@@ -26,6 +27,29 @@ public static class ApplicationStatus {
     public static readonly string[] Ordered = { Viewed, Ready, Applied, Interview, Done };
 
     public static readonly string[] Filters = { All, Viewed, Ready, Applied, Interview, Done };
+
+    /// <summary>
+    /// Values the STATUS FILTER may take that are not statuses. They are never stored on a task and are
+    /// never produced by <see cref="Normalize"/>; <see cref="Ordered"/>, the pipeline, the board columns
+    /// and the statistics keep exactly the five real statuses.
+    /// </summary>
+    public static class Filter {
+        /// <summary>A group, not a status: Viewed or Ready — the stages before an application exists.</summary>
+        public const string NotAppliedYet = "Not applied yet";
+
+        /// <summary>The statuses the group covers.</summary>
+        public static readonly string[] NotAppliedYetStatuses = { Viewed, Ready };
+
+        /// <summary>The status dropdown's choices: All, the group, then the five real statuses.</summary>
+        public static readonly string[] Options = { All, NotAppliedYet, Viewed, Ready, Applied, Interview, Done };
+
+        public static bool IsGroup(string? value) =>
+            NotAppliedYet.Equals((value ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>True when a job's stored status falls inside the group.</summary>
+        public static bool Covers(string? group, string? applicationStatus) =>
+            IsGroup(group) && NotAppliedYetStatuses.Contains(Normalize(applicationStatus));
+    }
 
     public static bool IsKnown(string? value) =>
         value is not null && Ordered.Any(s => s.Equals(value, StringComparison.OrdinalIgnoreCase));
@@ -127,13 +151,63 @@ public static class DateFilter {
     }
 }
 
+/// <summary>
+/// Whether a job is ready to be applied for. Derived from ResumeGenerated and ApplyUrl only — display
+/// only, never stored, and independent of both the queue status and the application status.
+/// </summary>
+public enum ApplicationReadiness { NeedsResume, NeedsApplyLink, ReadyToApply }
+
 public static class JobTracker {
+    /// <summary>
+    /// No resume -> NeedsResume; resume but no usable (http/https) ApplyUrl -> NeedsApplyLink;
+    /// both -> ReadyToApply. "Usable" is <see cref="IsOpenableUrl"/>, the Apply button's own test.
+    /// </summary>
+    public static ApplicationReadiness GetReadiness(JobTask job) =>
+        !job.ResumeGenerated ? ApplicationReadiness.NeedsResume
+        : IsOpenableUrl(job.ApplyUrl) ? ApplicationReadiness.ReadyToApply
+        : ApplicationReadiness.NeedsApplyLink;
+
+    /// <summary>
+    /// The "Ready to apply" card: every job whose readiness is ReadyToApply, computed now — exactly the
+    /// set the Readiness filter shows for that one state, so the card and the list always agree.
+    /// </summary>
+    public static int CountReadyToApply(IEnumerable<JobTask> tasks) =>
+        (tasks ?? Enumerable.Empty<JobTask>()).Count(t => GetReadiness(t) == ApplicationReadiness.ReadyToApply);
+
+    /// <summary>
+    /// The action queue: ready to apply AND not applied for yet (Viewed or Ready). Readiness itself is
+    /// unchanged — an applied job stays ReadyToApply, it simply has nothing left to do here.
+    /// </summary>
+    public static bool NeedsAction(JobTask job) =>
+        GetReadiness(job) == ApplicationReadiness.ReadyToApply &&
+        ApplicationStatus.Filter.Covers(ApplicationStatus.Filter.NotAppliedYet, job.ApplicationStatus);
+
+    /// <summary>The "Ready to apply" card's number: exactly what the card's own filters show.</summary>
+    public static int CountNeedsAction(IEnumerable<JobTask> tasks) =>
+        (tasks ?? Enumerable.Empty<JobTask>()).Count(NeedsAction);
+
+    /// <summary>Wording avoids "Ready" alone, which is already an application status.</summary>
+    public static string ReadinessText(ApplicationReadiness readiness) => readiness switch {
+        ApplicationReadiness.ReadyToApply => "Ready to apply",
+        ApplicationReadiness.NeedsApplyLink => "Needs apply link",
+        _ => "Needs resume"
+    };
+
+    public static string ReadinessHint(ApplicationReadiness readiness) => readiness switch {
+        ApplicationReadiness.ReadyToApply => "A resume and an application link are both recorded.",
+        ApplicationReadiness.NeedsApplyLink => "Click Apply on this job in the Job Browser to record its application link.",
+        _ => "Generate this job's resume first."
+    };
+
     /// <summary>
     /// Sets the application status by hand. Returns false when nothing changed, so a caller can skip
     /// a pointless save. Entering a stage stamps its time if it has none; a stamp already set is never
     /// rewritten or cleared, so moving a task back and forward keeps the real history.
     /// </summary>
     public static bool UpdateStatus(JobTask job, string status, DateTime? at = null) {
+        // A filter-only value is not a status: refuse it rather than let Normalize store it as Viewed.
+        if (ApplicationStatus.Filter.IsGroup(status)) return false;
+
         var target = ApplicationStatus.Normalize(status);
         var previous = job.ApplicationStatus;
         if (previous == target) return false;
@@ -147,6 +221,46 @@ public static class JobTracker {
         job.NotifyTrackingChanged();
         return true;
     }
+
+    /// <summary>
+    /// Mark Applied is offered only before Applied (Viewed or Ready), so a one-click action can never
+    /// move an Interview or Done job backwards. The status dropdown remains for deliberate corrections.
+    /// </summary>
+    public static bool CanMarkApplied(string? applicationStatus) =>
+        ApplicationStatus.Index(ApplicationStatus.Normalize(applicationStatus)) < ApplicationStatus.Index(ApplicationStatus.Applied);
+
+    public static bool CanMarkApplied(JobTask job) => CanMarkApplied(job.ApplicationStatus);
+
+    /// <summary>
+    /// The user's own "I applied" — never inferred. Goes through <see cref="UpdateStatus"/>, so AppliedAt
+    /// is stamped only if it has none (never rewritten), a skipped ReadyAt is backfilled, and the queue
+    /// Status is not touched. Returns false (no change) from Applied, Interview or Done.
+    /// </summary>
+    public static bool MarkApplied(JobTask job, DateTime? at = null) =>
+        CanMarkApplied(job) && UpdateStatus(job, ApplicationStatus.Applied, at);
+
+    /// <summary>
+    /// Every stage date recorded for a job, one per line ("Applied Sep 18, 2026, 3:40 PM"), for the
+    /// List's Date tooltip. A task saved before tracking existed falls back to when it was added.
+    /// </summary>
+    public static string StageDatesText(JobTask job) {
+        static string When(DateTime at) => at.ToString("MMM d, yyyy, h:mm tt", CultureInfo.InvariantCulture);
+        var lines = new List<string>();
+        void Add(string stage, DateTime? at) { if (at is DateTime t) lines.Add($"{stage} {When(t)}"); }
+        Add(ApplicationStatus.Viewed, job.ViewedAt);
+        Add(ApplicationStatus.Ready, job.ReadyAt);
+        Add(ApplicationStatus.Applied, job.AppliedAt);
+        Add(ApplicationStatus.Interview, job.InterviewAt);
+        Add(ApplicationStatus.Done, job.DoneAt);
+        if (lines.Count == 0 && job.CreatedAt != default) lines.Add($"Added {When(job.CreatedAt)}");
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    /// <summary>The Board card's date: "Applied Sep 18" once AppliedAt exists, else the tracking date.</summary>
+    public static string BoardDateText(JobTask job) =>
+        job.AppliedAt is DateTime applied
+            ? "Applied " + applied.ToString("MMM d", CultureInfo.InvariantCulture)
+            : job.TrackingDateDisplay;
 
     /// <summary>
     /// Records when a stage was reached. An existing stamp always wins, and any earlier stage that was
@@ -195,6 +309,11 @@ public static class JobTracker {
     public static List<JobTask> GetTasksByStatus(IEnumerable<JobTask> tasks, string? status) {
         var all = tasks ?? Enumerable.Empty<JobTask>();
         if (string.IsNullOrWhiteSpace(status) || status == ApplicationStatus.All) return all.ToList();
+
+        // The filter-only group is answered before Normalize, which would otherwise read an unknown
+        // value as Viewed and silently filter to the wrong thing.
+        if (ApplicationStatus.Filter.IsGroup(status))
+            return all.Where(t => ApplicationStatus.Filter.Covers(status, t.ApplicationStatus)).ToList();
 
         var wanted = ApplicationStatus.Normalize(status);
         return all.Where(t => ApplicationStatus.Normalize(t.ApplicationStatus) == wanted).ToList();
@@ -270,12 +389,17 @@ public static class JobTracker {
     }
 
     /// <summary>
-    /// The list and board share one filter path: free text, then the status filter, then either one
-    /// exact date or a quick range over each job's tracking date. Order is never changed.
+    /// The list and board share one filter path: the status filter, free text, platforms, readiness,
+    /// then either one exact date or a quick range over each job's tracking date. Order is never
+    /// changed. <paramref name="platforms"/> and <paramref name="readiness"/> are optional: null or
+    /// empty means no restriction.
     /// </summary>
     public static List<JobTask> ApplyFilters(IEnumerable<JobTask> tasks, string? search, string? status,
-                                             string? dateFilter, DateTime? now = null, DateTime? exactDate = null) {
-        IEnumerable<JobTask> result = Search(GetTasksByStatus(tasks, status), search);
+                                             string? dateFilter, DateTime? now = null, DateTime? exactDate = null,
+                                             IReadOnlyCollection<ApplicationPlatform>? platforms = null,
+                                             IReadOnlyCollection<ApplicationReadiness>? readiness = null) {
+        IEnumerable<JobTask> result =
+            FilterByReadiness(FilterByPlatforms(Search(GetTasksByStatus(tasks, status), search), platforms), readiness);
 
         if (exactDate is DateTime day) return result.Where(t => t.TrackingDate.Date == day.Date).ToList();
 
@@ -303,6 +427,69 @@ public static class JobTracker {
     }
 
     static string Searchable(JobTask task) => $"{task.Company} {task.Title} {task.JobId}";
+
+    // ---------- platform filter ----------
+
+    /// <summary>
+    /// The order the platform filter lists its choices in — explicit, never the enum's declaration
+    /// order, so reordering the enum cannot reshuffle the UI or the label.
+    /// </summary>
+    public static readonly IReadOnlyList<ApplicationPlatform> PlatformFilterOrder = new[] {
+        ApplicationPlatform.Greenhouse, ApplicationPlatform.Workday, ApplicationPlatform.Lever,
+        ApplicationPlatform.LinkedIn, ApplicationPlatform.Ashby, ApplicationPlatform.SmartRecruiters,
+        ApplicationPlatform.ICims, ApplicationPlatform.Other, ApplicationPlatform.Unknown
+    };
+
+    public static string PlatformDisplayName(ApplicationPlatform platform) =>
+        platform == ApplicationPlatform.ICims ? "iCIMS" : platform.ToString();
+
+    /// <summary>OR matching: a job passes when its platform is any selected one. Null or empty selects all.</summary>
+    public static List<JobTask> FilterByPlatforms(IEnumerable<JobTask> tasks, IReadOnlyCollection<ApplicationPlatform>? platforms) {
+        var all = (tasks ?? Enumerable.Empty<JobTask>()).ToList();
+        if (platforms is null || platforms.Count == 0) return all;
+        return all.Where(task => platforms.Contains(task.ApplicationPlatform)).ToList();
+    }
+
+    /// <summary>
+    /// "All platforms" for none or every choice; one or two names in <see cref="PlatformFilterOrder"/>;
+    /// "N platforms" for three or more.
+    /// </summary>
+    public static string PlatformFilterLabel(IReadOnlyCollection<ApplicationPlatform>? selected) =>
+        MultiSelectLabel(selected, PlatformFilterOrder, PlatformDisplayName, "All platforms", "platforms");
+
+    /// <summary>
+    /// The label of a multi-select filter button: <paramref name="allText"/> when nothing or every
+    /// choice is selected (both mean "no restriction"); one or two names in <paramref name="order"/>;
+    /// otherwise "N <paramref name="noun"/>". Shared by the platform and readiness filters.
+    /// </summary>
+    public static string MultiSelectLabel<T>(IReadOnlyCollection<T>? selected, IReadOnlyList<T> order,
+                                             Func<T, string> displayName, string allText, string noun) {
+        var chosen = order.Where(choice => selected?.Contains(choice) == true).ToList();
+        if (chosen.Count == 0 || chosen.Count == order.Count) return allText;
+        return chosen.Count <= 2
+            ? string.Join(", ", chosen.Select(displayName))
+            : $"{chosen.Count} {noun}";
+    }
+
+    // ---------- readiness filter ----------
+
+    /// <summary>The readiness filter's choices, in an explicit order independent of the enum.</summary>
+    public static readonly IReadOnlyList<ApplicationReadiness> ReadinessFilterOrder = new[] {
+        ApplicationReadiness.ReadyToApply, ApplicationReadiness.NeedsApplyLink, ApplicationReadiness.NeedsResume
+    };
+
+    /// <summary>
+    /// OR matching on <see cref="GetReadiness"/>, evaluated now — readiness is never stored. Null or
+    /// empty selects all.
+    /// </summary>
+    public static List<JobTask> FilterByReadiness(IEnumerable<JobTask> tasks, IReadOnlyCollection<ApplicationReadiness>? readiness) {
+        var all = (tasks ?? Enumerable.Empty<JobTask>()).ToList();
+        if (readiness is null || readiness.Count == 0) return all;
+        return all.Where(task => readiness.Contains(GetReadiness(task))).ToList();
+    }
+
+    public static string ReadinessFilterLabel(IReadOnlyCollection<ApplicationReadiness>? selected) =>
+        MultiSelectLabel(selected, ReadinessFilterOrder, ReadinessText, "All readiness", "states");
 
     /// <summary>Jobs that reached Applied — they all carry an AppliedAt, so activity can be counted.</summary>
     static IEnumerable<JobTask> AppliedJobs(IEnumerable<JobTask> tasks) =>
@@ -337,6 +524,23 @@ public static class JobTracker {
     }
 
     public static bool OpenJobUrl(string? url) => IsOpenableUrl(url) && Launch(url!.Trim());
+
+    /// <summary>
+    /// The application address to open for a job: its ApplyUrl when that is an http/https address,
+    /// otherwise null. Never falls back to <see cref="JobTask.Link"/> — the Jobright posting is Open Job.
+    /// </summary>
+    public static string? ApplyUrlToOpen(JobTask? job) =>
+        job is not null && IsOpenableUrl(job.ApplyUrl) ? job.ApplyUrl.Trim() : null;
+
+    /// <summary>
+    /// Opens the recorded application page (ApplyUrl) in the default browser, through the same
+    /// validation and launch as Open Job. Logs the job id only, never the address.
+    /// </summary>
+    public static bool OpenApplyUrl(JobTask? job) {
+        if (ApplyUrlToOpen(job) is not string url || !Launch(url)) return false;
+        PerfLog.Line("TRACKING open apply URL " + job!.JobId);
+        return true;
+    }
 
     /// <summary>
     /// Opens the generated resume in whatever Windows uses for a DOCX. The path was produced by this

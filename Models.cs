@@ -24,6 +24,25 @@ public sealed class JobTask : System.ComponentModel.INotifyPropertyChanged {
 
     /// <summary>The company's own website, when the input had one. Optional; never a duplicate key.</summary>
     public string CompanyUrl { get; set; } = "";
+
+    /// <summary>
+    /// The real application address (the ATS page), recorded when the user clicked Apply in the job
+    /// browser (<see cref="ApplyCapture"/>). Empty until then, and for every task saved before it
+    /// existed. Informational only — never a duplicate key, and <see cref="Link"/> keeps its meaning.
+    /// </summary>
+    public string ApplyUrl { get; set; } = "";
+
+    /// <summary>When <see cref="ApplyUrl"/> was recorded; null when it never was.</summary>
+    public DateTime? ApplyUrlCapturedAt { get; set; }
+
+    /// <summary>
+    /// The platform <see cref="ApplyUrl"/> points at, derived by <see cref="ApplicationPlatformDetector"/>.
+    /// Unknown when there is no ApplyUrl (and for every task saved before it existed). Read tolerantly:
+    /// an unreadable stored value becomes Unknown rather than failing the whole tasks.json.
+    /// </summary>
+    [JsonConverter(typeof(TolerantPlatformConverter))]
+    public ApplicationPlatform ApplicationPlatform { get; set; } = ApplicationPlatform.Unknown;
+
     public string About { get; set; } = "";
 
     string _status = "Queued";
@@ -102,6 +121,18 @@ public sealed class JobTask : System.ComponentModel.INotifyPropertyChanged {
     /// <summary>Resume column and board card text, so neither needs a value converter.</summary>
     [JsonIgnore] public string ResumeStateDisplay => ResumeGenerated ? "Ready" : "No resume";
 
+    /// <summary>
+    /// Whether this job can be applied for now (resume + usable application link). Derived by
+    /// <see cref="JobTracker.GetReadiness"/>; display only, never saved, never a status.
+    /// </summary>
+    [JsonIgnore] public ApplicationReadiness Readiness => JobTracker.GetReadiness(this);
+
+    /// <summary>Readiness column and board card text.</summary>
+    [JsonIgnore] public string ReadinessDisplay => JobTracker.ReadinessText(Readiness);
+
+    /// <summary>Readiness tooltip: what is missing, or that nothing is.</summary>
+    [JsonIgnore] public string ReadinessHint => JobTracker.ReadinessHint(Readiness);
+
     [JsonIgnore] public string CreatedDisplay => CreatedAt == default ? "" : CreatedAt.ToString("yyyy-MM-dd");
 
     public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
@@ -110,6 +141,7 @@ public sealed class JobTask : System.ComponentModel.INotifyPropertyChanged {
     public void NotifyTrackingChanged() {
         foreach (var name in new[] { nameof(ApplicationStatus), nameof(UpdatedAt), nameof(ResumePath),
                                      nameof(ResumeGenerated), nameof(ResumeStateDisplay),
+                                     nameof(Readiness), nameof(ReadinessDisplay), nameof(ReadinessHint),
                                      nameof(TrackingDate), nameof(TrackingDateDisplay) })
             PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(name));
     }
@@ -124,6 +156,16 @@ public sealed class AppSettings {
     public string OriginalResume { get; set; } = "";
     public string CandidateProfile { get; set; } = "";
     public string MasterPrompt { get; set; } = "";
+
+    /// <summary>
+    /// Which prompt file a request is built from: <see cref="PromptModes"/> Resume (default) or Normal.
+    /// A string, and read through PromptModes.Normalize, so an unknown or missing value falls back to
+    /// Resume instead of throwing — a throw here would load DEFAULT settings and lose the user's paths.
+    /// </summary>
+    public string PromptMode { get; set; } = PromptModes.Resume;
+
+    /// <summary>The user's own prompt file, used in Normal mode. Empty until they choose one.</summary>
+    public string NormalPrompt { get; set; } = "";
     public string IncomingFolder { get; set; } = "";
     public string ImportedFolder { get; set; } = "";
     public string ResumeRootFolder { get; set; } = "";
