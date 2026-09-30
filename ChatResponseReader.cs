@@ -118,6 +118,56 @@ public static class ChatResponseReader {
 })();
 """;
 
+    /// <summary>
+    /// Reads one finished HTML resume from the last assistant turn. Used only after a confirmed Ready,
+    /// and only when the request was sent as HTML. It does not click, fetch, or change the page.
+    /// </summary>
+    public const string ReadLastAssistantHtmlScript = """
+(function () {
+  function assistants() {
+    var a = document.querySelectorAll('[data-message-author-role="assistant"]');
+    if (a && a.length) return a;
+    return [];
+  }
+  function looksLikeHtml(t) {
+    if (!t) return false;
+    var s = t.toLowerCase();
+    return s.indexOf('<html') >= 0 && s.indexOf('</html>') >= 0;
+  }
+  function codeTexts(root) {
+    var out = [];
+    var nodes = root.querySelectorAll('pre code, code');
+    for (var i = 0; i < nodes.length; i++) {
+      var t = (nodes[i].textContent || '').trim();
+      if (t) out.push(t);
+    }
+    return out;
+  }
+  var list = assistants();
+  if (!list.length) return { status: 'missing', text: '', assistants: 0, detail: 'no-html' };
+  var last = list[list.length - 1];
+  var codes = codeTexts(last);
+  var hits = [];
+  for (var c = 0; c < codes.length; c++) {
+    if (looksLikeHtml(codes[c])) hits.push(codes[c]);
+  }
+  if (hits.length > 1) {
+    hits.sort(function (a, b) { return b.length - a.length; });
+    if (hits[0] !== hits[1] && hits[1].length > hits[0].length * 0.6)
+      return { status: 'ambiguous', text: '', assistants: list.length, detail: 'multiple-html' };
+  }
+  if (hits.length >= 1)
+    return { status: 'ok', text: hits[0], assistants: list.length };
+  var text = (last.textContent || '').trim();
+  if (!looksLikeHtml(text))
+    return { status: 'missing', text: '', assistants: list.length, detail: 'no-html' };
+  var opens = text.toLowerCase().split('<html').length - 1;
+  if (opens > 1)
+    return { status: 'ambiguous', text: '', assistants: list.length, detail: 'multiple-html' };
+  return { status: 'ok', text: text, assistants: list.length };
+})();
+""";
+
     /// <summary>Parse the JSON object returned by <see cref="ReadLastAssistantScript"/>.</summary>
     public static ChatReadResult ParseScriptPayload(string? executeScriptRaw) {
         if (string.IsNullOrWhiteSpace(executeScriptRaw) || executeScriptRaw == "null")
@@ -177,16 +227,19 @@ public static class ChatResponseReader {
         int pollMs = StablePollMs,
         int matchPolls = StableMatchPolls,
         Func<int, CancellationToken, Task>? delay = null,
-        CancellationToken cancellation = default) {
+        CancellationToken cancellation = default,
+        bool requireStable = false) {
 
         delay ??= (ms, ct) => Task.Delay(ms, ct);
         ChatReadResult? lastOk = null;
+        ChatReadResult? lastSeen = null;
         var matchStreak = 0;
         var waited = 0;
 
         while (waited <= budgetMs) {
             cancellation.ThrowIfCancellationRequested();
             var read = await probe(cancellation);
+            lastSeen = read;
             if (read.Success) {
                 if (lastOk is not null && ContentHash(lastOk.Text) == ContentHash(read.Text)) {
                     matchStreak++;
@@ -208,6 +261,15 @@ public static class ChatResponseReader {
             waited += pollMs;
         }
 
+        // Email extraction must not parse a reply that is still streaming.
+        // Resume capture keeps the last complete read when the budget ends.
+        if (requireStable)
+            return new ChatReadResult {
+                Status = ChatReadStatus.Missing,
+                Detail = "unstable",
+                Text = lastSeen?.Text ?? "",
+                AssistantCount = lastSeen?.AssistantCount ?? 0
+            };
         return lastOk ?? new ChatReadResult { Status = ChatReadStatus.Missing, Detail = "unstable" };
     }
 
@@ -230,6 +292,26 @@ public static class ChatResponseReader {
             },
             cancellation: cancellation,
             delay: delay);
+    }
+
+    /// <summary>Same stability wait as the JSON reader, using the HTML script. Call only after Ready.</summary>
+    public static async Task<ChatReadResult> ReadStableHtmlAsync(
+        CoreWebView2? web,
+        CancellationToken cancellation = default) {
+
+        if (web is null)
+            return new ChatReadResult { Status = ChatReadStatus.Error, Detail = "no-webview" };
+
+        return await ReadStableAsync(
+            async ct => {
+                try {
+                    var raw = await web.ExecuteScriptAsync(ReadLastAssistantHtmlScript);
+                    return ParseScriptPayload(raw);
+                } catch (Exception ex) {
+                    return new ChatReadResult { Status = ChatReadStatus.Error, Detail = ex.GetType().Name };
+                }
+            },
+            cancellation: cancellation);
     }
 
     /// <summary>

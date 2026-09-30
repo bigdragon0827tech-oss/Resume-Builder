@@ -15,6 +15,13 @@ public sealed class NormalizationReport {
     public List<string> Dropped { get; } = new();
     public bool Changed => Changes.Count > 0 || Dropped.Count > 0;
 
+    /// <summary>
+    /// True when the AI answer itself carried a style OBJECT (under "style" or a tolerated alias).
+    /// The saved profile always ends up with a style either way; this records whether the AI sent
+    /// one, which is what Normal Prompt mode requires.
+    /// </summary>
+    public bool StyleSupplied { get; set; }
+
     public string Describe() {
         if (!Changed) return "No normalization was required; the response already matched the canonical schema.";
         var sb = new StringBuilder();
@@ -88,6 +95,7 @@ public static class ProfileNormalizer {
         // Style system: the optional style block. It is kept only after normalization, so what lands in the
         // profile is always a complete, in-range style — never raw AI values.
         var style = Use(map, used, "style", "styling", "format", "formatting");
+        report.StyleSupplied = style is JsonObject;
         if (style is not null) NormalizeStyle(style, profile, report);
 
         ReportLeftovers(map, used, "", report);

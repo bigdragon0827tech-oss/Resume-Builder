@@ -6,7 +6,75 @@ namespace ResumeBuilder;
 
 public partial class SettingsWindow : System.Windows.Controls.UserControl {
     AppSettings _s=Storage.LoadSettings();
-    public SettingsWindow(){ InitializeComponent(); LoadFields(); RefreshInspector(); InitTracking(); }
+    public SettingsWindow(){ InitializeComponent(); BuildImportFilterSwitches(); LoadFields(); RefreshInspector(); InitTracking(); HideDevelopmentToolsInRelease(); }
+
+    /// <summary>
+    /// The Development tab (Load Sample Jobs, Remove Sample Jobs, Clear Job History) is for testing
+    /// this app, not for customers: shown in DEBUG builds, hidden — tab and nav button — in RELEASE.
+    /// The actions themselves are unchanged.
+    /// </summary>
+    void HideDevelopmentToolsInRelease(){
+#if !DEBUG
+        NavDevelopment.Visibility=Visibility.Collapsed;
+        DevelopmentTab.Visibility=Visibility.Collapsed;
+#endif
+    }
+
+    // ---------- job import filters ----------
+    //
+    // The same five AppSettings values the Job Browser toolbar edits. There is no second model:
+    // both screens build their checkboxes from JobImportFilter.Switches and read and write the one
+    // settings.json. This page keeps the page's own Save-button convention; the browser popup saves
+    // on each tick, and ReloadSettings() picks that up whenever this page is shown again.
+
+    readonly List<System.Windows.Controls.CheckBox> _filterBoxes=new();
+
+    void BuildImportFilterSwitches(){
+        foreach(var descriptor in JobImportFilter.Switches){
+            var box=new System.Windows.Controls.CheckBox{
+                Content=descriptor.Label,
+                Margin=new Thickness(0,6,0,6),
+                Tag=descriptor.Reason
+            };
+            _filterBoxes.Add(box);
+            FilterSwitchHost.Children.Add(box);
+        }
+        FilterFooterNote.Text=JobImportFilter.AppliesToFutureImports+
+            " Jobs already imported are never removed or re-checked.";
+    }
+
+    /// <summary>Copies the persisted switches into the checkboxes.</summary>
+    void LoadImportFilterSwitches(){
+        for(var i=0;i<_filterBoxes.Count&&i<JobImportFilter.Switches.Count;i++)
+            _filterBoxes[i].IsChecked=JobImportFilter.Switches[i].Get(_s);
+    }
+
+    /// <summary>Copies the checkboxes into a settings object being saved.</summary>
+    void ApplyImportFilterSwitches(AppSettings target){
+        for(var i=0;i<_filterBoxes.Count&&i<JobImportFilter.Switches.Count;i++)
+            JobImportFilter.Switches[i].Set(target,_filterBoxes[i].IsChecked==true);
+    }
+
+    /// <summary>
+    /// Re-reads settings.json into this page. The shell calls it whenever Settings is shown, so a
+    /// filter toggled on the Job Browser toolbar appears here — and, just as importantly, is not
+    /// written back out of a stale copy by the next Save.
+    /// </summary>
+    public void ReloadSettings(){ _s=Storage.LoadSettings(); LoadFields(); }
+
+    /// <summary>The filter captions on show, for the UI harness.</summary>
+    public IReadOnlyList<string> ImportFilterLabels()=>_filterBoxes.Select(b=>b.Content as string??"").ToList();
+
+    /// <summary>Whether each filter is ticked here, in JobImportFilter.Switches order.</summary>
+    public IReadOnlyList<bool> ImportFilterStates()=>_filterBoxes.Select(b=>b.IsChecked==true).ToList();
+
+    /// <summary>Ticks one filter and saves, exactly as the page's own Save does. For the harness.</summary>
+    public void SetImportFilterAndSave(JobFilterReason reason,bool enabled){
+        var box=_filterBoxes.FirstOrDefault(b=>b.Tag is JobFilterReason r&&r==reason);
+        if(box is null) return;
+        box.IsChecked=enabled;
+        SaveSettingsFromFields(announce:false);
+    }
 
     // ---------- job application tracking dashboard ----------
     //
@@ -23,8 +91,7 @@ public partial class SettingsWindow : System.Windows.Controls.UserControl {
 
     /// <summary>Set while the dashboard is rebuilding, so rebinding a row does not look like an edit.</summary>
     bool _refreshingTracking;
-
-    bool _boardView;
+    int _refreshSerial;
 
     /// <summary>One bar of the activity chart. Heights are pixels, worked out per refresh.</summary>
     sealed class ActivityBar {
@@ -37,44 +104,7 @@ public partial class SettingsWindow : System.Windows.Controls.UserControl {
         public string Tooltip { get; init; } = "";
     }
 
-    /// <summary>One stage box in the pipeline strip.</summary>
-    sealed class PipelineBox {
-        public string Status { get; init; } = "";
-        public int Count { get; init; }
-        public string Conversion { get; init; } = "";
-        public string Tooltip { get; init; } = "";
-        public Visibility ConversionVisibility { get; init; }
-        public Visibility ArrowVisibility { get; init; }
-        public System.Windows.Media.Geometry? Icon { get; init; }
-        public System.Windows.Media.Brush Background { get; init; } = System.Windows.Media.Brushes.Gainsboro;
-        public System.Windows.Media.Brush Foreground { get; init; } = System.Windows.Media.Brushes.Black;
-    }
-
-    /// <summary>One Kanban column.</summary>
-    sealed class BoardColumn {
-        public string Status { get; init; } = "";
-        public List<JobTask> Jobs { get; init; } = new();
-        public int Count => Jobs.Count;
-        public Visibility EmptyVisibility => Jobs.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        public System.Windows.Media.Geometry? Icon { get; init; }
-        public System.Windows.Media.Brush Background { get; init; } = System.Windows.Media.Brushes.Gainsboro;
-        public System.Windows.Media.Brush Foreground { get; init; } = System.Windows.Media.Brushes.Black;
-    }
-
     const string ActivityLast7="7 Days", ActivityLast30="30 Days", ActivityAllTime="All Time";
-
-    /// <summary>
-    /// The badge colours for a status, taken from the window's resources so XAML stays the single
-    /// source of truth. A missing key falls back rather than throwing the dashboard away.
-    /// </summary>
-    System.Windows.Media.Brush StatusBrush(string status,string suffix) =>
-        TryFindResource("Status"+status+suffix) as System.Windows.Media.Brush
-        ?? TryFindResource("StatusViewed"+suffix) as System.Windows.Media.Brush
-        ?? System.Windows.Media.Brushes.Gray;
-
-    /// <summary>The vector icon for a status, from the same resources the list badge uses.</summary>
-    System.Windows.Media.Geometry? StatusIcon(string status) =>
-        TryFindResource("Icon"+status) as System.Windows.Media.Geometry;
 
     /// <summary>The exact day picked from the calendar, or null when a quick range is in force.</summary>
     DateTime? _exactDate;
@@ -82,35 +112,25 @@ public partial class SettingsWindow : System.Windows.Controls.UserControl {
     /// <summary>The quick range currently chosen. Ignored while an exact date is set.</summary>
     string _dateFilter=DateFilter.AllDates;
 
-    /// <summary>
-    /// The ticked application platforms and readiness states. Empty means all. They live only in this
-    /// window: never saved to tasks.json, settings or a task.
-    /// </summary>
+    /// <summary>The ticked application platforms. Empty means all. Lives only in this window.</summary>
     MultiSelectFilter<ApplicationPlatform>? _platformFilter;
-    MultiSelectFilter<ApplicationReadiness>? _readinessFilter;
+    string _platformChoiceKey = "";
 
     void InitTracking() {
-        // All, the filter-only "Not applied yet" group, then the five real statuses.
         foreach(var filter in ApplicationStatus.Filter.Options) TrackingFilterBox.Items.Add(filter);
+        var platforms=JobTracker.PlatformsPresent(TrackedTasks);
+        _platformChoiceKey=string.Join("\n", platforms);
         _platformFilter=new(PlatformFilterButton,PlatformFilterPopup,PlatformCheckList,PlatformClearButton,
-                            JobTracker.PlatformFilterOrder,JobTracker.PlatformDisplayName,
-                            JobTracker.PlatformFilterLabel,RefreshTracking);
-        _readinessFilter=new(ReadinessFilterButton,ReadinessFilterPopup,ReadinessCheckList,ReadinessClearButton,
-                             JobTracker.ReadinessFilterOrder,JobTracker.ReadinessText,
-                             JobTracker.ReadinessFilterLabel,RefreshTracking);
+                            platforms,JobTracker.PlatformDisplayName,
+                            JobTracker.PlatformFilterLabel,RefreshTracking,"All platforms");
         foreach(var range in DateFilter.Options) QuickDateList.Items.Add(range);
         foreach(var range in new[]{ActivityLast7,ActivityLast30,ActivityAllTime}) ActivityRangeBox.Items.Add(range);
 
         _refreshingTracking=true;
         TrackingFilterBox.SelectedIndex=0;      // All
         ActivityRangeBox.SelectedIndex=1;       // 30 days
-        ListToggle.IsChecked=true;              // the Checked handler is inert while refreshing
         _refreshingTracking=false;
 
-        // The flow graph is drawn against the canvas's real width, so it is rebuilt when that changes.
-        FlowCanvas.SizeChanged+=(_,_) => { if(_boardView) BuildFlowGraph(TrackedTasks); };
-
-        UpdateViewToggle();
         RefreshTracking();
     }
 
@@ -168,32 +188,83 @@ public partial class SettingsWindow : System.Windows.Controls.UserControl {
 
         public IReadOnlyCollection<T> Selected => _selected;
 
+        readonly Func<T,string> _displayName;
+
         public MultiSelectFilter(System.Windows.Controls.Primitives.ToggleButton button,
                                  System.Windows.Controls.Primitives.Popup popup,
                                  System.Windows.Controls.Panel list, System.Windows.Controls.Button clear,
                                  IEnumerable<T> order, Func<T,string> displayName,
-                                 Func<IReadOnlyCollection<T>,string> label, Action changed) {
-            _button=button; _list=list; _label=label; _changed=changed;
+                                 Func<IReadOnlyCollection<T>,string> label, Action changed,
+                                 string? allLabel = null) {
+            _button=button; _list=list; _label=label; _changed=changed; _displayName=displayName;
 
-            foreach(var choice in order) {
-                var box=new System.Windows.Controls.CheckBox {
-                    Content=displayName(choice), Tag=choice, FontSize=11.5, Margin=new Thickness(0,3,0,3)
+            if(allLabel is not null) {
+                var all=new System.Windows.Controls.CheckBox {
+                    Content=allLabel, Tag=allLabel, IsChecked=true, FontSize=11.5, Margin=new Thickness(0,3,0,3)
                 };
-                box.Checked+=Check_Changed;
-                box.Unchecked+=Check_Changed;
-                list.Children.Add(box);
+                all.Checked+=All_Changed;
+                all.Unchecked+=All_Changed;
+                list.Children.Add(all);
             }
+            foreach(var choice in order) list.Children.Add(ChoiceBox(choice, false));
             button.Click+=(_,_) => popup.IsOpen=button.IsChecked==true;
             popup.Closed+=(_,_) => button.IsChecked=false;
             clear.Click+=(_,_) => Clear();
             button.Content=label(_selected);
         }
 
+        System.Windows.Controls.CheckBox ChoiceBox(T choice, bool ticked) {
+            var box=new System.Windows.Controls.CheckBox {
+                Content=_displayName(choice), Tag=choice, IsChecked=ticked, FontSize=11.5, Margin=new Thickness(0,3,0,3)
+            };
+            box.Checked+=Check_Changed;
+            box.Unchecked+=Check_Changed;
+            return box;
+        }
+
+        /// <summary>Rebuilds the platform rows from the jobs now on screen. Keeps ticks that still exist.</summary>
+        public void ReplaceChoices(IEnumerable<T> order) {
+            var keep=new HashSet<T>(_selected);
+            _setting=true;
+            for(var i=_list.Children.Count-1; i>=0; i--)
+                if(_list.Children[i] is System.Windows.Controls.CheckBox box && box.Tag is T)
+                    _list.Children.RemoveAt(i);
+            foreach(var choice in order) _list.Children.Add(ChoiceBox(choice, keep.Contains(choice)));
+            _setting=false;
+            ReadSelection();
+            SyncAllBox();
+            _button.Content=_label(_selected);
+        }
+
         void Check_Changed(object s,RoutedEventArgs e) {
             if(_setting || s is not System.Windows.Controls.CheckBox { Tag: T choice } box) return;
             if(box.IsChecked==true) _selected.Add(choice); else _selected.Remove(choice);
+            SyncAllBox();
             _button.Content=_label(_selected);
             _changed();
+        }
+
+        void All_Changed(object s,RoutedEventArgs e) {
+            if(_setting || s is not System.Windows.Controls.CheckBox box) return;
+            if(box.IsChecked==true) SelectOnly(Array.Empty<T>());
+            else { _setting=true; box.IsChecked=true; _setting=false; }
+        }
+
+        void SyncAllBox() {
+            foreach(var box in _list.Children.OfType<System.Windows.Controls.CheckBox>()) {
+                if(box.Tag is not string) continue;
+                var all=_selected.Count==0;
+                if(box.IsChecked==all) continue;
+                _setting=true;
+                box.IsChecked=all;
+                _setting=false;
+            }
+        }
+
+        void ReadSelection() {
+            _selected.Clear();
+            foreach(var box in _list.Children.OfType<System.Windows.Controls.CheckBox>())
+                if(box.IsChecked==true && box.Tag is T choice) _selected.Add(choice);
         }
 
         /// <summary>
@@ -207,9 +278,8 @@ public partial class SettingsWindow : System.Windows.Controls.UserControl {
             foreach(var box in _list.Children.OfType<System.Windows.Controls.CheckBox>())
                 box.IsChecked=box.Tag is T choice && wanted.Contains(choice);
             _setting=false;
-            _selected.Clear();
-            foreach(var box in _list.Children.OfType<System.Windows.Controls.CheckBox>())
-                if(box.IsChecked==true && box.Tag is T choice) _selected.Add(choice);   // only real choices
+            ReadSelection();
+            SyncAllBox();
             _button.Content=_label(_selected);
             if(refresh) _changed();
         }
@@ -224,33 +294,6 @@ public partial class SettingsWindow : System.Windows.Controls.UserControl {
         if(!_refreshingTracking) RefreshTracking();
     }
 
-    /// <summary>
-    /// The "Ready to apply" card: show exactly the jobs it counts — the action queue. Switches to List,
-    /// clears search, platforms and date, sets Status to the "Not applied yet" group and Readiness to
-    /// only Ready to apply, then refreshes once. Both filters stay visible, so the user can undo them.
-    /// The controls' own change handlers are inert while _refreshingTracking is set.
-    /// </summary>
-    void ReadyToApplyCard_Click(object s,RoutedEventArgs e) {
-        _refreshingTracking=true;
-        try {
-            ListToggle.IsChecked=true;
-            _boardView=false; UpdateViewToggle();
-            TrackingSearchBox.Text="";
-            TrackingFilterBox.SelectedItem=ApplicationStatus.Filter.NotAppliedYet;
-            _dateFilter=DateFilter.AllDates;
-            _exactDate=null;
-            QuickDateList.SelectedItem=null;
-            DateFilterCalendar.SelectedDate=null;
-            DateFilterButton.Content=DateFilter.AllDates;
-            _platformFilter?.SelectOnly(Array.Empty<ApplicationPlatform>(),refresh:false);
-            _readinessFilter?.SelectOnly(new[]{ApplicationReadiness.ReadyToApply},refresh:false);
-        } finally {
-            _refreshingTracking=false;
-        }
-        RefreshTracking();
-        TrackingStatus.Text=$"Showing the {ReadyToApplyCountText.Text} job(s) ready to apply and not applied for yet.";
-    }
-
     void TrackingSearch_Changed(object s,System.Windows.Controls.TextChangedEventArgs e) {
         if(!_refreshingTracking) RefreshTracking();
     }
@@ -260,103 +303,78 @@ public partial class SettingsWindow : System.Windows.Controls.UserControl {
         RefreshTracking();
     }
 
-    void TrackingListView_Click(object s,RoutedEventArgs e) {
-        _boardView=false; UpdateViewToggle();
-        if(!_refreshingTracking) RefreshTracking();
-    }
-
-    void TrackingBoardView_Click(object s,RoutedEventArgs e) {
-        _boardView=true; UpdateViewToggle();
-        if(!_refreshingTracking) RefreshTracking();
-    }
-
-    /// <summary>
-    /// List and Board swap both the table and the graph above it: the daily activity chart belongs to
-    /// the list, the pipeline flow graph to the board. The stage strip is hidden in board mode because
-    /// the flow graph already shows those counts.
-    /// </summary>
-    void UpdateViewToggle() {
-        if(ListViewCard is null) return;
-        ListViewCard.Visibility=_boardView?Visibility.Collapsed:Visibility.Visible;
-        BoardViewCard.Visibility=_boardView?Visibility.Visible:Visibility.Collapsed;
-        ActivityCard.Visibility=_boardView?Visibility.Collapsed:Visibility.Visible;
-        FlowCard.Visibility=_boardView?Visibility.Visible:Visibility.Collapsed;
-        PipelineView.Visibility=_boardView?Visibility.Collapsed:Visibility.Visible;
-        PipelineHeader.Visibility=_boardView?Visibility.Collapsed:Visibility.Visible;
+    /// <summary>The platform popup lists only platforms that exist on a job. "All platforms" stays first.</summary>
+    void RefreshPlatformChoices(IReadOnlyList<JobTask> tasks) {
+        if(_platformFilter is null) return;
+        var present=JobTracker.PlatformsPresent(tasks);
+        var key=string.Join("\n", present);
+        if(key==_platformChoiceKey) return;
+        _platformChoiceKey=key;
+        _platformFilter.ReplaceChoices(present);
     }
 
     /// <summary>Rebuilds every part of the dashboard from the current tasks and filters.</summary>
     public void RefreshTracking() {
         if(TrackingGrid is null || _refreshingTracking) return;
+        var refresh = ++_refreshSerial;
+        var total = System.Diagnostics.Stopwatch.StartNew();
+        PerfLog.Line("APPLICATIONS PERF refresh-enter n=" + refresh);
         _refreshingTracking=true;
         try {
+            var step = System.Diagnostics.Stopwatch.StartNew();
             var tasks=TrackedTasks;
+            PerfLog.Line("APPLICATIONS PERF load-tasks ms=" + step.ElapsedMilliseconds + " count=" + tasks.Count);
 
-            // Reconnect any job whose document exists but whose path predates tracking, so its
-            // Resume actions work instead of silently doing nothing.
-            if(JobTracker.RelinkResumes(tasks,Storage.LoadSettings().ResumeRootFolder)>0)
-                JobTracker.SaveTrackingData(tasks);
+            RefreshPlatformChoices(tasks);
 
+            // Resume paths come from SQLite. A missing file stays missing; this does not walk
+            // the resume folders. An application URL stored in SQLite fills an empty one here,
+            // and is never replaced by the job posting.
+            step.Restart();
+            PerfLog.Line("APPLICATIONS QUERY count=" + tasks.Count + " ms=" + step.ElapsedMilliseconds);
+
+            step.Restart();
             var filtered=JobTracker.ApplyFilters(tasks,TrackingSearchBox.Text,
                                                  TrackingFilterBox.SelectedItem as string,
                                                  _dateFilter,null,_exactDate,
-                                                 _platformFilter?.Selected,_readinessFilter?.Selected);
+                                                 _platformFilter?.Selected);
+            PerfLog.Line("APPLICATIONS PERF filter ms=" + step.ElapsedMilliseconds + " shown=" + filtered.Count);
 
+            step.Restart();
             var selected=TrackingGrid.SelectedItem as JobTask;
             TrackingGrid.ItemsSource=filtered;
             if(selected is not null && filtered.Contains(selected)) TrackingGrid.SelectedItem=selected;
 
-            // Empty states tell the two cases apart: nothing tracked at all, or nothing matching.
             ListEmptyText.Visibility=filtered.Count==0?Visibility.Visible:Visibility.Collapsed;
             ListEmptyText.Text=tasks.Count==0
                 ? "No applications found."
                 : "No applications match the current filters.";
 
-            BoardView.ItemsSource=ApplicationStatus.Ordered.Select(status => new BoardColumn{
-                Status=status,
-                Jobs=JobTracker.GetTasksByStatus(filtered,status),
-                Icon=StatusIcon(status),
-                Background=StatusBrush(status,"Bg"),
-                Foreground=StatusBrush(status,"Fg")
-            }).ToList();
-
-            // The summary cards and the pipeline describe everything, not the current filter.
             var activity=JobTracker.GetApplicationActivity(tasks);
             TodayCountText.Text=activity.Today.ToString();
             MonthCountText.Text=activity.Last30Days.ToString();
             TotalCountText.Text=activity.Total.ToString();
-            ReadyToApplyCountText.Text=JobTracker.CountNeedsAction(tasks).ToString();
 
-            var stats=JobTracker.GetStatistics(tasks);
-            var stages=JobTracker.GetPipelineCounts(tasks);
-            PipelineView.ItemsSource=stages.Select((stage,index) => {
-                // Under each stage: the previous stage's share of the two. The first has no previous.
-                var previous=index==0?0:stages[index-1].Count;
-                return new PipelineBox{
-                    Status=stage.Status, Count=stage.Count,
-                    Conversion=previous+stage.Count==0?"":JobStatistics.WholePercent(JobStatistics.PairShare(previous,stage.Count))+" of pair",
-                    ConversionVisibility=index>0 && previous+stage.Count>0?Visibility.Visible:Visibility.Collapsed,
-                    ArrowVisibility=index<ApplicationStatus.Ordered.Length-1?Visibility.Visible:Visibility.Collapsed,
-                    Tooltip=StageTooltip(stages,index),
-                    Icon=StatusIcon(stage.Status),
-                    Background=StatusBrush(stage.Status,"Bg"),
-                    Foreground=StatusBrush(stage.Status,"Fg")
-                };
-            }).ToList();
+            PipelineViewedCount.Text=JobTracker.CountStatus(tasks,ApplicationStatus.Viewed).ToString();
+            PipelineReadyCount.Text=JobTracker.CountStatus(tasks,ApplicationStatus.Ready).ToString();
+            PipelineAppliedCount.Text=JobTracker.CountStatus(tasks,ApplicationStatus.Applied).ToString();
+            PipelineInterviewCount.Text=JobTracker.CountStatus(tasks,ApplicationStatus.Interview).ToString();
+            PipelineFailedCount.Text=JobTracker.CountStatus(tasks,ApplicationStatus.Failed).ToString();
+            PipelineDoneCount.Text=JobTracker.CountStatus(tasks,ApplicationStatus.Done).ToString();
 
-            TrackingCountsText.Text=
-                $"Total jobs: {stats.Total}    Viewed: {stats.Viewed}    Ready: {stats.Ready}    "+
-                $"Applied: {stats.Applied}    Interview: {stats.Interview}    Done: {stats.Done}";
-            TrackingRatesText.Text=
-                $"Applied rate: {JobStatistics.Percent(stats.AppliedRate)} ({stats.AppliedOrLater}/{stats.Total})    "+
-                $"Interview rate: {JobStatistics.Percent(stats.InterviewRate)} ({stats.InterviewOrLater}/{stats.AppliedOrLater})    "+
-                $"Completion rate: {JobStatistics.Percent(stats.CompletionRate)} ({stats.Done}/{stats.InterviewOrLater})";
+            var moves=JobTracker.GetTransitions(tasks);
+            ArrowAppliedInterviewCount.Text=moves.AppliedToInterview.ToString();
+            ArrowAppliedFailedCount.Text=moves.AppliedToFailed.ToString();
+            ArrowInterviewFailedCount.Text=moves.InterviewToFailed.ToString();
+            PerfLog.Line("APPLICATIONS PERF bind-ui ms=" + step.ElapsedMilliseconds);
 
-            if(_boardView) BuildFlowGraph(tasks);
-            else RefreshActivityChart(tasks);
+            step.Restart();
+            RefreshActivityChart(tasks);
+            PerfLog.Line("APPLICATIONS PERF chart ms=" + step.ElapsedMilliseconds);
 
-            PerfLog.Line($"TRACKING dashboard refreshed total={stats.Total} applied={stats.Applied} "+
-                         $"interview={stats.Interview} done={stats.Done}");
+            PerfLog.Line($"TRACKING dashboard refreshed total={tasks.Count} applied={PipelineAppliedCount.Text} "+
+                         $"interview={PipelineInterviewCount.Text} failed={PipelineFailedCount.Text} done={PipelineDoneCount.Text}");
+            PerfLog.Line("APPLICATIONS PERF total ms=" + total.ElapsedMilliseconds + " n=" + refresh);
         } finally {
             _refreshingTracking=false;
         }
@@ -407,127 +425,6 @@ public partial class SettingsWindow : System.Windows.Controls.UserControl {
         ActivityChart.Visibility=empty?Visibility.Collapsed:Visibility.Visible;
         ActivityGuides.Visibility=empty?Visibility.Collapsed:Visibility.Visible;
         ActivityEmptyText.Visibility=empty?Visibility.Visible:Visibility.Collapsed;
-    }
-
-    /// <summary>
-    /// "Applied / 30 jobs / 60% Ready vs 40% Applied" — the pair share, spelled out for both sides so
-    /// the percentage cannot be mistaken for a conversion rate. Shared by the pipeline and the graph.
-    /// </summary>
-    static string StageTooltip(IReadOnlyList<PipelineStage> stages,int index) {
-        var stage=stages[index];
-        var text=$"{stage.Status}{Environment.NewLine}{stage.Count} job{(stage.Count==1?"":"s")}";
-
-        if(index==0) return text;
-        var previous=stages[index-1];
-        if(previous.Count+stage.Count==0) return text;
-
-        return text+Environment.NewLine+JobStatistics.PairSplit(previous.Status,previous.Count,stage.Status,stage.Count);
-    }
-
-    /// <summary>
-    /// The board's graph: five bands whose height is proportional to the stage count, joined by
-    /// tapering connectors, so the drop-off from stage to stage is visible at a glance. Plain WPF
-    /// shapes on a Canvas — no charting dependency.
-    /// </summary>
-    void BuildFlowGraph(IReadOnlyList<JobTask> tasks) {
-        if(FlowCanvas is null) return;
-        FlowCanvas.Children.Clear();
-
-        var stages=JobTracker.GetPipelineCounts(tasks);
-        var peak=stages.Max(s => s.Count);
-
-        FlowEmptyText.Visibility=peak==0?Visibility.Visible:Visibility.Collapsed;
-        if(peak==0) return;
-
-        var width=FlowCanvas.ActualWidth;
-        var height=FlowCanvas.ActualHeight;
-        if(width<60 || height<60) return;          // not laid out yet; SizeChanged will call back
-
-        const double NodeWidth=70, LabelHeight=44, MinBand=5;
-        var plotHeight=Math.Max(30,height-LabelHeight);
-        var gap=stages.Count>1?(width-stages.Count*NodeWidth)/(stages.Count-1):0;
-        if(gap<8) return;                           // too narrow to draw honestly
-
-        // Band geometry first, so the connectors can be drawn underneath the nodes.
-        var tops=new double[stages.Count];
-        var heights=new double[stages.Count];
-        var lefts=new double[stages.Count];
-        for(var i=0;i<stages.Count;i++) {
-            heights[i]=Math.Max(MinBand,stages[i].Count/(double)peak*plotHeight);
-            tops[i]=(plotHeight-heights[i])/2;
-            lefts[i]=i*(NodeWidth+gap);
-        }
-
-        // A transparent full-height target per stage, added first so it sits behind everything. A
-        // stage with one job is a five-pixel band; without this, its statistics would be unhoverable.
-        for(var i=0;i<stages.Count;i++) {
-            var target=new System.Windows.Controls.Border {
-                Width=NodeWidth+gap*0.6,
-                Height=height,
-                Background=System.Windows.Media.Brushes.Transparent,
-                ToolTip=StageTooltip(stages,i)
-            };
-            System.Windows.Controls.Canvas.SetLeft(target,lefts[i]-(target.Width-NodeWidth)/2);
-            System.Windows.Controls.Canvas.SetTop(target,0);
-            FlowCanvas.Children.Add(target);
-        }
-
-        for(var i=0;i<stages.Count-1;i++) {
-            var flow=new System.Windows.Shapes.Polygon {
-                Fill=StatusBrush(stages[i].Status,"Bg"),
-                Opacity=0.85,
-                ToolTip=$"{stages[i].Status} → {stages[i+1].Status}{Environment.NewLine}"+
-                        (stages[i].Count+stages[i+1].Count==0?"no jobs in either stage"
-                            :JobStatistics.PairSplit(stages[i].Status,stages[i].Count,stages[i+1].Status,stages[i+1].Count)),
-                Points=new System.Windows.Media.PointCollection {
-                    new System.Windows.Point(lefts[i]+NodeWidth,tops[i]),
-                    new System.Windows.Point(lefts[i+1],tops[i+1]),
-                    new System.Windows.Point(lefts[i+1],tops[i+1]+heights[i+1]),
-                    new System.Windows.Point(lefts[i]+NodeWidth,tops[i]+heights[i])
-                }
-            };
-            FlowCanvas.Children.Add(flow);
-        }
-
-        for(var i=0;i<stages.Count;i++) {
-            var stage=stages[i];
-
-            var node=new System.Windows.Controls.Border {
-                Width=NodeWidth,
-                Height=heights[i],
-                CornerRadius=new CornerRadius(4),
-                Background=StatusBrush(stage.Status,"Fg"),
-                Opacity=0.9,
-                ToolTip=StageTooltip(stages,i)
-            };
-            System.Windows.Controls.Canvas.SetLeft(node,lefts[i]);
-            System.Windows.Controls.Canvas.SetTop(node,tops[i]);
-            FlowCanvas.Children.Add(node);
-
-            // Icon, name and count sit under the band, where there is always room for them.
-            var caption=new System.Windows.Controls.StackPanel { Width=NodeWidth+gap*0.6, HorizontalAlignment=System.Windows.HorizontalAlignment.Center };
-
-            var title=new System.Windows.Controls.StackPanel { Orientation=System.Windows.Controls.Orientation.Horizontal, HorizontalAlignment=System.Windows.HorizontalAlignment.Center };
-            title.Children.Add(new System.Windows.Shapes.Path {
-                Data=StatusIcon(stage.Status), Fill=StatusBrush(stage.Status,"Fg"),
-                Width=11, Height=11, Stretch=System.Windows.Media.Stretch.Uniform,
-                VerticalAlignment=System.Windows.VerticalAlignment.Center, Margin=new Thickness(0,0,4,0)
-            });
-            title.Children.Add(new System.Windows.Controls.TextBlock {
-                Text=stage.Status, FontSize=10.5, FontWeight=FontWeights.SemiBold,
-                Foreground=StatusBrush(stage.Status,"Fg")
-            });
-            caption.Children.Add(title);
-
-            caption.Children.Add(new System.Windows.Controls.TextBlock {
-                Text=stage.Count.ToString(), FontSize=15, FontWeight=FontWeights.Bold,
-                Foreground=StatusBrush(stage.Status,"Fg"), HorizontalAlignment=System.Windows.HorizontalAlignment.Center
-            });
-
-            System.Windows.Controls.Canvas.SetLeft(caption,lefts[i]-(caption.Width-NodeWidth)/2);
-            System.Windows.Controls.Canvas.SetTop(caption,plotHeight+6);
-            FlowCanvas.Children.Add(caption);
-        }
     }
 
     // ---------- row and card actions ----------
@@ -637,7 +534,33 @@ public partial class SettingsWindow : System.Windows.Controls.UserControl {
             : $"That job link could not be opened: {job.Link}";
     }
 
-    /// <summary>Opens the recorded application page (ApplyUrl). The job's Jobright link is Open Job's, never used here.</summary>
+    /// <summary>
+    /// Apply copies the folder of this application's linked DOCX (the stored resume path, not a
+    /// company/title lookup), then opens the application page exactly as before. A missing DOCX
+    /// copies nothing.
+    /// </summary>
+    void TrackingApply_Click(object s,RoutedEventArgs e) {
+        var job=JobOf(s) ?? TrackingGrid.SelectedItem as JobTask;
+        if(job is null){ TrackingStatus.Text="Select a job first."; return; }
+        var copied=ResumeUpload.CopyResumePath(job,CopyText).Copied;
+        switch(JobTracker.RouteApply(job)) {
+            case ApplyRoute.OpenStored:
+                TrackingStatus.Text=JobTracker.OpenApplyUrl(job)
+                    ? $"Opened the application for {job.Company} — {job.Title} in your browser."
+                    : "Unable to open application page.";
+                break;
+            case ApplyRoute.CaptureOnJobright:
+                HostMain?.BeginApplyCapture(job);
+                TrackingStatus.Text=$"Opening {job.Company} — {job.Title} in the Job Browser to capture the application link.";
+                break;
+            default:
+                TrackingStatus.Text=$"No application link is recorded for {job.Company} — {job.Title}.";
+                break;
+        }
+        if(copied) TrackingStatus.Text+=" Resume folder path copied";
+    }
+
+    /// <summary>Opens the recorded application page (ApplyUrl). The job posting stays on Open Job.</summary>
     void TrackingOpenApply_Click(object s,RoutedEventArgs e) {
         var job=JobOf(s) ?? TrackingGrid.SelectedItem as JobTask;
         if(job is null){ TrackingStatus.Text="Select a job first."; return; }
@@ -649,7 +572,7 @@ public partial class SettingsWindow : System.Windows.Controls.UserControl {
 
         TrackingStatus.Text=JobTracker.OpenApplyUrl(job)
             ? $"Opened the application for {job.Company} — {job.Title} in your browser."
-            : $"The application link for {job.Company} — {job.Title} could not be opened.";
+            : "Unable to open application page.";
     }
 
     void TrackingOpenResume_Click(object s,RoutedEventArgs e) {
@@ -670,40 +593,187 @@ public partial class SettingsWindow : System.Windows.Controls.UserControl {
             : $"No resume folder was found for {job.Company} — {job.Title}.";
     }
 
-    /// <summary>The prompt mode in the UI. Unknown or missing reads as Resume (PromptModes.Normalize).</summary>
-    string SelectedPromptMode => NormalModeBox.IsChecked==true ? PromptModes.Normal : PromptModes.Resume;
+    /// <summary>
+    /// Copy Resume Path: the folder holding this job's exact generated DOCX (JobTask.ResumePath, the
+    /// file Open Resume opens), as a plain absolute path for a job site's file picker. Nothing is
+    /// copied without one.
+    /// </summary>
+    void TrackingCopyResumePath_Click(object s,RoutedEventArgs e) {
+        var job=JobOf(s) ?? TrackingGrid.SelectedItem as JobTask;
+        if(job is null){ TrackingStatus.Text="Select a job first."; return; }
 
-    void PromptMode_Changed(object s,RoutedEventArgs e) => UpdatePromptModeHint();
-
-    void UpdatePromptModeHint() {
-        if(PromptModeHint is null) return;
-        PromptModeHint.Text = SelectedPromptMode==PromptModes.Normal
-            ? "Normal mode sends your own prompt file, then the same job and candidate payload and the same output rules, so the answer still becomes a resume."
-            : "Resume mode sends the Master Prompt file, exactly as before.";
+        var copy=ResumeUpload.CopyResumePath(job,CopyText);
+        TrackingStatus.Text=copy.Message;
+        PerfLog.Line(copy.Copied ? "TRACKING copy resume path "+job.JobId : "TRACKING copy resume path "+job.JobId+" FAILED - "+copy.Message);
     }
 
-    void NormalPromptBrowse_Click(object s,RoutedEventArgs e){var p=PickFile("Text files|*.txt;*.md|All files|*.*");if(p!=null)NormalPromptBox.Text=p;}
+    /// <summary>Copies the stable Documents\ResumeAutomation\CurrentResume.docx path (the newest resume).</summary>
+    void TrackingCopyCurrentResumePath_Click(object s,RoutedEventArgs e) {
+        var copy=ResumeUpload.CopyCurrentResumePath(ResumeUpload.CurrentResumePathFor(Storage.LoadSettings().ResumeRootFolder),CopyText);
+        TrackingStatus.Text=copy.Message;
+    }
 
-    void LoadFields(){ ResumeBox.Text=_s.OriginalResume; PromptBox.Text=_s.MasterPrompt;
-        NormalPromptBox.Text=_s.NormalPrompt;
-        NormalModeBox.IsChecked=PromptModes.IsNormal(_s.PromptMode);
-        ResumeModeBox.IsChecked=!PromptModes.IsNormal(_s.PromptMode);
-        UpdatePromptModeHint(); BaselineStatus.Text=File.Exists(BaselineProfileImporter.BaselineProfilePath) ? "Imported" : "Not imported"; IncomingBox.Text=_s.IncomingFolder; ImportedBox.Text=_s.ImportedFolder; RootBox.Text=_s.ResumeRootFolder; DocxBox.IsChecked=_s.Docx; PdfBox.IsChecked=_s.Pdf; AutoFillBox.IsChecked=_s.AutoFillComposer; AutoCaptureBox.IsChecked=_s.AutoCaptureResult; AutoSendBox.IsChecked=_s.AutoSend; ReadyToastBox.IsChecked=_s.ReadyToast; ReadySoundBox.IsChecked=_s.ReadySound; ReadyFlashBox.IsChecked=_s.ReadyFlash; FocusHotkeyBox.IsChecked=_s.FocusHotkey; }
+    /// <summary>The one clipboard implementation, shaped for ResumeUpload.</summary>
+    static (bool Success,string Message) CopyText(string text){
+        var result=ClipboardService.SetText(text);
+        return (result.Success,result.Message);
+    }
+
+    /// <summary>The prompt file Job Tasks and Email Tasks already send. Resume mode uses Master Prompt; Normal mode uses Normal Prompt.</summary>
+    bool TailoringUsesNormalPrompt => PromptModes.IsNormal(_s.PromptMode);
+
+    void LoadFields(){ ResumeBox.Text=_s.OriginalResume;
+        PromptBox.Text=TailoringUsesNormalPrompt ? _s.NormalPrompt : _s.MasterPrompt;
+        IncomingBox.Text=_s.IncomingFolder; ImportedBox.Text=_s.ImportedFolder; RootBox.Text=_s.ResumeRootFolder; DocxBox.IsChecked=_s.Docx; PdfBox.IsChecked=_s.Pdf; AutoFillBox.IsChecked=_s.AutoFillComposer; AutoCaptureBox.IsChecked=_s.AutoCaptureResult; AutoSendBox.IsChecked=_s.AutoSend; ReadyToastBox.IsChecked=_s.ReadyToast; ReadySoundBox.IsChecked=_s.ReadySound; ReadyFlashBox.IsChecked=_s.ReadyFlash; FocusHotkeyBox.IsChecked=_s.FocusHotkey;
+        GptJobDelayBox.Text=_s.GptJobDelaySeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        RateLimitCooldownBox.Text=_s.RateLimitCooldownMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        LoadImportFilterSwitches();
+        LoadEditableProfile();
+        RefreshPromptAdaptStatus(); }
     string? PickFile(string filter){ var d=new Microsoft.Win32.OpenFileDialog{Filter=filter}; return d.ShowDialog()==true?d.FileName:null; }
     string? PickFolder(){ using var d=new Forms.FolderBrowserDialog(); return d.ShowDialog()==Forms.DialogResult.OK?d.SelectedPath:null; }
-    void ResumeBrowse_Click(object s,RoutedEventArgs e){var p=PickFile("Resume files|*.docx;*.pdf|All files|*.*");if(p!=null)ResumeBox.Text=p;}
-    void PromptBrowse_Click(object s,RoutedEventArgs e){var p=PickFile("Text files|*.txt;*.md|All files|*.*");if(p!=null)PromptBox.Text=p;}
+    async void ResumeBrowse_Click(object s,RoutedEventArgs e) {
+        var path = PickFile("Word resume|*.docx");
+        if (path is null) return;
+        if (!string.Equals(System.IO.Path.GetExtension(path), ".docx", StringComparison.OrdinalIgnoreCase)) {
+            System.Windows.MessageBox.Show("Choose a .docx resume.");
+            return;
+        }
+        if (HostMain is not MainWindow main) {
+            System.Windows.MessageBox.Show("Open Settings from Resume Builder to rebuild the candidate profile.");
+            return;
+        }
+        if (!main.CanStartBaselineProfile(out var busy)) {
+            System.Windows.MessageBox.Show(busy);
+            return;
+        }
+
+        ResumeBrowseButton.IsEnabled = false;
+        try {
+            ProfileWorkflowStatus.Text = "Importing resume…";
+            _s.OriginalResume = path;
+            ResumeBox.Text = path;
+            if (!Storage.SaveSettings(_s)) {
+                ResumeBrowseButton.IsEnabled = true;
+                ProfileWorkflowStatus.Text = "The resume path was not saved. " + (Storage.WriteBlockedReason(Storage.SettingsPath) ?? "settings.json is protected this session.");
+                return;
+            }
+            try { HtmlTailor.RememberOriginal(_s); }
+            catch (Exception htmlEx) { PerfLog.Line("HTML source-html-failed " + htmlEx.GetType().Name); }
+
+            BaselineProfileImporter.CreateBaselineFromDocx(path);
+            var request = BaselineProfileImporter.BuildProfileCreationRequest(_s.MasterPrompt);
+            var prepared = new PreparedRequest {
+                JobId = ResultCapture.BaselineJobId,
+                Company = "Candidate profile",
+                Title = "Initial Candidate Profile",
+                PromptMode = PromptModes.Resume,
+                Text = request
+            };
+            RequestPreparation.Save(prepared);
+            ProfileWorkflowStatus.Text = "Generating candidate profile…";
+            await main.StartBaselineProfileAsync(prepared);
+        } catch (Exception ex) {
+            ResumeBrowseButton.IsEnabled = true;
+            PerfLog.Line("PROFILE workflow failed " + ex.GetType().Name);
+            ProfileWorkflowStatus.Text = "The candidate profile was not updated. Try again.";
+            System.Windows.MessageBox.Show("The candidate profile was not updated. The previous profile is unchanged.", "Resume Builder");
+        }
+    }
+
+    void PromptBrowse_Click(object s,RoutedEventArgs e){
+        var p=PickFile("Text files|*.txt;*.md|All files|*.*");
+        if(p==null) return;
+        PromptBox.Text=p;
+        SaveSettingsFromFields(announce:false);
+        var saved=TailoringUsesNormalPrompt ? _s.NormalPrompt : _s.MasterPrompt;
+        if(string.Equals(saved, p, StringComparison.OrdinalIgnoreCase))
+            _=AdaptSelectedPromptAsync();
+    }
+
+    void RefreshPromptAdaptStatus() {
+        var path = PromptBox.Text.Trim();
+        if (File.Exists(path) && PromptConversion.Matches(path))
+            PromptAdaptStatus.Text = PromptConversion.ReadyStatus;
+        else if (PromptAdaptStatus.Text != PromptConversion.PreparingStatus
+                 && PromptAdaptStatus.Text != PromptConversion.FailedStatus)
+            PromptAdaptStatus.Text = "";
+    }
+
+    async Task AdaptSelectedPromptAsync() {
+        var path = PromptBox.Text.Trim();
+        if (!File.Exists(path)) {
+            PromptAdaptStatus.Text = "";
+            return;
+        }
+        if (PromptConversion.Matches(path)) {
+            PromptAdaptStatus.Text = PromptConversion.ReadyStatus;
+            return;
+        }
+        if (HostMain is not MainWindow main) {
+            PromptAdaptStatus.Text = PromptConversion.FailedStatus;
+            ProfileLoadStatus.Visibility = Visibility.Visible;
+            ProfileLoadStatus.Text = "Open Settings from Resume Builder to prepare the Tailoring Prompt. The previous prepared prompt was kept.";
+            return;
+        }
+        PromptAdaptStatus.Text = PromptConversion.PreparingStatus;
+        var (ok, detail) = await main.AdaptTailoringPromptAsync(path, resumeMode: !TailoringUsesNormalPrompt);
+        if (detail == "in-progress") return;
+        PromptAdaptStatus.Text = ok ? PromptConversion.ReadyStatus : PromptConversion.FailedStatus;
+        if (!ok) {
+            ProfileLoadStatus.Visibility = Visibility.Visible;
+            ProfileLoadStatus.Text = detail;
+        }
+    }
+
     void IncomingBrowse_Click(object s,RoutedEventArgs e){var p=PickFolder();if(p!=null)IncomingBox.Text=p;}
     void ImportedBrowse_Click(object s,RoutedEventArgs e){var p=PickFolder();if(p!=null)ImportedBox.Text=p;}
     void RootBrowse_Click(object s,RoutedEventArgs e){var p=PickFolder();if(p!=null)RootBox.Text=p;}
     void Save_Click(object s,RoutedEventArgs e){
+        SaveSettingsFromFields(announce:true);
+        var path=PromptBox.Text.Trim();
+        var saved=TailoringUsesNormalPrompt ? _s.NormalPrompt : _s.MasterPrompt;
+        if(File.Exists(path) && string.Equals(saved, path, StringComparison.OrdinalIgnoreCase))
+            _=AdaptSelectedPromptAsync();
+    }
+
+    /// <summary>
+    /// Builds one settings object from every field on the page and saves it. The import filters are
+    /// part of that object, so saving any page carries the current filter values instead of the
+    /// defaults — the AppSettings here is rebuilt from scratch, and a field left out would be reset.
+    /// </summary>
+    void SaveSettingsFromFields(bool announce){
         if(!string.IsNullOrWhiteSpace(IncomingBox.Text)&&!Directory.Exists(IncomingBox.Text)){System.Windows.MessageBox.Show("Incoming folder does not exist.");return;}
         if(!string.IsNullOrWhiteSpace(ImportedBox.Text)&&!Directory.Exists(ImportedBox.Text)){System.Windows.MessageBox.Show("Imported folder does not exist.");return;}
-        if(SelectedPromptMode==PromptModes.Normal&&!File.Exists(NormalPromptBox.Text.Trim())){
-            System.Windows.MessageBox.Show("Choose an existing Normal Prompt file, or switch Prompt Mode back to Resume."); return; }
-        _s=new(){OriginalResume=ResumeBox.Text.Trim(),CandidateProfile=_s.CandidateProfile,MasterPrompt=PromptBox.Text.Trim(),
-                 PromptMode=SelectedPromptMode,NormalPrompt=NormalPromptBox.Text.Trim(),IncomingFolder=IncomingBox.Text.Trim(),ImportedFolder=ImportedBox.Text.Trim(),ResumeRootFolder=RootBox.Text.Trim(),Docx=DocxBox.IsChecked==true,Pdf=PdfBox.IsChecked==true,AutoFillComposer=AutoFillBox.IsChecked==true,AutoCaptureResult=AutoCaptureBox.IsChecked==true,AutoSend=AutoSendBox.IsChecked==true,ReadyToast=ReadyToastBox.IsChecked==true,ReadySound=ReadySoundBox.IsChecked==true,ReadyFlash=ReadyFlashBox.IsChecked==true,FocusHotkey=FocusHotkeyBox.IsChecked==true};
-        Storage.SaveSettings(_s); System.Windows.MessageBox.Show("Settings saved.");
+        var promptPath=PromptBox.Text.Trim();
+        if(TailoringUsesNormalPrompt&&!File.Exists(promptPath)){
+            System.Windows.MessageBox.Show("Choose an existing Tailoring Prompt file."); return; }
+        // ChatGPT pacing: refused rather than guessed — invalid text is never saved as 0.
+        if(RateLimit.ValidateJobDelay(GptJobDelayBox.Text,out var jobDelaySeconds) is string delayError){System.Windows.MessageBox.Show(delayError);return;}
+        if(RateLimit.ValidateCooldown(RateLimitCooldownBox.Text,out var cooldownMinutes) is string cooldownError){System.Windows.MessageBox.Show(cooldownError);return;}
+        var saved=new AppSettings{OriginalResume=ResumeBox.Text.Trim(),
+                 StyleReferenceResume=_s.StyleReferenceResume,
+                 CandidateProfile=_s.CandidateProfile,
+                 MasterPrompt=TailoringUsesNormalPrompt ? _s.MasterPrompt : promptPath,
+                 PromptMode=_s.PromptMode,
+                 NormalPrompt=TailoringUsesNormalPrompt ? promptPath : _s.NormalPrompt,
+                 IncomingFolder=IncomingBox.Text.Trim(),ImportedFolder=ImportedBox.Text.Trim(),ResumeRootFolder=RootBox.Text.Trim(),Docx=DocxBox.IsChecked==true,Pdf=PdfBox.IsChecked==true,AutoFillComposer=AutoFillBox.IsChecked==true,AutoCaptureResult=AutoCaptureBox.IsChecked==true,AutoSend=AutoSendBox.IsChecked==true,ReadyToast=ReadyToastBox.IsChecked==true,ReadySound=ReadySoundBox.IsChecked==true,ReadyFlash=ReadyFlashBox.IsChecked==true,FocusHotkey=FocusHotkeyBox.IsChecked==true};
+        ApplyImportFilterSwitches(saved);
+        saved.GptJobDelaySeconds=jobDelaySeconds;
+        saved.RateLimitCooldownMinutes=cooldownMinutes;
+        _s=saved;
+        // Refused only when settings.json could not be read this session (its data is kept safe).
+        var written=Storage.SaveSettings(_s);
+        if (written) {
+            try { HtmlTailor.RememberOriginal(saved); }
+            catch (Exception htmlEx) { PerfLog.Line("HTML source-html-failed " + htmlEx.GetType().Name); }
+        }
+
+        // The Job Browser toolbar shows the same five values; keep it in step without a reopen.
+        HostMain?.RefreshJobImportFilters();
+
+        if(!written) System.Windows.MessageBox.Show("Settings were NOT saved: "+(Storage.WriteBlockedReason(Storage.SettingsPath) ?? "settings.json is protected this session."));
+        else if(announce) System.Windows.MessageBox.Show("Settings saved.");
     }
 
     void LoadSampleJobs_Click(object s, RoutedEventArgs e) =>
@@ -795,15 +865,7 @@ public partial class SettingsWindow : System.Windows.Controls.UserControl {
     }
 
 
-    public void RefreshInspector() {
-        if(PreparedInputBox is null) return;
-        PreparedInputBox.Text=RequestPreparation.Load()?.Text ?? "No job has been prepared yet.";
-    }
-
-    public void ShowReadyToApplyQueue() {
-        SetShellMode(applicationsFocus: true);
-        ReadyToApplyCard_Click(ReadyToApplyCard, new RoutedEventArgs());
-    }
+    public void RefreshInspector() { }
 
     /// <summary>
     /// Shell mode: Applications-only hides the settings section nav; Settings shows it.
@@ -826,6 +888,8 @@ public partial class SettingsWindow : System.Windows.Controls.UserControl {
     /// <summary>Selects a settings tab by header text.</summary>
     public void ShowSection(string header) {
         if (SettingsTabs is null) return;
+        if (string.Equals(header, "Applications", StringComparison.OrdinalIgnoreCase))
+            PerfLog.Line("APPLICATIONS PERF show-section");
         foreach (System.Windows.Controls.TabItem tab in SettingsTabs.Items)
             if (string.Equals(tab.Header as string, header, StringComparison.OrdinalIgnoreCase)) {
                 SettingsTabs.SelectedItem = tab;
@@ -856,79 +920,64 @@ public partial class SettingsWindow : System.Windows.Controls.UserControl {
         }
     }
 
-    void CopyPrepared_Click(object s, RoutedEventArgs e) {
-        var prepared=RequestPreparation.Load();
-        if(prepared is null){System.Windows.MessageBox.Show("No prepared input exists yet.");return;}
-        CopyToClipboard(prepared.Text,"Prepared input");
+    public void ShowBaselineResult(bool saved, string detail) {
+        ResumeBrowseButton.IsEnabled = true;
+        LoadEditableProfile();
+        ProfileWorkflowStatus.Text = saved
+            ? "Candidate profile updated."
+            : "Candidate profile was not updated. " + detail;
     }
 
-    /// <summary>
-    /// Single copy path for this window. On failure it pre-selects the text box and points at the
-    /// saved .txt file, so the user never has to hunt for the prepared input.
-    /// </summary>
-    void CopyToClipboard(string text,string label) {
-        var clip=ClipboardService.SetText(text);
-        if(clip.Success){ System.Windows.MessageBox.Show(label+" copied. "+clip.Message); return; }
-
-        PreparedInputBox.Focus();
-        PreparedInputBox.SelectAll();
-        System.Windows.MessageBox.Show(
-            clip.Message+Environment.NewLine+Environment.NewLine+
-            "The text is already selected in Job Details — press Ctrl+C to copy it."+Environment.NewLine+
-            "A plain-text copy is also saved at:"+Environment.NewLine+RequestPreparation.PreparedTextPath);
-    }
-
-    void ImportBaseline_Click(object s,RoutedEventArgs e) {
-        try {
-            BaselineProfileImporter.CreateBaselineFromDocx(ResumeBox.Text.Trim());
-            BaselineStatus.Text="Imported";
-            System.Windows.MessageBox.Show("Original resume text imported successfully. No resume facts were invented.");
-        } catch(Exception ex) { System.Windows.MessageBox.Show("Baseline import failed:\n\n"+ex.Message); }
-    }
-
-    void PrepareProfileCreation_Click(object s,RoutedEventArgs e) {
-        try {
-            var request=BaselineProfileImporter.BuildProfileCreationRequest(PromptBox.Text.Trim());
-            var prepared=new PreparedRequest{JobId="BASELINE",Company="",Title="Initial Candidate Profile",Text=request};
-            RequestPreparation.Save(prepared);
-            PreparedInputBox.Text=request;
-            System.Windows.MessageBox.Show("Profile-creation request prepared. Review it in Job Details, then paste it into ChatGPT.");
-            // Clipboard last: a clipboard problem must not make the preparation look like a failure.
-            CopyToClipboard(request,"Profile-creation request");
-        } catch(Exception ex) { System.Windows.MessageBox.Show("Could not prepare profile creation:\n\n"+ex.Message); }
-    }
-
-
-    void PasteResult_Click(object s,RoutedEventArgs e) {
-        var text=ClipboardService.TryGetText();
-        if(text is not null){ ResultInputBox.Text=text; ProfileStatus.Text="Pasted "+text.Length+" characters from the clipboard."; }
-        else ProfileStatus.Text="The clipboard holds no text, or it stayed locked after several retries. Paste into the result box with Ctrl+V.";
-    }
-
-    /// <summary>
-    /// Manual fallback. A6.6.9: this routes exactly like automatic capture — a job's answer goes to
-    /// results\&lt;jobId&gt;.json and only the BASELINE flow writes candidate-profile.json. Using the
-    /// fallback for a job must never overwrite the baseline every future job is tailored from.
-    /// </summary>
-    async void SaveProfile_Click(object s,RoutedEventArgs e) {
-        var jobId=RequestPreparation.Load()?.JobId;
-        var result=ResultCapture.Accept(ResultInputBox.Text,jobId);
-
-        if(!result.Saved) {
-            ProfileStatus.Text="FAIL — "+result.Message;
-            System.Windows.MessageBox.Show("Profile could not be normalized:\n\n"+(result.Error ?? result.Message));
+    void LoadEditableProfile() {
+        var fields = CandidateProfileStore.LoadEditableFields(out var error);
+        if (fields is null) {
+            ProfileEditorPanel.Visibility = Visibility.Collapsed;
+            ProfileReviewPanel.Visibility = Visibility.Collapsed;
+            ProfileLoadStatus.Visibility = error is null ? Visibility.Collapsed : Visibility.Visible;
+            ProfileLoadStatus.Text = error is null ? "" : "The candidate profile could not be opened for editing. The file was not changed. " + error;
             return;
         }
+        ProfileLoadStatus.Visibility = Visibility.Collapsed;
+        ProfileEditorPanel.Visibility = Visibility.Visible;
+        ProfileNameBox.Text = fields.Name;
+        ProfileTitleBox.Text = fields.Title;
+        ProfileLocationBox.Text = fields.Location;
+        ProfileEmailBox.Text = fields.Email;
+        ProfilePhoneBox.Text = fields.Phone;
+        ProfileLinkedinBox.Text = fields.Linkedin;
+        ProfileSummaryBox.Text = fields.Summary;
+        try {
+            var review = CandidateProfileStore.LoadReviewText();
+            ProfileSkillsReview.Text = review.Skills;
+            ProfileExperienceReview.Text = review.Experience;
+            ProfileEducationReview.Text = review.Education;
+            ProfileCertificationsReview.Text = review.Certifications;
+            ProfileReviewPanel.Visibility = Visibility.Visible;
+        } catch (Exception ex) {
+            ProfileReviewPanel.Visibility = Visibility.Collapsed;
+            ProfileLoadStatus.Visibility = Visibility.Visible;
+            PerfLog.Line("PROFILE review failed " + ex.GetType().Name);
+            ProfileLoadStatus.Text = "The profile review could not be shown. The file was not changed.";
+        }
+    }
 
-        var detail=result.Report?.Describe() ?? "";
-        ProfileStatus.Text="PASS — "+System.IO.Path.GetFileName(result.TargetPath)+
-            " normalized, validated and saved."+Environment.NewLine+detail;
-        System.Windows.MessageBox.Show("Profile saved successfully to "+result.TargetPath+
-            Environment.NewLine+Environment.NewLine+detail);
-
-        // Same generation path as automatic capture, so the manual fallback produces documents too.
-        if(!ResultCapture.IsBaseline(jobId) && HostMain is MainWindow main)
-            await main.GenerateForJobAsync(jobId!);
+    void SaveCandidateDetails_Click(object sender, RoutedEventArgs e) {
+        try {
+            CandidateProfileStore.SaveEditableFields(new EditableProfileFields {
+                Name = ProfileNameBox.Text,
+                Title = ProfileTitleBox.Text,
+                Location = ProfileLocationBox.Text,
+                Email = ProfileEmailBox.Text,
+                Phone = ProfilePhoneBox.Text,
+                Linkedin = ProfileLinkedinBox.Text,
+                Summary = ProfileSummaryBox.Text
+            });
+            System.Windows.MessageBox.Show("Candidate profile saved.");
+        } catch (Exception ex) {
+            PerfLog.Line("PROFILE save failed " + ex.GetType().Name);
+            System.Windows.MessageBox.Show(
+                "The candidate profile was not saved. The existing file is unchanged.");
+        }
     }
 
 }
@@ -945,8 +994,8 @@ public sealed class PlatformDisplayConverter : System.Windows.Data.IValueConvert
 }
 
 /// <summary>
-/// True when an address may be opened (JobTracker.IsOpenableUrl: absolute http/https). Enables the
-/// List's Apply button only for a usable ApplyUrl. Display only; one-way.
+/// True when an address may be opened (JobTracker.IsOpenableUrl: absolute http/https).
+/// Display only; one-way. The Apply button uses CanApply, not this converter.
 /// </summary>
 public sealed class OpenableUrlConverter : System.Windows.Data.IValueConverter {
     public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>

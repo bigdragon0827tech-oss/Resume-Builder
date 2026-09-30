@@ -5,7 +5,7 @@ These rules are permanent. Follow them in every session unless the user explicit
 ## The project
 
 - **This directory is the authoritative development project.** Current production baseline:
-  **v1.0** (assembly version 1.0.0; .NET 8 / `net8.0-windows`, WPF + WinForms interop, WebView2).
+  **v3.0** (assembly version 3.0.0; .NET 8 / `net8.0-windows`, WPF + WinForms interop, WebView2).
   v1.0 is the first numbered release and follows the A6.x development line; the "A6.6.x" labels in this
   file and in source comments are historical — they record when a feature arrived, not the current
   version. The folder is still named `ResumeBuilder-A6.6.7`; that is only its location, not its version.
@@ -49,8 +49,8 @@ warnings outstanding, and do not ask the user to fix build problems.
   `MainWindow.xaml.cs` (MessageBox caption), `README.md` (title), the "Current production baseline"
   line at the top of this file, and any version text in `SettingsWindow.xaml` (there is none today).
   Leave no mixed version strings.
-- User-facing text uses the short form (`v1.0`); project metadata uses semantic versions (`1.0.0`,
-  `1.0.0.0` for assembly and file version, `1.0` informational). `IncludeSourceRevisionInInformationalVersion`
+- User-facing text uses the short form (`v3.0`); project metadata uses semantic versions (`3.0.0`,
+  `3.0.0.0` for assembly and file version, `3.0` informational). `IncludeSourceRevisionInInformationalVersion`
   is off so the informational version stays exactly as written instead of gaining a `+<commit>` suffix.
 - Do not rewrite historical milestone labels ("A6.6.12 introduced…", "A6.6.13 adds…") in comments or
   here when the version changes — they are facts about when something arrived.
@@ -115,15 +115,15 @@ restore it when finished.
   `OleFlushClipboard` behind `SetDataObject(data, copy: true)` throws `CLIPBRD_E_CANT_OPEN`.
 - **Job preparation must never depend on the clipboard.** Prepare and persist first, copy afterwards;
   a clipboard failure is never reported as a failed preparation.
-- **The AI answer is never read out of the ChatGPT page.** `ChatComposer` is write-only: it types the
-  prepared request into the composer and stops there. A third-party DOM changes without notice, and a
-  drifted selector on the read path would feed a truncated or wrong answer into the profile. The answer
-  comes back through the clipboard (`ClipboardWatcher` + `ResultCapture`), which depends on no page
-  structure. Do not add response scraping. (A6.6.11 automates the Send *control* only — see the
-  Auto-Send section below — and still never reads or copies a reply.)
-- **The clipboard watcher stays scoped.** Armed only between sending a request and capturing its answer,
-  reads only through `ClipboardService`, ignores what this app copied itself, and discards anything that
-  is not a recognisable profile without storing it anywhere.
+- **The prepared prompt is written into ChatGPT. The answer is read back after generation looks finished.**
+  `ChatComposer` only fills the composer. `ChatCompletionWatcher` only watches control state and does not
+  read the reply. On a confirmed Ready, `ChatResponseReader` reads the last assistant JSON from the page
+  in the background: no click, no focus change, and no clipboard. It prefers one JSON code block and
+  refuses an ambiguous page rather than guessing. If that read fails, manual copy (ChatGPT's Copy button
+  or Ctrl+Shift+;) is the fallback, through `ClipboardWatcher` and `ResultCapture`. Do not add a second reader.
+- **The clipboard watcher is the manual fallback.** It stays armed only between sending a request and
+  capturing its answer, reads only through `ClipboardService`, ignores what this app copied itself, and
+  discards anything that is not a recognisable profile without storing it anywhere.
 - **`candidate-profile.json` is the baseline and the input to every job.** Tailored per-job answers are
   written to `results\<jobId>.json` (`ProfileResultStore`); only the BASELINE flow writes the baseline
   file. Never let a job result overwrite the baseline — that would tailor job 2 from job 1's output.
@@ -166,7 +166,8 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 | `Normalization.cs` | `ProfileNormalizer`, `NormalizationReport` — AI output -> canonical schema |
 | `Clipboard.cs` | `ClipboardService` (the single clipboard implementation) and `ClipboardWatcher` (armed capture) |
 | `ResultCapture.cs` | `ResultCapture` (capture gate + routing), `ProfileResultStore` (per-job result files) |
-| `ChatAutomation.cs` | `ChatComposer` — write-only WebView2 composer fill |
+| `ChatAutomation.cs` | `ChatComposer` (write-only fill), `ChatSender`, `ChatCompletionWatcher` (control state only) |
+| `ChatResponseReader.cs` | Background read of the last assistant JSON after a confirmed Ready |
 | `DocumentGeneration.cs` | `ResumeDocument`, `BulletLine`, `DocxWriter`, `ResumeGenerator` — DOCX from a validated profile |
 | `PdfGeneration.cs` | `PdfWriter` (PDFsharp/MigraDoc), `ResumeFontResolver` — PDF without a browser |
 | `ResumeOutputManager.cs` | `ResumeOutputManager`, `ResumeOutputPaths`, `ResumeOutputMetadata` — dated job folders, unique names, resume-info.json |
@@ -180,12 +181,16 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 | `QueueRunner.cs` | `QueueRunner`, `QueueState`, `FailureOutcome` — sequencing state machine, no I/O |
 | `Diagnostics.cs` | `PerfLog` (timing/memory log), `PollPolicy` (shared adaptive poll cadence) |
 | `ReadyToast.cs` | `ReadyToast` (right-side, non-activating "answer ready" notification), `WindowAttention` (taskbar flash) |
-| `CaptureWatchdog.cs` | `CaptureWatchdog` — 10 s bounded wait for the Copy after a confirmed READY (no I/O, injectable delay) |
+| `CaptureWatchdog.cs` | `CaptureWatchdog` — 10 s wait for the manual Copy fallback after the background read fails |
 | `GptAttempts.cs` | `GptAttempts`, `GptFailure`, `AttemptDecision` — the ChatGPT retry policy: 3 sends, reasons, log lines |
 | `GlobalHotkey.cs` | `GlobalHotkey` — system-wide Ctrl+Shift+' that only brings Resume Builder forward |
 | `JobHistoryReset.cs` | `JobHistoryReset`, `ResetPlan`, `ResetReport`, `ResetPaths` — the testing reset: plan, guards, execute, per-path failures |
 | `PromptContract.cs` | `PromptModes` (Resume / Normal, tolerant), `PromptContract` — the one output contract and job payload both modes send |
 | `ApplyCapture.cs` | `ApplyCapture`, `ApplyCaptureResult` — decides whether a user's Apply destination is recorded, and on which task |
+| `JobImportFilter.cs` | `JobFilterReason`, `JobFilterDecision`, `JobFilterSwitch`, `JobImportFilter` — the five import-filter rules, their switch descriptors and their user-facing text |
+| `ResumeUpload.cs` | `ResumeUpload` — Copy Resume Path (the job's folder), CurrentResume.docx alias and its location |
+| `AppRuntime.cs` | `AppPaths` (first-run defaults), `SingleInstance` (mutex), `WebView2Runtime` (startup check), `SetupCheck` (first-run notice) |
+| `App.xaml.cs` | Startup order: crash handlers → single instance → log rotation → WebView2 check → MainWindow |
 | `ApplicationPlatformDetector.cs` | `ApplicationPlatform` enum, `ApplicationPlatformDetector` (ApplyUrl -> platform), `TolerantPlatformConverter` |
 | `TaskViews.cs` | `TaskViews` — the Active / History display filter over the one task collection |
 | `Models.cs` | `JobBatch`, `JobInput`, `JobTask`, `AppSettings`, `PreparedRequest` |
@@ -226,23 +231,41 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
 
 - **Two prompt FILES, one pipeline.** `RequestPreparation.Prepare` stays THE entry point and picks the
   file by `AppSettings.PromptMode`: **Resume** = the Master Prompt (`MasterPrompt`), **Normal** = the
-  user's own prompt (`NormalPrompt`). Everything after it — clipboard, armed capture, fresh
+  user's own prompt (`NormalPrompt`). Everything after it — background read, manual-copy fallback, fresh
   conversation per job, queue, normalize -> strict validate -> save, DOCX/PDF — is untouched and
   mode-blind. There is no chat textbox and no second pipeline.
 - **Assembly order, both modes**: the user's prompt file (only `TrimEnd()`, never edited or reordered)
   -> `===== COMPLETE JOB PAYLOAD =====` + the SAME payload (company, title, jd, link, about and the
   full candidate profile) -> `===== EXECUTION INSTRUCTION =====`.
-- **One output contract**, in `PromptContract.ExecutionInstruction(resumeMode)`. The two texts differ
-  in exactly ONE sentence: `ResumeOpening` ("Execute Resume Master Prompt v2 …") vs `NormalOpening`
-  ("Execute the resume instructions above …"). Do not fork the rules; `docs\GPT_JSON_CONTRACT.md`
-  documents the same shape for humans and `ProfileNormalizer` + strict validation enforce it.
+- **One output contract**, in `PromptContract.ExecutionInstruction(resumeMode)`. The Normal text
+  differs from the Resume text in exactly THREE places: `ResumeOpening` vs `NormalOpening`, the
+  verification rule (`NormalVerify` adds `style`), and `PromptContract.StyleContract()` appended at
+  the end. The rest is shared — do not fork it. `docs\GPT_JSON_CONTRACT.md` documents the same shape
+  for humans and `ProfileNormalizer` + strict validation enforce it. `BothModesShareTheContract`
+  pins exactly those three differences.
 - **Resume mode's prepared text is byte-for-byte what it was.** `tests\fixtures\prepare-resume-expected.txt`
   was captured from the build BEFORE prompt modes existed, and `ResumePromptUnchanged` compares against
   it. The contract is built from explicit `\r\n` breaks, not a verbatim literal, so the file's line
   endings can never change the bytes. Regenerate that fixture only for a deliberate contract change.
-- **No style text is ever sent.** Style is optional in the ANSWER; `StyleNormalizer` falls back to the
-  `promV4.12` preset when it is absent — identical in both modes. Never add style detection or inject
-  style instructions into a user's prompt.
+- **Style: optional in Resume mode, REQUIRED in Normal mode.** (This replaced the earlier "no style
+  text is ever sent" rule at the user's request.)
+  - Resume mode sends no style text; a style-less answer falls back to the `promV4.12` preset, exactly
+    as before.
+  - Normal mode appends `StyleContract()`, a description of the NESTED `ResumeStyle` schema
+    **generated from `StyleSchema` / `StyleLimits` / `StylePresets`** (never hand-typed, so it cannot
+    document a property the code rejects), and asks for the 9 pt body standard
+    (`body`/`bullet`/`skillValues`/`education` `fontSize: 9`). It names the flat fields
+    (`bodyFontSize`, `fontFamily`, …) only to say they do not exist. The user's own prompt file is
+    still never edited.
+  - Enforcement is at the CAPTURE boundary, not in the renderer: `PreparedRequest.PromptMode`
+    records the mode the request was SENT in; `ResultCapture.Accept(text, jobId, requireStyle)` ->
+    `CandidateProfileStore.NormalizeAndSaveTo(…, requireStyle)` throws `MissingStyleMessage` when
+    `NormalizationReport.StyleSupplied` is false (no style OBJECT under `style` or a tolerated alias),
+    before anything is saved. MainWindow then takes the existing `GptFailure.InvalidOutput` retry
+    path; the Settings manual Result fallback applies the same rule. An older
+    `prepared-request.json` without `PromptMode` reads as Resume.
+  - Logs: `STYLE accepted preset=… body=9 bullet=9 skills=9 education=9 font=Arial <jobId>` on
+    success, `GPT output invalid: Normal Prompt mode requires style <jobId>` on refusal.
 - **`PromptMode` is a STRING** (`PromptModes.Normalize`: unknown/missing/odd case -> Resume), not an
   enum: `Storage.LoadSettings` turns any exception into DEFAULT settings, which would silently drop
   the user's configured paths. `PromptMode` and `NormalPrompt` persist in `settings.json` and are
@@ -261,7 +284,9 @@ Claude usage is a limited development resource. Spend it on correctness, not on 
   Failures are reported on their own status line, logged to `results\<jobId>.docgen.txt`, and the
   Generate Documents button regenerates from the saved JSON.
 - **DOCX comes from `DocumentFormat.OpenXml`** — no Word, no COM, no Office automation, ever.
-  **PDF comes from WebView2 `PrintToPdfAsync`** over the HTML rendering; do not add another PDF engine.
+  **PDF comes from PDFsharp/MigraDoc** (`PdfWriter.BuildDocument`), rendered directly from the same
+  `ResumeDocument` — never from the DOCX and never through a browser (it replaced WebView2
+  `PrintToPdfAsync` in A6.6.12); do not add another PDF engine.
 - **Both renderers are driven by the same `ResumeDocument`**, so DOCX and PDF always carry identical
   content. A test asserts the DOCX round-trips every model line; keep it that way.
 - **Output is organized by day and job** (see "Resume output folders" below). The earlier rule —
@@ -640,6 +665,77 @@ Do not implement these without the user starting the work; they record intent, n
   neither the network nor the user's signed-in profile is ever touched. When embedding JSON in a test
   page, escape `</` as `<\/` — a literal `</script>` inside it ends the block early.
 
+## Job import filters — the import gate
+
+- **Five independent switches, persisted in the ONE `settings.json`** as ordinary `AppSettings`
+  properties. Defaults: `SkipLinkedInApply` **on**, `SkipSecurityClearance` **on**,
+  `SkipCitizenshipRequirement` **on**, `SkipExportControl` **off**, `SkipNoVisaSponsorship` **off** —
+  so a fresh install and a `settings.json` written before the filters existed both show
+  **Filters (3)**. There is no second settings file and no browser-only copy.
+- **`JobImportFilter` is the single source of the rule logic.** It is pure — `JobImportData` plus
+  `AppSettings` in, a `JobFilterDecision` out — holds no I/O, no UI and no storage, and never throws
+  (anything unexpected accepts). No matching logic belongs in `JobBrowserWindow`, `SettingsWindow`
+  or the Auto Import loop.
+- **`JobImporter.ImportOne` is THE gate**, and it takes `AppSettings` for exactly this. Import
+  Current Job, Import Found / Auto Import and the Incoming folder all arrive there, so the filters
+  cannot be bypassed or duplicated. Order inside it: validate → **duplicate decision** → filter →
+  create task.
+- **The filter runs AFTER the duplicate decision, deliberately.** A job already in Resume Builder
+  stays a `Duplicate` and still gains an application address it lacks (`ApplyCapture.FillIfEmpty`),
+  whatever the filters now say. Filters gate what BECOMES a job; they never remove or re-check one.
+- **A rejected job is `JobImportKind.Skipped`, never `Invalid`.** `Invalid` is this project's name
+  for a failed import; an intentional refusal is not a failure. A skipped job creates no `JobTask`,
+  writes no `tasks.json`, queues nothing for GPT, and carries its `JobFilterReason` on the outcome.
+- **Rejected jobs never count toward the Auto Import target.** The target means *accepted new jobs
+  actually imported*: duplicates, filter refusals and failures do not count, and
+  `AutoImportFoundJobsAsync` **tops up** — it returns to the results page and discovers more with the
+  same collect-and-scroll mechanics `FindJobsUntilTargetAsync` uses — until the target is met, Stop
+  is pressed, or the list ends. Stop, end-of-list detection (`EndOfListRounds`) and URL
+  de-duplication are unchanged.
+- **Session-scoped, never a blacklist.** `_processedJobKeys` (normalized job URLs) stops one Auto
+  Import session reopening a card it already tried; it is cleared when a new scan starts. Nothing is
+  written to disk, so a job refused today imports tomorrow once the user changes a switch.
+  A switch toggled mid-scan applies to the next import attempt only — the scan is never restarted.
+- **One switch definition, two screens.** `JobImportFilter.Switches` holds the five descriptors
+  (reason, caption, getter, setter). The Job Browser toolbar's **Filters (N)** popup and the
+  Settings **Job Import Filters** section both build their checkboxes from it, so the captions and
+  the values can never drift. The toolbar saves on each tick (load → set one field → save, so
+  nothing unrelated is rewritten); Settings saves with its page's own Save button and then calls
+  `MainWindow.RefreshJobImportFilters()`. The shell calls `SettingsWindow.ReloadSettings()` whenever
+  Settings is shown, so a toolbar change appears there and is not written back out of a stale copy.
+- **The toolbar state is loaded at construction, not on first popup open** — `BuildImportFilters()`
+  runs in the constructor, so "Filters (N)" is correct from the moment the control exists.
+- **No generic "security" filtering, ever.** `jd.Contains("security")` and a bare
+  `jd.Contains("clearance")` are both wrong. A **security certification is not a security
+  clearance**: cloud/AI security certifications, cybersecurity work, DevSecOps, FedRAMP, NIST,
+  secure systems and security products must all keep importing. Each rule needs a specific SUBJECT,
+  and the weaker subjects also need applicant-directed REQUIREMENT language within 10 words of it in
+  the same sentence. `RequirementDenied` ("not required", "no clearance") means a posting that says
+  the opposite is never read as a requirement, and `EqualOpportunityMarkers` keeps EEO boilerplate —
+  which lists citizenship as a protected class — from reading as a citizenship rule.
+- **`U.S.` is folded to `us` before sentence splitting**, so "must be a U.S. citizen" survives as one
+  sentence; apostrophes are folded too, so "doesn't" is one token. A sentence ends at `. ! ? ;`, a
+  line break or a bullet — **not** at a colon, so "Required: US citizenship" stays one statement.
+- **LinkedIn is decided by the APPLICATION DESTINATION only**, through the existing
+  `ApplyCapture.IsApplicationUrl` + `ApplicationPlatformDetector.Detect`. LinkedIn in the job text,
+  a LinkedIn profile or company page, and a missing/unusable `ApplyUrl` (Unknown) never reject.
+- **Precedence is `JobImportFilter.Switches` order**: LinkedIn → SecurityClearance →
+  CitizenshipRequirement → ExportControl → NoVisaSponsorship, first enabled match wins. A posting
+  matching both clearance and citizenship ("US Citizenship required; must be eligible for a Public
+  Trust clearance") is always reported as **SecurityClearance**; with clearance off, the citizenship
+  rule still catches it. A test pins that.
+- **Filters apply to future imports only.** Existing jobs are never deleted, re-checked or
+  retroactively filtered, and both screens say so ("Applies to future imports only.").
+- **Logging carries reasons only**: `IMPORT skipped <safe-id> reason=<Reason>` from the shared gate
+  and `JOBBROWSER import skipped <safe-id> reason=<Reason>` from the browser paths. The id is the
+  Jobright job id, or `SafeForLog` (scheme + host + path). Never a job description, never an
+  `ApplyUrl` query string, never a pattern.
+- A manual Import Current Job refusal is always visible: `JobImportFilter.Describe` gives the one
+  shared message ("Not imported: security clearance required").
+- Tests: `ResumeStyleTests` — "Job import filter: rules" (13), ": persistence" (4), ": the import
+  gate" (7). The false-positive corpus (PG&E, Ansell, PwC, Pure Storage, a security product company)
+  lives in `FilterSecurityIsNotClearance`; keep adding to it rather than loosening a rule.
+
 ## Job input contract — one job, five fields
 
     { "company": "…", "title": "…", "jobUrl": "https://…", "companyUrl": "https://…", "description": "…" }
@@ -656,8 +752,9 @@ Do not implement these without the user starting the work; they record intent, n
   refused with "Only one job per input file is supported." and stays in Incoming; it is never partly
   imported. A refused file is left in place to be fixed.
 - **There is one importer: `JobImporter.ImportOne`** — validate, normalize the job URL, refuse a
-  duplicate, otherwise create one task and save. `JobImporter.Import` (Incoming folder) calls it per
-  file; the browser calls it through MainWindow. Do not add a second validation or dedup path.
+  duplicate, apply the user's import filters, otherwise create one task and save.
+  `JobImporter.Import` (Incoming folder) calls it per file; the browser calls it through MainWindow.
+  Do not add a second validation, dedup or filter path. See "Job import filters — the import gate".
 - **`JobTask.JobId` is Resume Builder's internal task id**, not an input field. The queue, the capture,
   `results\<id>.json`, prepared requests and every diagnostic depend on it, so it was kept, not
   renamed. New tasks get `RB-yyyyMMdd-HHmmss-xxxxxxxx` from `JobImporter.NewInternalId` (time for
@@ -720,8 +817,9 @@ Do not implement these without the user starting the work; they record intent, n
   out-of-range value is corrected and reported, so a styling mistake cannot fail a job whose resume
   content is good. `StyleValidator` applies the same rules as errors for the documented contract and
   the tests. Keep both in step.
-- **Hard rules that survive any AI request**: body/bullet/education ≥ 11 pt, skill values ≥ 10.5 pt,
-  line spacing ≥ 1.0, `#RRGGBB` colours only, whitelisted fonts, single column. The summary, skill
+- **Hard rules that survive any AI request**: body/bullet/education/skill values ≥ 9 pt (lowered from
+  11 / 10.5 so Normal mode can ask for the 9 pt body standard — the presets still use 11 / 10.5, so
+  Resume mode's output is unchanged), any font size 8–24 pt, line spacing ≥ 1.0, `#RRGGBB` colours only, whitelisted fonts, single column. The summary, skill
   values and education always render regular weight; a bullet whose every segment is bold is demoted
   to regular. No text boxes, sidebars, icons, skill bars, graphics, layout tables or backgrounds.
 - **Emphasis is structural, never Markdown.** `descriptionLines` accepts a plain string or
@@ -740,7 +838,11 @@ Do not implement these without the user starting the work; they record intent, n
   generation still never writes a profile.
 - Contract for the AI: `docs\GPT_JSON_CONTRACT.md` and `docs\gpt-resume-json-example.json`. Keep them
   in step with the tokens in `ResumeStyle.cs`.
-- Regression harness: `tests\ResumeStyleTests` (41 checks, `dotnet run --project tests\ResumeStyleTests`).
+- **The DOCX stores font sizes in whole half points** (`w:sz`), so a size that is not a multiple of
+  0.5 is rounded in the DOCX (8.7 -> 8.5) while the PDF keeps it. The Normal contract tells GPT to use
+  multiples of 0.5; 9 pt is exact in both renderers.
+- Regression harness: `tests\ResumeStyleTests` (`dotnet run --project tests\ResumeStyleTests`; the
+  "Normal Prompt style contract" group covers the 9 pt path end to end, DOCX and PDF model included).
   It compiles the real source files and must stay at 0 failures.
 
 ## Sequential queue (A6.6.10)
@@ -761,17 +863,13 @@ Do not implement these without the user starting the work; they record intent, n
 - Manual single-job processing, Retry Failed and A6.6.9 document generation must keep working unchanged;
   the queue reuses the same `RunJobAsync` path rather than duplicating it.
 
-## Auto-Send, and why Copy stays manual (A6.6.11)
+## Auto-Send (A6.6.11)
 
-- **Never programmatically extract ChatGPT Output.** The consumer Terms prohibit automated extraction
-  of Output, so the app does not click Copy and does not read assistant turns. (A6.6.13 adds
-  completion detection from control state, for notification only - see below.) The answer reaches the
-  app only when the *user* copies it with ChatGPT's own Copy button or shortcut and `ClipboardWatcher`
-  picks it up. Do not add Auto-Copy, response scraping, or any DOM read of a reply.
-- **Auto-Send actuates a control; it never reads output.** `ChatSender` + `WebViewChatProbe` check the
-  Send button's state, click it, and confirm by seeing *our own* composer empty. Every probe returns a
-  status token from a fixed set; a test asserts the scripts contain no `innerText`, `innerHTML`,
-  `data-message-author-role`, `conversation-turn` or `markdown`, and that every `return` is a token.
+- **Auto-Send clicks Send. It does not read the reply.** `ChatSender` + `WebViewChatProbe` check the
+  Send button's state, click it, and confirm by seeing *our own* composer empty. Those probes return a
+  status token from a fixed set and do not read assistant text. The answer is read later by
+  `ChatResponseReader`, only after `ChatCompletionWatcher` reports a confirmed Ready. If that read fails,
+  the user can still copy the JSON.
 - **`ChatSender` has no WebView2 reference** — orchestration is testable with a fake `IChatProbe`.
 - **An automation failure is never a job failure.** Auto-Send problems leave the job Processing with the
   capture still armed, pause the queue via `PauseForManualAction`, and name the one action: press Enter.
@@ -846,19 +944,16 @@ Rules that keep it that way:
 
 ## "Answer ready" notification (A6.6.13)
 
-- **Completion detection is for notification only.** `ChatCompletionWatcher` + `WebViewCompletionProbe`
+- **Completion detection does not read the answer.** `ChatCompletionWatcher` + `WebViewCompletionProbe`
   look at control state (is the stop-generating button present, is the composer idle) and return a
-  token. They never read an answer, never click Copy, and never dispatch or synthesize input. A test
-  asserts the probe script contains none of `innerText`, `innerHTML`, `textContent`,
-  `data-message-author-role`, `conversation-turn`, `markdown`, `copy`, `click(`, `dispatchEvent`,
-  `clipboard`, and that it only returns `generating` / `idle` / `unknown`.
-- **The copy uses ChatGPT's own shortcut, and the app now presses it** (`KeyboardSimulator`, from
-  `WatchForAnswerAsync` on a confirmed Ready, commit `25a1034` "feat: version-auto-input"). It brings
-  the window forward, focuses the pane and sends the keystroke through Windows; the user's own
-  Ctrl+Shift+; still works and remains the fallback. **This is a deliberate change from the earlier
-  "human action only" rule — do not silently revert it, and do not expand it**: there is still no
-  reading of assistant turns, no Copy-button click and no DOM read of a reply. The answer still
-  reaches the app only through the clipboard.
+  token. They never click Copy and never read assistant text. A test asserts the probe script contains
+  none of `innerText`, `innerHTML`, `textContent`, `data-message-author-role`, `conversation-turn`,
+  `markdown`, `copy`, `click(`, `dispatchEvent`, `clipboard`, and that it only returns `generating` /
+  `idle` / `unknown`.
+- **A confirmed Ready reads the last assistant JSON in the background** (`ChatResponseReader`): no focus
+  change and no clipboard. That text then goes through the same normalize → strict validate → save path
+  as a manual copy. If the read fails, the user copies the JSON with ChatGPT's Copy button or
+  Ctrl+Shift+;. Ctrl+Shift+' only brings Resume Builder forward so that fallback can reach the page.
 - Idle must hold for 3 consecutive 1-second polls after generation was seen, so reasoning-model pauses
   do not fire early. If generation is never seen, notify only after the 30 s start budget. Give up
   after 20 minutes with a status message. Always cancellable.
@@ -904,19 +999,14 @@ Rules that keep it that way:
   `InactivityMs` 120 s measured from the last `generating` poll, so a long answer that keeps
   generating is never failed; `MaxWaitMs` 20 min stays the absolute backstop. New outcomes
   `NoResponseStart` and `Stalled`.
-- **ReadyUnconfirmed is ambiguous and is never treated as success.** At the 30 s start budget the
-  watcher fires `onUnconfirmedReady`: the user is told once, the state stays UNCONFIRMED (no Ready, no
-  capture watchdog, no queue advance) and the watch **keeps going**. It also gets **one** copy
-  opportunity — `RequestCopyAsync`, the same keystroke the confirmed path sends — because the answer
-  may have finished before the first poll; without it a successful fast answer would be re-sent at
-  180 s. A capture cancels the watch and completes the job; silence ends as `NoResponseStart` and is
-  retried.
-- **One copy keystroke per attempt** (`CaptureRequestGate`, reset in `SendAttemptAsync`): if the
-  ambiguous state already asked, a later confirmed Ready must not press it again for the same answer.
-  Every capture rule still applies to whatever lands (prompt echo, non-profile text, wrong or late
-  job, invalid output). No DOM reading was added.
-- **Capture timeout is NOT retried in v1**: ChatGPT may have answered and only the Copy failed. The
-  job is marked Failed (`CaptureTimeout`) and the queue advances, as before.
+- **ReadyUnconfirmed is not success and does not read the page.** At the 30 s start budget the watcher
+  notifies once and keeps watching. `ChatResponseReader` runs only after a confirmed Ready. A capture
+  cancels the watch and completes the job; silence ends as `NoResponseStart` and is retried.
+- **Whatever text arrives — background read or manual copy — uses the same checks** (prompt echo,
+  non-profile text, wrong or late job, invalid output) and then normalize → strict validate → save.
+- **Capture timeout is not retried.** If the background read fails and the manual copy does not arrive,
+  the job is marked Failed (`CaptureTimeout`) and the queue advances. ChatGPT may have answered and only
+  the capture failed. The request is not sent again.
 - Logs carry the job id, the attempt and a fixed reason only: `GPT attempt 2/3 response-start timeout
   <jobId>`, `GPT retries exhausted <jobId>; queue job marked Failed`, `GPT capture timeout <jobId>;
   queue job marked Failed`. Never prompt text, answer text or a URL.
@@ -926,12 +1016,12 @@ Rules that keep it that way:
 
 ## Capture watchdog (A6.6.13)
 
-- **The Copy is awaited for 10 s** (`CaptureWatchdog.DefaultTimeout`; the message says 10 s too). It
-  was 30 s when this was written. It times the CAPTURE stage only — never ChatGPT itself, which has
-  its own budgets above. `CaptureWatchdog` starts only on a *confirmed*
-  `CompletionOutcome.Ready` (generation seen, then idle) while the capture is armed. `ReadyUnconfirmed`
-  (generation never observed — could be a drifted selector while ChatGPT is still writing) notifies but
-  never starts it, so a page change can never fail every job.
+- **The manual Copy fallback is awaited for 10 s** (`CaptureWatchdog.DefaultTimeout`; the message says
+  10 s too). It was 30 s when this was written. It times that fallback only — never ChatGPT itself, which
+  has its own budgets above, and not the background read, which has its own short stability budget.
+  `CaptureWatchdog` starts only after a confirmed `CompletionOutcome.Ready` whose background read did not
+  produce a usable profile. `ReadyUnconfirmed` (generation never observed) notifies but never starts it,
+  so a page change can never fail every job.
 - On timeout: disarm, mark the job `Failed` with `FailureReason = "CaptureTimeout"`, log
   `CAPTURE TIMEOUT <jobId> after 10s` plus the exact message, recycle the WebView2 as after a completed
   job, and advance. **The job is never re-sent automatically**; Retry Failed re-queues it and clears the reason.
@@ -948,3 +1038,40 @@ Rules that keep it that way:
   never read an older copy for the job armed now. Verified with the real clipboard.
 - Diagnostics: `READY <jobId>`, `CAPTURE watchdog started <jobId> 10s`, `CAPTURE received <jobId>`,
   `CAPTURE TIMEOUT <jobId> after 10s`.
+
+## Runtime safety and install-readiness (productization Phase 1)
+
+The app must run from `C:\Program Files\ResumeBuilder\` with nothing written beside the EXE:
+`%LOCALAPPDATA%\ResumeBuilder\` holds settings, tasks, logs, crash logs, results and both WebView2
+profiles; `Documents\ResumeAutomation\` holds generated resumes and CurrentResume.docx.
+
+- **settings.json / tasks.json are crash-safe (`Storage`, `SafeJsonFile` in Services.cs).** Writes are
+  temp file → flush → `File.Replace`, keeping the previous version as `<name>.bak`. A MISSING file is a
+  normal first run. A file that exists but will not parse is **never** treated as empty: its exact
+  bytes are kept as `<name>.corrupt-<timestamp>.json` (an identical copy is reused), the `.bak` is
+  tried, and if that fails too the app runs on defaults with **writes to that file refused for the
+  session** (`SaveSettings`/`SaveTasks` return false; `WriteBlockedReason`). A lock after a good load
+  returns the last good copy. `Storage.Problems` is shown at startup. Never go back to "catch → return
+  defaults" — that is how one bad read used to wipe every job on the next save.
+- **Tests that write a live state file must use `WithLiveStateFile`** (via `WithLiveTasksFile` /
+  `WithTasksFileRestored` / `WithSettingsFileRestored`): it restores the bytes, the `.bak`, any
+  corrupt-copy and the write refusal. A hand-rolled byte restore leaves a `.bak` of the user's real
+  data behind — found and fixed in `StatusSurvivesRestart`.
+- **Startup (`App.OnStartup`, no `StartupUri`)**: crash handlers → `SingleInstance` (named mutex
+  `ResumeBuilder.SingleInstance`, also the future installer AppMutex; a second launch focuses the
+  first and exits BEFORE touching logs, tasks or WebView2) → `PerfLog.StartSession()` → WebView2
+  Runtime check (`GetAvailableBrowserVersionString`; Yes = check again, No = exit; nothing is
+  downloaded) → MainWindow.
+- **Logs**: `diagnostics.log` is rotated per launch and at ~1 MB to `diagnostics.1..5.log` — never
+  cleared. Unhandled UI / AppDomain / unobserved-task exceptions write `crash-yyyyMMdd-HHmmss.log`
+  (time, version, source, OS, exception; no settings, cookies or resume text), newest 10 kept. A UI
+  crash still ends the app, after telling the user where the log is.
+- **First run**: a blank `ResumeRootFolder` becomes `Documents\ResumeAutomation\Resumes` on load
+  (`AppPaths.ApplyFirstRunDefaults`, never over a set value). `SetupCheck` names what is still missing
+  (Master or Normal Prompt, candidate profile) once per launch and offers to open Settings. Nothing
+  is copied or bundled; no machine-specific path is written into code.
+- **CurrentResume.docx follows the Resume Root** (`ResumeUpload.CurrentResumePathFor`): a root named
+  `Resumes` → its parent (default: `Documents\ResumeAutomation\CurrentResume.docx`); any other root →
+  inside it; a `Resumes` folder on a drive root → inside it; blank → the Documents default.
+- **The Development tab is DEBUG-only** (`HideDevelopmentToolsInRelease`); the actions are unchanged.
+- Tests: `ResumeStyleTests` "Phase 1: runtime safety and install-readiness" (14 checks).

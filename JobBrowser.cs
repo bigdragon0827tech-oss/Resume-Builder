@@ -22,7 +22,7 @@ public static class JobBrowser {
     /// %LOCALAPPDATA%\ResumeBuilder\JobBrowserWebView2 — deliberately a sibling of the ChatGPT
     /// profile, never inside it. Two different folders mean two isolated browser profiles.
     /// </summary>
-    public static string UserDataFolder => Path.Combine(Storage.DataDir, "JobBrowserWebView2");
+    public static string UserDataFolder => Path.Combine(ProfileContext.ProfileRoot, "JobBrowserWebView2");
 
     /// <summary>
     /// True when the two browsers really are separate profiles: different folders, and neither one
@@ -78,7 +78,12 @@ public sealed class JobImportData {
     [JsonPropertyName("applyUrl")] public string? ApplyUrl { get; set; }
 }
 
-public enum JobImportKind { Imported, Duplicate, Invalid }
+/// <summary>
+/// What one import attempt did. <see cref="Invalid"/> is this project's name for a failed import —
+/// a job that could not be read or validated. <see cref="Skipped"/> is deliberately separate: the
+/// job was perfectly readable and the user's own import filter refused it, which is not a failure.
+/// </summary>
+public enum JobImportKind { Imported, Duplicate, Invalid, Skipped }
 
 /// <summary>What happened to one imported job, ready to show to the user.</summary>
 public sealed class JobImportOutcome {
@@ -92,6 +97,12 @@ public sealed class JobImportOutcome {
 
     /// <summary>Why an Invalid import was refused, in plain words.</summary>
     public string Reason { get; init; } = "";
+
+    /// <summary>
+    /// Which import filter refused a <see cref="JobImportKind.Skipped"/> job. None for every other
+    /// outcome. The caller turns it into text with <see cref="JobImportFilter.Describe"/>.
+    /// </summary>
+    public JobFilterReason FilterReason { get; init; }
 
     /// <summary>True when this import saved an application address on the task (new or previously empty).</summary>
     public bool ApplyUrlRecorded { get; init; }

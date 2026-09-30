@@ -18,11 +18,15 @@ namespace ResumeBuilder;
 public static class StyleLimits {
     public const double MinFontSize = 8, MaxFontSize = 24;
 
-    /// <summary>ATS floor: body and bullet text never render smaller than this.</summary>
-    public const double MinBodyFontSize = 11;
+    /// <summary>
+    /// Floor for body, bullet and education text. Lowered from 11 to 9 so a prompt can ask for the
+    /// compact 9 pt body standard; the presets still use 11, so a style that does not ask for 9 pt
+    /// renders exactly as before.
+    /// </summary>
+    public const double MinBodyFontSize = 9;
 
-    /// <summary>ATS floor for the technical-skills values.</summary>
-    public const double MinSkillValueFontSize = 10.5;
+    /// <summary>Floor for the technical-skills values — the same 9 pt body standard (was 10.5).</summary>
+    public const double MinSkillValueFontSize = 9;
 
     public const double MinLineSpacing = 1.0, MaxLineSpacing = 3.0;
     public const double MinMargin = 0.3, MaxMargin = 1.25;      // inches
@@ -139,7 +143,11 @@ public static class StyleSchema {
     /// <summary>The top-level style properties.</summary>
     public static readonly string[] TopLevel = { "preset", "page", "colors", "fonts" };
 
-    static readonly string[] Common = { "fontSize", "bold", "italic", "color", "alignment", "spaceBefore", "spaceAfter", "lineSpacing" };
+    /// <summary>The keys every text section accepts. Public so the GPT contract is generated from it.</summary>
+    public static readonly string[] Common = { "fontSize", "bold", "italic", "color", "alignment", "spaceBefore", "spaceAfter", "lineSpacing" };
+
+    /// <summary>The sections whose weight is always regular: bold is forced off and rejected strictly.</summary>
+    public static readonly string[] AlwaysRegular = { "skillValues", "body", "bullet", "education" };
 
     static readonly Dictionary<string, string[]> BySection = new(StringComparer.OrdinalIgnoreCase) {
         ["name"] = Common,

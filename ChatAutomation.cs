@@ -9,15 +9,9 @@ public sealed class ComposerResult {
 }
 
 /// <summary>
-/// Writes the prepared request into the ChatGPT composer hosted in the WebView2.
-///
-/// This is deliberately a WRITE-ONLY automation. The response is never read out of the page:
-/// the DOM of a third-party site changes without notice, and a drifted selector on the read path
-/// would silently feed a truncated or wrong answer into the profile. Capturing the answer is the
-/// clipboard watcher's job (see ResultCapture), which depends on no page structure at all.
-///
-/// Nothing here signs in, reads credentials or cookies, or presses Send. The user stays signed in
-/// through the WebView2 profile they already use, and sending remains a real human keystroke.
+/// Writes the prepared request into the ChatGPT composer. The app sends that prompt; after
+/// generation looks finished, <see cref="ChatResponseReader"/> reads the last assistant JSON
+/// automatically. This class does not read the reply, sign in, or press Send.
 /// </summary>
 public static class ChatComposer {
     public const string ChatUrl = "https://chatgpt.com/";
@@ -356,12 +350,9 @@ public sealed class WebViewChatProbe : IChatProbe {
 }
 
 // ---------------------------------------------------------------------------
-// A6.6.13 — "answer ready" notification.
-//
-// This watches CONTROL STATE ONLY: is ChatGPT's stop-generating button present, and is the composer
-// idle. It never reads an assistant message, never clicks Copy, and never synthesizes a keystroke.
-// Its only job is to tell the user the answer looks finished, so that THEY can press ChatGPT's own
-// copy shortcut. The copy itself stays a human action performed by ChatGPT's own feature.
+// Watches control state until generation looks finished. It does not read the assistant reply.
+// After Ready, ChatResponseReader may read the last assistant JSON in the background.
+// Manual copy is only the fallback when that read fails.
 // ---------------------------------------------------------------------------
 
 public enum CompletionOutcome {
@@ -381,7 +372,10 @@ public enum CompletionOutcome {
     NoResponseStart,
 
     /// <summary>Generation started, then made no progress for the inactivity budget without finishing.</summary>
-    Stalled
+    Stalled,
+
+    /// <summary>ChatGPT showed its "Too many requests" rate limit. A cooldown, never a failure.</summary>
+    RateLimited
 }
 
 /// <summary>Generation-state probe. Implemented over WebView2 in the app and faked in tests.</summary>
@@ -390,10 +384,10 @@ public interface ICompletionProbe {
 }
 
 /// <summary>
-/// Decides when an answer looks finished, with no WebView2 reference so it can be tested directly.
-/// A reasoning model can pause mid-answer, so "idle" must hold for several consecutive polls before
-/// the answer is reported ready. A false early cue only costs a premature keypress — the validator
-/// still rejects a truncated answer — but the debounce keeps that rare.
+/// Decides when generation looks finished. It does not read the assistant reply. After Ready,
+/// automatic background reading may occur; manual copy remains only a fallback.
+/// A reasoning model can pause mid-answer, so "idle" must hold for several consecutive polls
+/// before Ready. A false early cue can read an unfinished answer; validation still rejects it.
 /// </summary>
 public static class ChatCompletionWatcher {
     /// <summary>ChatGPT's own "Copy last code block" shortcut; the answer is requested as one json code block.</summary>
@@ -433,7 +427,8 @@ public static class ChatCompletionWatcher {
         ICompletionProbe probe,
         CancellationToken cancellation = default,
         Func<int, CancellationToken, Task>? delay = null,
-        Action? onUnconfirmedReady = null) {
+        Action? onUnconfirmedReady = null,
+        Func<Task<bool>>? rateLimited = null) {
 
         delay ??= (ms, ct) => Task.Delay(ms, ct);
         var waited = 0;
@@ -445,6 +440,13 @@ public static class ChatCompletionWatcher {
         try {
             while (true) {
                 if (cancellation.IsCancellationRequested) return CompletionOutcome.Cancelled;
+
+                // The rate-limit popup ends the watch at once: waiting on would only burn budget.
+                if (rateLimited is not null) {
+                    bool limited;
+                    try { limited = await rateLimited(); } catch { limited = false; }
+                    if (limited) return CompletionOutcome.RateLimited;
+                }
 
                 string state;
                 try { state = await probe.GenerationStateAsync(); }

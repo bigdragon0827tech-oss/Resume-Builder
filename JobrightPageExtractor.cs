@@ -67,43 +67,38 @@ public sealed class JobrightPageExtractor : IJobPageExtractor {
         };
       };
 
-      const pick = () => {
-
-        // Current Jobright source.
-        const helper =
-          document.getElementById('jobright-helper-job-detail-info');
-
-        if (helper) {
-          try {
-            const data = JSON.parse(helper.textContent || '{}');
-
-            if (data && data.jobResult) {
-              return normalize(data);
-            }
-          } catch (e) {
-            // Fall through to older source.
-          }
+      const readHelper = () => {
+        const helper = document.getElementById('jobright-helper-job-detail-info');
+        if (!helper) return null;
+        try {
+          const data = JSON.parse(helper.textContent || '{}');
+          return data && data.jobResult ? normalize(data) : null;
+        } catch (e) {
+          return null;
         }
-
-        // Older Jobright / Next.js source.
-        const next =
-          document.getElementById('__NEXT_DATA__');
-
-        if (next) {
-          try {
-            const parsed = JSON.parse(next.textContent || '{}');
-            const ds = parsed?.props?.pageProps?.dataSource;
-
-            if (ds) {
-              return normalize(ds);
-            }
-          } catch (e) {
-            // JSON-LD remains available as the parser's final fallback.
-          }
-        }
-
-        return null;
       };
+
+      const readNextData = () => {
+        const next = document.getElementById('__NEXT_DATA__');
+        if (!next) return null;
+        try {
+          const parsed = JSON.parse(next.textContent || '{}');
+          const ds = parsed?.props?.pageProps?.dataSource;
+          return ds ? normalize(ds) : null;
+        } catch (e) {
+          return null;
+        }
+      };
+
+      // Job text prefers the helper. __NEXT_DATA__ is used for that text only when the helper is absent.
+      const helperData = readHelper();
+      const nextData = readNextData();
+      const pick = () => helperData || nextData;
+      const applyFallback = nextData ? {
+        jobId: nextData.jobId,
+        applyLink: nextData.applyLink,
+        originalUrl: nextData.originalUrl
+      } : null;
 
       const canonical =
         document.querySelector('link[rel="canonical"]');
@@ -122,7 +117,8 @@ public sealed class JobrightPageExtractor : IJobPageExtractor {
           )
         ).map(s => s.textContent),
 
-        next: pick()
+        next: pick(),
+        applyFallback: applyFallback
       });
     })()
     """;
@@ -196,26 +192,44 @@ public sealed class JobrightPageExtractor : IJobPageExtractor {
 
         var fromNext = nextFresh ? next! : null;
         var fromPosting = postingFresh ? posting! : null;
+        // JSON-LD with no identifier can still be the previous card. Use it only when its id matches
+        // this job, or when it is the only source left.
+        var identifiedPosting = fromPosting is not null
+            && postingId is not null
+            && postingId.Equals(urlId, StringComparison.OrdinalIgnoreCase);
+        var trustedPosting = identifiedPosting || (fromPosting is not null && !nextFresh) ? fromPosting : null;
 
         return new JobImportData {
-            // __NEXT_DATA__ first: it is always there and its title is the one the page shows.
-            Company = FirstNonEmpty(Clean(Text(fromNext?["company"])), Clean(OrganisationName(fromPosting))),
-            Title = FirstNonEmpty(Clean(Text(fromNext?["title"])), Clean(Text(fromPosting?["title"]))),
+            // Page data first: it is always there and its title is the one the page shows.
+            Company = FirstNonEmpty(Clean(Text(fromNext?["company"])), Clean(OrganisationName(trustedPosting))),
+            Title = FirstNonEmpty(Clean(Text(fromNext?["title"])), Clean(Text(trustedPosting?["title"]))),
             JobUrl = JobUrl(Text(payload["canonical"]), href, urlId),
-            CompanyUrl = CompanyUrl(fromNext, fromPosting),
-            // The full original posting when it is published; otherwise the job's own sections.
-            Description = FirstNonEmpty(HtmlToText(Text(fromPosting?["description"])), Compose(fromNext)),
-            ApplyUrl = ApplyUrl(fromNext)
+            CompanyUrl = CompanyUrl(fromNext, trustedPosting),
+            // The full original posting only when that JSON-LD names this job. Otherwise this job's
+            // own sections, so a leftover posting cannot supply another card's description.
+            Description = identifiedPosting
+                ? FirstNonEmpty(HtmlToText(Text(fromPosting?["description"])), Compose(fromNext))
+                : nextFresh
+                    ? Compose(fromNext)
+                    : HtmlToText(Text(trustedPosting?["description"])),
+            ApplyUrl = ApplyUrl(fromNext, FreshApply(payload["applyFallback"] as JsonObject, urlId))
         };
     }
 
+    /// <summary>Link fields from a source whose job id is the job in the address. A stale id yields null.</summary>
+    static JsonObject? FreshApply(JsonObject? source, string urlId) =>
+        source is not null && Text(source["jobId"]).Equals(urlId, StringComparison.OrdinalIgnoreCase) ? source : null;
+
     /// <summary>
-    /// The application address, as Jobright's Apply button chooses it: applyLink, else originalUrl —
-    /// each taken only if it passes <see cref="ApplyCapture.IsApplicationUrl"/>. Only from page data
-    /// that describes this job (fromNext is null when stale). Signed-out pages carry neither: null.
+    /// Apply URL only: helper applyLink, helper originalUrl, then the same two fields from
+    /// __NEXT_DATA__. Each is kept only when <see cref="ApplyCapture.IsApplicationUrl"/> accepts it.
+    /// Job text stays on the helper. JSON-LD is never an Apply URL.
     /// </summary>
-    static string? ApplyUrl(JsonObject? fromNext) =>
-        new[] { Text(fromNext?["applyLink"]).Trim(), Text(fromNext?["originalUrl"]).Trim() }
+    static string? ApplyUrl(JsonObject? helper, JsonObject? nextData) =>
+        ExternalApplyUrl(helper) ?? ExternalApplyUrl(nextData);
+
+    static string? ExternalApplyUrl(JsonObject? source) =>
+        new[] { Text(source?["applyLink"]).Trim(), Text(source?["originalUrl"]).Trim() }
             .FirstOrDefault(ApplyCapture.IsApplicationUrl);
 
     // ---------- the five fields ----------

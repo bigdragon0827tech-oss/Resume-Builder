@@ -2,7 +2,7 @@
  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
  xmlns:local="clr-namespace:ResumeBuilder"
- Title="Resume Builder v1.0" Height="820" Width="1400" MinHeight="640" MinWidth="1100"
+ Title="Resume Builder v3.0" Icon="Assets/ResumeBuilder.ico" Height="820" Width="1400" MinHeight="640" MinWidth="1100"
  Background="{DynamicResource Bg.App}">
  <Grid>
   <Grid.ColumnDefinitions>
@@ -13,25 +13,26 @@
   <!-- Sidebar -->
   <Border Grid.Column="0" Background="{DynamicResource Bg.Sidebar}" BorderBrush="{DynamicResource Border.Subtle}" BorderThickness="0,0,1,0">
    <DockPanel>
-    <StackPanel DockPanel.Dock="Top" Margin="16,20,16,12">
+    <StackPanel DockPanel.Dock="Top" Margin="16,18,16,8">
      <TextBlock Text="Resume Builder" FontSize="15" FontWeight="SemiBold"/>
-     <TextBlock Text="v1.0" Foreground="{DynamicResource Text.Muted}" FontSize="11" Margin="0,2,0,0"/>
+     <TextBlock Text="v3.0" Foreground="{DynamicResource Text.Muted}" FontSize="11" Margin="0,2,0,0"/>
+     <StackPanel x:Name="ProfileChip" Orientation="Horizontal" Margin="0,12,0,0">
+      <Border x:Name="ProfileAvatarHost" Width="28" Height="28" VerticalAlignment="Center"/>
+      <TextBlock x:Name="ActiveProfileText" VerticalAlignment="Center" Margin="8,0,0,0" MaxWidth="130"
+                 FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource Text.Secondary}"
+                 TextTrimming="CharacterEllipsis"/>
+     </StackPanel>
+     <Button x:Name="SwitchProfileButton" Content="Switch Profile" HorizontalAlignment="Left"
+             Margin="0,6,0,0" MinHeight="28" Height="28" Padding="8,0" FontSize="12"
+             Style="{DynamicResource SecondaryButtonStyle}" Click="SwitchProfile_Click"/>
     </StackPanel>
     <StackPanel DockPanel.Dock="Bottom" Margin="12,0,12,16">
-     <Button x:Name="ThemeToggleButton" Content="Use light theme" Style="{DynamicResource BtnGhost}"
+     <Button x:Name="ThemeToggleButton" Content="Use light theme" Height="34" Style="{DynamicResource BtnGhost}"
              HorizontalAlignment="Stretch" Click="ThemeToggle_Click"/>
-     <Button Content="Refresh Input" Margin="0,8,0,0" HorizontalAlignment="Stretch" Click="Refresh_Click"/>
+     <Button Content="Refresh Input" Height="34" Margin="0,8,0,0" HorizontalAlignment="Stretch" Click="Refresh_Click"/>
     </StackPanel>
     <ScrollViewer VerticalScrollBarVisibility="Auto">
      <StackPanel Margin="0,8,0,0">
-      <RadioButton x:Name="NavDashboard" GroupName="ShellNav" Style="{DynamicResource NavButtonStyle}"
-                   IsChecked="True" Checked="Nav_Checked" Tag="Dashboard" ToolTip="Dashboard">
-       <StackPanel Orientation="Horizontal">
-        <Path Width="14" Height="14" Stretch="Uniform" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"
-              Data="M2,2 H7 V7 H2 Z M9,2 H14 V7 H9 Z M2,9 H7 V14 H2 Z M9,9 H14 V14 H9 Z" Margin="0,0,10,0"/>
-        <TextBlock Text="Dashboard" VerticalAlignment="Center"/>
-       </StackPanel>
-      </RadioButton>
       <RadioButton x:Name="NavJobBrowser" GroupName="ShellNav" Style="{DynamicResource NavButtonStyle}"
                    Checked="Nav_Checked" Tag="JobBrowser" ToolTip="Job Browser">
        <StackPanel Orientation="Horizontal">
@@ -41,11 +42,19 @@
        </StackPanel>
       </RadioButton>
       <RadioButton x:Name="NavTaskQueue" GroupName="ShellNav" Style="{DynamicResource NavButtonStyle}"
-                   Checked="Nav_Checked" Tag="TaskQueue" ToolTip="Task Queue">
+                   IsChecked="True" Checked="Nav_Checked" Tag="TaskQueue" ToolTip="Task Queue">
        <StackPanel Orientation="Horizontal">
         <Path Width="14" Height="14" Stretch="Uniform" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"
               Data="M2,3 H14 V5 H2 Z M2,7 H14 V9 H2 Z M2,11 H10 V13 H2 Z" Margin="0,0,10,0"/>
         <TextBlock Text="Task Queue" VerticalAlignment="Center"/>
+       </StackPanel>
+      </RadioButton>
+      <RadioButton x:Name="NavEmailTasks" GroupName="ShellNav" Style="{DynamicResource NavButtonStyle}"
+                   Checked="Nav_Checked" Tag="EmailTasks" ToolTip="Email Tasks">
+       <StackPanel Orientation="Horizontal">
+        <Path Width="14" Height="14" Stretch="Uniform" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"
+              Data="M1,3 H15 V12 H1 Z M1,3 L8,8 L15,3" Margin="0,0,10,0"/>
+        <TextBlock Text="Email Tasks" VerticalAlignment="Center"/>
        </StackPanel>
       </RadioButton>
       <RadioButton x:Name="NavAiWorkspace" GroupName="ShellNav" Style="{DynamicResource NavButtonStyle}"
@@ -54,14 +63,6 @@
         <Path Width="14" Height="14" Stretch="Uniform" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"
               Data="M8,1 L10,6 L15,6 L11,9 L13,14 L8,11 L3,14 L5,9 L1,6 L6,6 Z" Margin="0,0,10,0"/>
         <TextBlock Text="AI Workspace" VerticalAlignment="Center"/>
-       </StackPanel>
-      </RadioButton>
-      <RadioButton x:Name="NavDocuments" GroupName="ShellNav" Style="{DynamicResource NavButtonStyle}"
-                   Checked="Nav_Checked" Tag="Documents" ToolTip="Documents">
-       <StackPanel Orientation="Horizontal">
-        <Path Width="14" Height="14" Stretch="Uniform" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=RadioButton}}"
-              Data="M4,1 H10 L13,4 V15 H4 Z M10,1 V4 H13" Margin="0,0,10,0"/>
-        <TextBlock Text="Documents" VerticalAlignment="Center"/>
        </StackPanel>
       </RadioButton>
       <RadioButton x:Name="NavApplications" GroupName="ShellNav" Style="{DynamicResource NavButtonStyle}"
@@ -96,21 +97,18 @@
 
    <Border Grid.Row="0" Background="{DynamicResource Bg.Surface}" BorderBrush="{DynamicResource Border.Subtle}" BorderThickness="0,0,0,1">
     <DockPanel Margin="20,0">
-     <TextBlock x:Name="PageTitleText" Text="Dashboard" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"/>
+     <TextBlock x:Name="PageTitleText" Text="Task Queue" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"/>
      <TextBlock x:Name="ContextChip" DockPanel.Dock="Right" VerticalAlignment="Center"
                 Foreground="{DynamicResource Text.Secondary}" FontSize="12"/>
     </DockPanel>
    </Border>
 
    <Grid Grid.Row="1" Margin="0">
-    <!-- Dashboard -->
-    <local:DashboardPage x:Name="DashboardView" Visibility="Visible"/>
-
     <!-- Job Browser (embedded; profile stays alive while Collapsed) -->
     <local:JobBrowserWindow x:Name="JobBrowserView" Visibility="Collapsed"/>
 
     <!-- Task Queue -->
-    <Grid x:Name="TaskQueueView" Visibility="Collapsed" Margin="24">
+    <Grid x:Name="TaskQueueView" Visibility="Visible" Margin="24">
      <Grid.ColumnDefinitions>
       <ColumnDefinition Width="2*"/>
       <ColumnDefinition Width="16"/>
@@ -122,18 +120,7 @@
        <RowDefinition Height="*"/>
       </Grid.RowDefinitions>
       <StackPanel>
-       <TextBlock Text="Task Queue" Style="{DynamicResource PageTitleStyle}"/>
-       <TextBlock Text="Active jobs stay visible until completed. History shows finished resumes." Style="{DynamicResource PageSubtitleStyle}"/>
-       <Border Background="{DynamicResource Bg.Input}" CornerRadius="8" Padding="3" HorizontalAlignment="Left" Margin="0,0,0,12">
-        <StackPanel Orientation="Horizontal">
-         <Button x:Name="ActiveViewButton" Content="Active (0)" Height="30" MinWidth="120" Margin="0,0,2,0"
-                 Style="{DynamicResource BtnGhost}" FontWeight="SemiBold"
-                 Click="ActiveView_Click" ToolTip="Queued, processing and failed jobs"/>
-         <Button x:Name="HistoryViewButton" Content="History (0)" Height="30" MinWidth="120"
-                 Style="{DynamicResource BtnGhost}"
-                 Click="HistoryView_Click" ToolTip="Completed jobs"/>
-        </StackPanel>
-       </Border>
+       <TextBlock Text="Queued, processing, and failed jobs." Style="{DynamicResource PageSubtitleStyle}"/>
        <TextBlock x:Name="SummaryText" Foreground="{DynamicResource Text.Secondary}" Margin="0,0,0,10"/>
       </StackPanel>
       <Border Grid.Row="1" Style="{DynamicResource CardStyle}" Padding="6">
@@ -164,11 +151,49 @@
                </Style>
               </Border.Style>
              </Border>
-             <StackPanel>
-              <TextBlock Text="{Binding Company}" FontWeight="SemiBold" FontSize="13"/>
-              <TextBlock Text="{Binding Title}" TextWrapping="Wrap" Foreground="{DynamicResource Text.Secondary}" Margin="0,2,0,0"/>
-              <TextBlock Text="{Binding StatusDisplay}" Margin="0,6,0,0" Foreground="{DynamicResource Text.Muted}" FontSize="11.5"/>
-             </StackPanel>
+             <Grid>
+              <Grid.RowDefinitions>
+               <RowDefinition Height="Auto"/>
+               <RowDefinition Height="Auto"/>
+               <RowDefinition Height="Auto"/>
+              </Grid.RowDefinitions>
+              <DockPanel Grid.Row="0">
+               <Border Style="{DynamicResource IconFrameStyle}" Margin="0,0,8,0" DockPanel.Dock="Left">
+                <Grid>
+                 <Path Data="M1,3 H15 V13 H1 Z M3,11 L6,7 L8,9 L11,5 L13,11 Z" Stretch="Uniform" Margin="3"
+                       Fill="{DynamicResource Text.Muted}" IsHitTestVisible="False">
+                  <Path.Style>
+                   <Style TargetType="Path">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                     <DataTrigger Binding="{Binding CompanyIcon}" Value="{x:Null}">
+                      <Setter Property="Visibility" Value="Visible"/>
+                     </DataTrigger>
+                    </Style.Triggers>
+                   </Style>
+                  </Path.Style>
+                 </Path>
+                 <Image Source="{Binding CompanyIcon}" Stretch="UniformToFill">
+                  <Image.Style>
+                   <Style TargetType="Image">
+                    <Setter Property="Visibility" Value="Visible"/>
+                    <Style.Triggers>
+                     <DataTrigger Binding="{Binding CompanyIcon}" Value="{x:Null}">
+                      <Setter Property="Visibility" Value="Collapsed"/>
+                     </DataTrigger>
+                    </Style.Triggers>
+                   </Style>
+                  </Image.Style>
+                 </Image>
+                </Grid>
+               </Border>
+               <TextBlock Text="{Binding Company}" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center"
+                          TextTrimming="CharacterEllipsis" ToolTip="{Binding Company}"/>
+              </DockPanel>
+              <TextBlock Grid.Row="1" Text="{Binding Title}" Foreground="{DynamicResource Text.Secondary}" Margin="0,2,0,0"
+                         TextTrimming="CharacterEllipsis" ToolTip="{Binding Title}"/>
+              <TextBlock Grid.Row="2" Text="{Binding StatusDisplay}" Margin="0,6,0,0" Foreground="{DynamicResource Text.Muted}" FontSize="11.5"/>
+             </Grid>
             </DockPanel>
            </Border>
           </DataTemplate>
@@ -182,10 +207,18 @@
      <Border Grid.Column="2" Style="{DynamicResource CardStyle}">
       <DockPanel>
        <TextBlock DockPanel.Dock="Top" Text="Selected job" Style="{DynamicResource SectionTitleStyle}"/>
-       <Button DockPanel.Dock="Bottom" Content="Open in AI Workspace" Margin="0,16,0,0"
+       <Button DockPanel.Dock="Bottom" Content="Open in AI Workspace" Height="34" Margin="0,16,0,0"
                Style="{DynamicResource BtnPrimary}" Click="OpenAiWorkspace_Click"/>
        <StackPanel>
-        <TextBlock x:Name="DetailCompany" FontWeight="SemiBold" FontSize="16" TextWrapping="Wrap"/>
+        <StackPanel Orientation="Horizontal">
+         <Border x:Name="DetailCompanyBadge" Width="28" Height="28" CornerRadius="4" ClipToBounds="True" Background="{DynamicResource Bg.Input}" Margin="0,0,10,0" VerticalAlignment="Center">
+          <Grid>
+           <Path x:Name="DetailCompanyFallback" Data="M1,3 H15 V13 H1 Z M3,11 L6,7 L8,9 L11,5 L13,11 Z" Stretch="Uniform" Margin="5" Fill="{DynamicResource Text.Muted}"/>
+           <Image x:Name="DetailCompanyIcon" Stretch="UniformToFill"/>
+          </Grid>
+         </Border>
+         <TextBlock x:Name="DetailCompany" FontWeight="SemiBold" FontSize="16" TextWrapping="Wrap" VerticalAlignment="Center"/>
+        </StackPanel>
         <TextBlock x:Name="DetailTitle" Margin="0,4,0,0" TextWrapping="Wrap" Foreground="{DynamicResource Text.Secondary}"/>
         <Border Background="{DynamicResource Bg.Input}" CornerRadius="6" Padding="10" Margin="0,14,0,0">
          <TextBlock x:Name="DetailMeta" TextWrapping="Wrap" Foreground="{DynamicResource Text.Muted}" FontSize="12"/>
@@ -196,7 +229,7 @@
     </Grid>
 
     <!-- AI Workspace -->
-    <Grid x:Name="AiWorkspaceView" Visibility="Collapsed" Margin="16">
+    <Grid x:Name="AiWorkspaceView" Visibility="Collapsed" Margin="24">
      <Grid.ColumnDefinitions>
       <ColumnDefinition Width="320"/>
       <ColumnDefinition Width="16"/>
@@ -205,21 +238,28 @@
      <Border Style="{DynamicResource CardStyle}">
       <DockPanel>
        <StackPanel DockPanel.Dock="Top">
-        <TextBlock Text="AI Workspace" Style="{DynamicResource SectionTitleStyle}"/>
         <TextBlock Text="Job context and processing controls. ChatGPT stays on the right."
-                   Foreground="{DynamicResource Text.Muted}" FontSize="11.5" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                   Foreground="{DynamicResource Text.Muted}" FontSize="11.5" TextWrapping="Wrap" Margin="0,0,0,16"/>
        </StackPanel>
-       <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+       <StackPanel DockPanel.Dock="Bottom" Margin="0,16,0,0">
         <Button x:Name="ProcessSelectedButton" Content="Prepare &amp; Send to ChatGPT" Style="{DynamicResource BtnPrimary}"
-                Height="40" IsEnabled="False" Click="ProcessSelected_Click" Margin="0,0,0,8"/>
+                Height="34" IsEnabled="False" Click="ProcessSelected_Click" Margin="0,0,0,8"/>
         <Button x:Name="GenerateDocumentsButton" Content="Generate Documents" Height="34" IsEnabled="False"
                 Click="GenerateDocuments_Click" Margin="0,0,0,8"/>
-        <Button Content="Show Task Queue" Style="{DynamicResource BtnGhost}" Click="ShowTaskQueue_Click"/>
+        <Button Content="Show Task Queue" Height="34" Style="{DynamicResource BtnGhost}" Click="ShowTaskQueue_Click"/>
        </StackPanel>
        <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel>
          <TextBlock Text="Selected job" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource Text.Muted}"/>
-         <TextBlock x:Name="WorkspaceCompany" FontWeight="SemiBold" FontSize="15" TextWrapping="Wrap" Margin="0,4,0,0"/>
+         <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+          <Border x:Name="WorkspaceCompanyBadge" Width="26" Height="26" CornerRadius="4" ClipToBounds="True" Background="{DynamicResource Bg.Input}" Margin="0,0,8,0" VerticalAlignment="Center">
+           <Grid>
+            <Path x:Name="WorkspaceCompanyFallback" Data="M1,3 H15 V13 H1 Z M3,11 L6,7 L8,9 L11,5 L13,11 Z" Stretch="Uniform" Margin="4" Fill="{DynamicResource Text.Muted}"/>
+            <Image x:Name="WorkspaceCompanyIcon" Stretch="UniformToFill"/>
+           </Grid>
+          </Border>
+          <TextBlock x:Name="WorkspaceCompany" FontWeight="SemiBold" FontSize="15" TextWrapping="Wrap" VerticalAlignment="Center"/>
+         </StackPanel>
          <TextBlock x:Name="WorkspaceTitle" Margin="0,4,0,0" TextWrapping="Wrap" Foreground="{DynamicResource Text.Secondary}"/>
          <Border Background="{DynamicResource Bg.Input}" CornerRadius="6" Padding="10" Margin="0,12,0,0">
           <TextBlock x:Name="WorkspaceMeta" TextWrapping="Wrap" Foreground="{DynamicResource Text.Muted}" FontSize="12"/>
@@ -249,24 +289,36 @@
      </Grid>
     </Grid>
 
-    <!-- Documents -->
-    <local:DocumentsPage x:Name="DocumentsView" Visibility="Collapsed"/>
-
     <!-- Settings + Applications (same control; tab selected by navigation) -->
+    <local:EmailTasksPage x:Name="EmailTasksView" Visibility="Collapsed"/>
+
     <local:SettingsWindow x:Name="SettingsView" Visibility="Collapsed"/>
    </Grid>
 
    <!-- Queue command bar -->
    <Border x:Name="QueueCommandBar" Grid.Row="2" Background="{DynamicResource Bg.Surface}"
-           BorderBrush="{DynamicResource Border.Subtle}" BorderThickness="0,1,0,0" Padding="16,10" Visibility="Collapsed">
+           BorderBrush="{DynamicResource Border.Subtle}" BorderThickness="0,1,0,0" Padding="16,10" Visibility="Visible">
+    <DockPanel>
+     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="12,0,0,0" VerticalAlignment="Center">
+      <TextBlock Text="Order" VerticalAlignment="Center" Margin="0,0,8,0"
+                 Foreground="{DynamicResource Text.Secondary}"/>
+      <ComboBox x:Name="QueueOrderBox" Width="120" Height="34" SelectionChanged="QueueOrder_Changed"
+                ToolTip="Queue runs the oldest waiting job first. Stack runs the newest waiting job first."/>
+     </StackPanel>
     <UniformGrid Columns="6">
-     <Button x:Name="StartQueueButton" Content="Start Queue" Height="34" Margin="0,0,6,0" IsEnabled="False" Click="StartQueue_Click"/>
-     <Button x:Name="PauseQueueButton" Content="Pause Queue" Height="34" Margin="3,0" IsEnabled="False" Click="PauseQueue_Click"/>
-     <Button x:Name="StopQueueButton" Content="Stop Queue" Height="34" Margin="3,0" IsEnabled="False" Click="StopQueue_Click"/>
-     <Button x:Name="SkipJobButton" Content="Skip Job" Height="34" Margin="3,0" IsEnabled="False" Click="SkipJob_Click"/>
-     <Button x:Name="RetryFailedButton" Content="Retry Failed" Height="34" Margin="3,0" IsEnabled="False" Click="RetryFailed_Click"/>
-     <Button Content="Prepare &amp; Send" Height="34" Margin="6,0,0,0" Style="{DynamicResource BtnPrimary}" Click="ProcessSelected_Click"/>
+     <Button x:Name="StartQueueButton" Content="Start Queue" Margin="0,0,6,0" IsEnabled="False"
+             Style="{DynamicResource PrimaryButtonStyle}" Click="StartQueue_Click"/>
+     <Button x:Name="PauseQueueButton" Content="Pause Queue" Margin="3,0" IsEnabled="False"
+             Style="{DynamicResource SecondaryButtonStyle}" Click="PauseQueue_Click"/>
+     <Button x:Name="StopQueueButton" Content="Stop Queue" Margin="3,0" IsEnabled="False"
+             Style="{DynamicResource DestructiveButtonStyle}" Click="StopQueue_Click"/>
+     <Button x:Name="SkipJobButton" Content="Skip Job" Margin="3,0" IsEnabled="False"
+             Style="{DynamicResource SecondaryButtonStyle}" Click="SkipJob_Click"/>
+     <Button x:Name="RetryFailedButton" Content="Retry Failed" Margin="3,0" IsEnabled="False"
+             Style="{DynamicResource SecondaryButtonStyle}" Click="RetryFailed_Click"/>
+     <Button Content="Prepare &amp; Send" Margin="6,0,0,0" Style="{DynamicResource PrimaryButtonStyle}" Click="ProcessSelected_Click"/>
     </UniformGrid>
+    </DockPanel>
    </Border>
 
    <!-- Status rail -->

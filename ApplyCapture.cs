@@ -69,13 +69,17 @@ public static class ApplyCapture {
         var url = JobUrls.Normalize(applyUrl) ?? applyUrl!.Trim();
         task.ApplyUrl = url;
         task.ApplyUrlCapturedAt = now;
-        task.ApplicationPlatform = ApplicationPlatformDetector.Detect(url);
+        task.ApplicationPlatform = ApplicationPlatformDetector.Resolve(url, null);
         return true;
     }
 
     /// <summary>The task whose job link is the same Jobright job (by Jobright job id), or null.</summary>
-    public static JobTask? FindTask(IEnumerable<JobTask> tasks, string jobrightJobId) =>
-        tasks.FirstOrDefault(t => JobrightPageExtractor.JobIdFromUrl(t.Link) == jobrightJobId);
+    public static JobTask? FindTask(IEnumerable<JobTask> tasks, string jobrightJobId) {
+        var task = tasks.FirstOrDefault(t => JobrightPageExtractor.JobIdFromUrl(t.Link) == jobrightJobId);
+        if (task is not null)
+            PerfLog.Line("IDENTITY lookup source=jobright id=" + jobrightJobId);
+        return task;
+    }
 
     /// <summary>
     /// Applies the rules and, when they all pass, writes ApplyUrl and ApplyUrlCapturedAt on the matching
@@ -95,7 +99,7 @@ public static class ApplyCapture {
 
         task.ApplyUrl = url;
         task.ApplyUrlCapturedAt = now;
-        task.ApplicationPlatform = ApplicationPlatformDetector.Detect(url);
+        task.ApplicationPlatform = ApplicationPlatformDetector.Resolve(url, null);
         return ApplyCaptureResult.Recorded;
     }
 }

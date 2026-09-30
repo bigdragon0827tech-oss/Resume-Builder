@@ -1,0 +1,95 @@
+{
+  "info": {
+    "name": "John Smith",
+    "title": "Senior Backend Engineer",
+    "location": "San Francisco, CA",
+    "email": "john.smith@email.com",
+    "phone": "+1 (555) 123-4567",
+    "linkedin": "linkedin.com/in/johnsmith"
+  },
+
+  "summary": "Senior Backend Engineer with 10+ years of software engineering experience building scalable distributed systems and cloud-native applications. Experienced in Java, Python, AWS, microservices, event-driven architecture, and production system design. Strong background in API development, reliability, performance optimization, and technical leadership.",
+
+  "skills": [
+    {
+      "category": "Backend Engineering",
+      "items": [
+        "Java",
+        "Python",
+        "Spring Boot",
+        "REST APIs",
+        "Microservices",
+        "Distributed Systems"
+      ]
+    },
+    {
+      "category": "Cloud & Infrastructure",
+      "items": [
+        "AWS",
+        "Docker",
+        "Kubernetes",
+        "Terraform",
+        "CI/CD"
+      ]
+    },
+    {
+      "category": "Data & Messaging",
+      "items": [
+        "PostgreSQL",
+        "DynamoDB",
+        "Redis",
+        "Kafka",
+        "SQS"
+      ]
+    }
+  ],
+
+  "experience": [
+    {
+      "company": "Example Technologies",
+      "title": "Senior Backend Engineer",
+      "dates": "Sep 2025 - Present",
+      "location": "California, United States",
+      "employmentType": "Contract",
+      "workArrangement": "Remote",
+      "bullets": [
+        "Designed and built production backend services using Java, Spring Boot, and AWS for high-volume business workflows.",
+        "Developed event-driven services using Kafka and SQS with idempotent processing, retry handling, and failure recovery.",
+        "Designed REST APIs and PostgreSQL data models supporting scalable customer-facing applications.",
+        "Improved production observability through distributed tracing, metrics, structured logging, and automated alerting.",
+        "Led technical design reviews and worked with product and platform teams on architecture, delivery, and rollout decisions."
+      ]
+    },
+    {
+      "company": "Example Automotive",
+      "title": "Lead Software Engineer",
+      "dates": "Nov 2022 - Jun 2024",
+      "location": "California, United States",
+      "employmentType": "Full-time",
+      "workArrangement": "Hybrid",
+      "bullets": [
+        "Led development of distributed backend services supporting real-time operational workflows.",
+        "Built scalable APIs and asynchronous processing pipelines using Java, Python, PostgreSQL, and AWS.",
+        "Improved reliability through automated testing, monitoring, retry strategies, and production incident remediation.",
+        "Mentored engineers and contributed to architecture, code reviews, and engineering standards."
+      ]
+    }
+  ],
+
+  "certifications": [
+    {
+      "name": "AWS Certified Solutions Architect",
+      "issuer": "Amazon Web Services",
+      "date": "2025"
+    }
+  ],
+
+  "education": [
+    {
+      "school": "Example University",
+      "degree": "Bachelor of Science in Computer Science",
+      "location": "California, United States",
+      "dates": "2008 - 2012"
+    }
+  ]
+}

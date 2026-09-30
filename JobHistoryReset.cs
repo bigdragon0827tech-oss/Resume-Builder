@@ -136,15 +136,17 @@ public static class JobHistoryReset {
         var root = settings?.ResumeRootFolder ?? "";
 
         if (includeDocuments && !string.IsNullOrWhiteSpace(root) && Directory.Exists(root)) {
-            // Several jobs can share one company + role, so a folder name maps to a SET of job ids.
-            // Keying by name alone would throw on a duplicate, and picking one id would miss folders.
-            var wanted = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            // Ownership is the internal job id inside resume-info*.json. The generated folder name
+            // is not a key: two jobs can share a company and title, and a renamed title must not
+            // hide or steal a folder.
+            var jobIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var folderNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var task in tasks) {
                 var id = (task.JobId ?? "").Trim();
                 if (id.Length == 0) continue;
-                var name = ResumeOutputManager.JobFolderName(task.Company ?? "", task.Title ?? "");
-                if (!wanted.TryGetValue(name, out var ids)) wanted[name] = ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                ids.Add(id);
+                jobIds.Add(id);
+                if ((task.Company ?? "").Trim().Length == 0 && (task.Title ?? "").Trim().Length == 0) continue;
+                folderNames.Add(ResumeOutputManager.JobFolderName(task.Company ?? "", task.Title ?? ""));
             }
 
             foreach (var dateFolder in SafeDirectories(root)) {
@@ -153,9 +155,13 @@ public static class JobHistoryReset {
                 var matched = false;
                 foreach (var jobFolder in SafeDirectories(dateFolder)) {
                     if (!IsUnderRoot(jobFolder, dateFolder)) continue;
-                    if (!wanted.TryGetValue(Path.GetFileName(jobFolder), out var jobIds)) continue;
-                    if (!OwnedByJob(jobFolder, jobIds)) continue;     // resume-info.json must name one of these jobs
+                    if (!OwnedByJob(jobFolder, jobIds)) {
+                        if (folderNames.Contains(Path.GetFileName(jobFolder)))
+                            PerfLog.Line("IDENTITY unsafe-match-removed context=clear-history");
+                        continue;
+                    }
 
+                    PerfLog.Line("IDENTITY lookup source=internal id=" + FirstRecordedId(jobFolder));
                     folders.Add(jobFolder);
                     matched = true;
                 }
@@ -174,6 +180,16 @@ public static class JobHistoryReset {
     /// revisions can sit in one folder (resume-info (2).json); every one of them must name a job
     /// being cleared, so a folder shared with a job that stays is never deleted.
     /// </summary>
+    static string FirstRecordedId(string folder) {
+        try {
+            foreach (var info in Directory.GetFiles(folder, "resume-info*.json")) {
+                var recorded = ((string?)JsonNode.Parse(File.ReadAllText(info))?["jobId"])?.Trim();
+                if (!string.IsNullOrEmpty(recorded)) return recorded;
+            }
+        } catch { }
+        return "";
+    }
+
     static bool OwnedByJob(string folder, HashSet<string> jobIds) {
         try {
             var infos = Directory.GetFiles(folder, "resume-info*.json");

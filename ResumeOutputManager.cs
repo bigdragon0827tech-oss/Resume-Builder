@@ -8,8 +8,8 @@ namespace ResumeBuilder;
 // ---------------------------------------------------------------------------
 // Where a generated resume is stored.
 //
-//   ResumeRoot\yyyy-MM-dd\<Company> - <Role>\Resume.docx
-//                                           \Resume.pdf
+//   ResumeRoot\yyyy-MM-dd\<Company> - <Role>\<Candidate Name>.docx
+//                                           \<Candidate Name>.pdf
 //                                           \resume-info.json
 //
 // All of the folder and file-name decisions live here, so neither renderer nor the generator has to
@@ -35,13 +35,25 @@ public sealed class ResumeOutputPaths {
     public string PdfPath { get; init; } = "";
     public string MetadataPath { get; init; } = "";
 
-    /// <summary>1 for "Resume.docx", 2 for "Resume (2).docx", and so on.</summary>
+    /// <summary>1 for "Billy Lin.docx", 2 for "Billy Lin (2).docx", and so on.</summary>
     public int Revision { get; init; } = 1;
 }
 
 public static class ResumeOutputManager {
+    /// <summary>The document file name used when the profile carries no candidate name.</summary>
     public const string BaseName = "Resume";
     public const string MetadataBaseName = "resume-info";
+
+    /// <summary>
+    /// The DOCX/PDF file name for a candidate: "Billy Lin" -> "Billy Lin". Spaces are kept; characters
+    /// Windows forbids in a file name are sanitized exactly as folder names are; a missing or blank
+    /// name falls back to <see cref="BaseName"/> ("Resume"). Capped so the full path stays short.
+    /// </summary>
+    public static string DocumentBaseName(string? candidateName) {
+        var name = SanitizeFolderName(candidateName);
+        if (name.Length > 80) name = name.Substring(0, 80).TrimEnd(' ', '.');
+        return name.Length == 0 ? BaseName : name;
+    }
 
     /// <summary>ResumeRoot\yyyy-MM-dd. Reused when it already exists; never created twice.</summary>
     public static string GetDateFolder(string resumeRoot, DateTime? on = null) =>
@@ -90,20 +102,41 @@ public static class ResumeOutputManager {
     /// <summary>
     /// Resolves every path for one generation. The documents and their metadata share a single
     /// revision, so a second run for the same job on the same day lands as a complete
-    /// "Resume (2)" set rather than overwriting, or half-overwriting, the first one.
+    /// "&lt;Name&gt; (2)" set rather than overwriting, or half-overwriting, the first one.
+    /// The documents are named after <paramref name="candidateName"/> (profile info.name).
     /// </summary>
-    public static ResumeOutputPaths Resolve(string resumeRoot, string company, string role, DateTime? on = null) {
+    /// <summary>
+    /// Documents for one email task, written straight into <paramref name="folder"/>.
+    /// The same revision rule applies, so a second run does not overwrite the first set.
+    /// </summary>
+    public static ResumeOutputPaths ResolveInFolder(string folder, string? candidateName = null) {
+        var documentBase = DocumentBaseName(candidateName);
+        var revision = 1;
+        while (Exists(folder, revision, documentBase)) revision++;
+        return new ResumeOutputPaths {
+            DateFolder = folder,
+            JobFolder = folder,
+            DocxPath = Path.Combine(folder, FileName(documentBase, revision, ".docx")),
+            PdfPath = Path.Combine(folder, FileName(documentBase, revision, ".pdf")),
+            MetadataPath = Path.Combine(folder, FileName(MetadataBaseName, revision, ".json")),
+            Revision = revision
+        };
+    }
+
+    public static ResumeOutputPaths Resolve(string resumeRoot, string company, string role, DateTime? on = null,
+                                            string? candidateName = null) {
+        var documentBase = DocumentBaseName(candidateName);
         var dateFolder = GetDateFolder(resumeRoot, on);
         var jobFolder = Path.Combine(dateFolder, JobFolderName(company, role));
 
         var revision = 1;
-        while (Exists(jobFolder, revision)) revision++;
+        while (Exists(jobFolder, revision, documentBase)) revision++;
 
         return new ResumeOutputPaths {
             DateFolder = dateFolder,
             JobFolder = jobFolder,
-            DocxPath = Path.Combine(jobFolder, FileName(BaseName, revision, ".docx")),
-            PdfPath = Path.Combine(jobFolder, FileName(BaseName, revision, ".pdf")),
+            DocxPath = Path.Combine(jobFolder, FileName(documentBase, revision, ".docx")),
+            PdfPath = Path.Combine(jobFolder, FileName(documentBase, revision, ".pdf")),
             MetadataPath = Path.Combine(jobFolder, FileName(MetadataBaseName, revision, ".json")),
             Revision = revision
         };
@@ -116,9 +149,9 @@ public static class ResumeOutputManager {
     }
 
     /// <summary>A revision is taken if any of that generation's three files already exists.</summary>
-    static bool Exists(string folder, int revision) =>
-        File.Exists(Path.Combine(folder, FileName(BaseName, revision, ".docx")))
-        || File.Exists(Path.Combine(folder, FileName(BaseName, revision, ".pdf")))
+    static bool Exists(string folder, int revision, string documentBase) =>
+        File.Exists(Path.Combine(folder, FileName(documentBase, revision, ".docx")))
+        || File.Exists(Path.Combine(folder, FileName(documentBase, revision, ".pdf")))
         || File.Exists(Path.Combine(folder, FileName(MetadataBaseName, revision, ".json")));
 
     static int NextRevision(string folder, string baseName, string extension) {
