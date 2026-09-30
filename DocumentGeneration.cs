@@ -9,15 +9,16 @@ namespace ResumeBuilder;
 
 // ---------------------------------------------------------------------------
 // A6.6.9 — resume documents generated from a validated tailored profile.
-// Styling moved out of the renderers and into ResumeStyle.
 //
 // Input is always results\<jobId>.json (or the baseline profile), which has already been
 // normalized and strictly validated. Generation only ever READS that file: a document failure
 // can never damage or invalidate the saved JSON, and candidate-profile.json is never written here.
 //
-// One content model (ResumeDocument) feeds both renderers, so the DOCX and the PDF always carry
-// the same content even though their layout engines differ. The style is normalized once, here, and
-// both renderers translate the same tokens into their own units.
+// The tailored JSON supplies the text. How the finished resume looks is a separate choice:
+// the resume named for this generation, else the style reference last chosen in Settings,
+// else the app's default style. The original resume is never the style source.
+// A source paragraph in a style-reference DOCX with no tailored counterpart is removed.
+// PDF is converted from that DOCX. DocxWriter is the default style when no reference file is used.
 // ---------------------------------------------------------------------------
 
 /// <summary>One run of bullet text. Emphasis is structural — resume text never contains Markdown.</summary>
@@ -324,7 +325,7 @@ public sealed class GenerationResult {
 public static class ResumeGenerator {
     /// <summary>
     /// Generates the enabled documents from an already-validated profile file. Never throws and never
-    /// writes the profile. Output goes to ResumeRoot\yyyy-MM-dd\&lt;Company&gt; - &lt;Role&gt;\Resume.docx;
+    /// writes the profile. Output goes to ResumeRoot\yyyy-MM-dd\&lt;Company&gt; - &lt;Role&gt;\&lt;Candidate Name&gt;.docx;
     /// <see cref="ResumeOutputManager"/> owns every folder and file-name decision, including the
     /// revision suffix that keeps a second run from overwriting the first.
     /// <paramref name="effectiveStylePath"/> is optional: when given, the fully resolved style is
@@ -332,12 +333,12 @@ public static class ResumeGenerator {
     /// </summary>
     public static GenerationResult Generate(
         string company, string role, string profilePath, AppSettings settings, string? effectiveStylePath = null,
-        string? jobId = null, string? jobUrl = null) {
+        string? jobId = null, string? jobUrl = null, string? outputFolder = null, string? styleReferencePath = null) {
 
         var result = new GenerationResult { DocxRequested = settings.Docx, PdfRequested = settings.Pdf };
         if (result.Disabled) return result;
 
-        if (string.IsNullOrWhiteSpace(settings.ResumeRootFolder)) {
+        if (string.IsNullOrWhiteSpace(outputFolder) && string.IsNullOrWhiteSpace(settings.ResumeRootFolder)) {
             result.FatalError = "the Resume Root Folder is not configured in Settings.";
             return result;
         }
@@ -348,7 +349,7 @@ public static class ResumeGenerator {
 
         ResumeDocument document;
         try {
-            Directory.CreateDirectory(settings.ResumeRootFolder);
+            Directory.CreateDirectory(string.IsNullOrWhiteSpace(outputFolder) ? settings.ResumeRootFolder : outputFolder);
             document = ResumeDocument.FromProfileFile(profilePath);
         } catch (Exception ex) {
             result.FatalError = Explain(ex);
@@ -369,7 +370,11 @@ public static class ResumeGenerator {
 
         ResumeOutputPaths paths;
         try {
-            paths = ResumeOutputManager.Resolve(settings.ResumeRootFolder, company, role);
+            // The documents are named after the candidate (profile info.name), e.g. "Billy Lin.docx".
+            // Email tasks pass their own folder. Job tasks keep the dated Resume Root layout.
+            paths = string.IsNullOrWhiteSpace(outputFolder)
+                ? ResumeOutputManager.Resolve(settings.ResumeRootFolder, company, role, candidateName: document.Name)
+                : ResumeOutputManager.ResolveInFolder(outputFolder, document.Name);
             Directory.CreateDirectory(paths.JobFolder);
         } catch (Exception ex) {
             result.FatalError = Explain(ex);
@@ -381,18 +386,40 @@ public static class ResumeGenerator {
 
         if (settings.Docx) {
             try {
-                WriteAtomically(paths.DocxPath, temp => DocxWriter.Write(document, temp));
+                var template = ResumeStyleSource.Resolve(styleReferencePath, settings.StyleReferenceResume);
+                WriteAtomically(paths.DocxPath, temp => {
+                    if (template is null) {
+                        PerfLog.Line("RESUME style-template priority=default");
+                        DocxWriter.Write(document, temp);
+                        return;
+                    }
+                    PerfLog.Line("RESUME style-template priority=" + template.Priority);
+                    File.Copy(template.Path, temp, overwrite: true);
+                    TemplateDocxWriter.ReplaceText(temp, document);
+                    PerfLog.Line("RESUME content-replaced");
+                });
                 result.DocxPath = paths.DocxPath;
+                PerfLog.Line("RESUME tailored-saved " + paths.DocxPath);
             } catch (Exception ex) {
                 result.DocxError = Explain(ex);
             }
         }
 
         if (settings.Pdf) {
+            var sourceDocx = result.DocxPath ?? "";
+            PerfLog.Line("PDF source-docx " + sourceDocx);
+            PerfLog.Line("PDF convert-start");
             try {
-                WriteAtomically(paths.PdfPath, temp => PdfWriter.Write(document, temp));
+                if (sourceDocx.Length == 0 || !File.Exists(sourceDocx))
+                    throw new PdfConvertException("missing-docx", "The tailored DOCX was not created, so the PDF was not converted.");
+                WriteAtomically(paths.PdfPath, temp => PdfWriter.ConvertDocx(sourceDocx, temp));
                 result.PdfPath = paths.PdfPath;
+                PerfLog.Line("PDF convert-success " + paths.PdfPath);
+            } catch (PdfConvertException ex) {
+                PerfLog.Line("PDF convert-failed " + ex.Reason);
+                result.PdfError = ex.Message;
             } catch (Exception ex) {
+                PerfLog.Line("PDF convert-failed " + ex.GetType().Name);
                 result.PdfError = Explain(ex);
             }
         }
@@ -416,6 +443,30 @@ public static class ResumeGenerator {
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Which DOCX supplies the look. The original resume is not a choice here.
+    /// A missing request file falls through to the last selected reference, then to no file.
+    /// </summary>
+    public static class ResumeStyleSource {
+        public sealed class Choice {
+            public string Priority = "";
+            public string Path = "";
+        }
+
+        public static Choice? Resolve(string? requestPath, string? selectedPath) {
+            if (Usable(requestPath))
+                return new Choice { Priority = "request", Path = Path.GetFullPath(requestPath!) };
+            if (Usable(selectedPath))
+                return new Choice { Priority = "selected", Path = Path.GetFullPath(selectedPath!) };
+            return null;
+        }
+
+        public static bool Usable(string? path) =>
+            !string.IsNullOrWhiteSpace(path)
+            && path.EndsWith(".docx", StringComparison.OrdinalIgnoreCase)
+            && File.Exists(path);
     }
 
     /// <summary>Write to a temp file and move into place, so a crash never leaves a truncated document.</summary>
@@ -679,4 +730,486 @@ public static class DocxWriter {
         "justify" => JustificationValues.Both,
         _ => null
     };
+}
+
+/// <summary>
+/// Copies the original resume and replaces paragraph text in place.
+/// Paragraph properties, run properties, styles, numbering, and section settings are left as copied.
+/// </summary>
+public static class TemplateDocxWriter {
+    public static void ReplaceText(string docxPath, ResumeDocument resume) {
+        using var word = WordprocessingDocument.Open(docxPath, true);
+        var body = word.MainDocumentPart?.Document?.Body
+            ?? throw new InvalidDataException("The original resume has no document body.");
+        var paragraphs = body.Descendants<Paragraph>().Where(paragraph => !IsField(paragraph)).ToList();
+
+        var index = 0;
+        var preamble = new List<Paragraph>();
+        while (index < paragraphs.Count && HeadingLevel(paragraphs[index]) != 1) {
+            if (ParagraphText(paragraphs[index]).Length > 0)
+                preamble.Add(paragraphs[index]);
+            index++;
+        }
+        FillPreamble(preamble, resume);
+
+        while (index < paragraphs.Count) {
+            if (HeadingLevel(paragraphs[index]) != 1) {
+                index++;
+                continue;
+            }
+            var kind = SectionKind(ParagraphText(paragraphs[index]));
+            index++;
+            var section = new List<Paragraph>();
+            while (index < paragraphs.Count && HeadingLevel(paragraphs[index]) != 1)
+                section.Add(paragraphs[index++]);
+
+            switch (kind) {
+                case "summary":
+                    FillSummary(section, resume.Summary);
+                    break;
+                case "skills":
+                    FillSkills(section, resume.Skills);
+                    break;
+                case "experience":
+                    FillExperience(section, resume.Experience);
+                    break;
+                case "certs":
+                    FillCertifications(section, resume.Certifications);
+                    break;
+                case "education":
+                    FillEducation(section, resume.Education);
+                    break;
+            }
+        }
+
+        word.MainDocumentPart!.Document.Save();
+    }
+
+    static void FillPreamble(List<Paragraph> lines, ResumeDocument resume) {
+        if (lines.Count == 0) return;
+        if (lines.Count == 1) {
+            if (resume.Name.Length > 0) Apply(lines[0], resume.Name);
+            return;
+        }
+        if (resume.Name.Length > 0) Apply(lines[0], resume.Name);
+        if (lines.Count == 2) {
+            var second = resume.Title.Length > 0 ? resume.Title : resume.Contact;
+            if (second.Length > 0) Apply(lines[1], second);
+            return;
+        }
+        if (resume.Title.Length > 0) Apply(lines[1], resume.Title);
+        if (resume.Contact.Length > 0) Apply(lines[2], resume.Contact);
+    }
+
+    static void FillSummary(List<Paragraph> section, string summary) {
+        var bodies = ContentParagraphs(section);
+        if (string.IsNullOrWhiteSpace(summary)) {
+            foreach (var paragraph in bodies) paragraph.Remove();
+            return;
+        }
+        if (bodies.Count == 0) return;
+        var parts = SplitAcross(summary, bodies.Count);
+        for (var i = 0; i < bodies.Count; i++) {
+            if (parts[i].Length > 0) Apply(bodies[i], parts[i]);
+            else bodies[i].Remove();
+        }
+    }
+
+    static void FillSkills(List<Paragraph> section, List<SkillBlock> skills) {
+        var groups = Groups(section);
+        RemoveLooseText(section, groups);
+        if (skills.Count == 0) {
+            foreach (var group in groups) RemoveGroup(group);
+            return;
+        }
+        var count = Math.Min(groups.Count, skills.Count);
+        for (var i = 0; i < count; i++)
+            FillSkillGroup(groups[i], skills[i]);
+
+        if (skills.Count > groups.Count && groups.Count > 0) {
+            var sample = groups[^1];
+            var anchor = LastOf(sample);
+            for (var i = groups.Count; i < skills.Count; i++) {
+                var created = CloneGroup(sample, ref anchor);
+                FillSkillGroup(created, skills[i]);
+            }
+        }
+
+        for (var i = skills.Count; i < groups.Count; i++)
+            RemoveGroup(groups[i]);
+    }
+
+    static void FillSkillGroup(ParagraphGroup group, SkillBlock skill) {
+        if (group.Heading is not null) {
+            if (skill.Category.Length > 0) Apply(group.Heading, skill.Category);
+            else if (skill.Skills.Length > 0 && group.Intro.Count == 0 && group.Bullets.Count == 0)
+                Apply(group.Heading, skill.Skills);
+            else SetParagraphText(group.Heading, "");
+        }
+
+        var slots = group.Intro.Concat(group.Bullets).ToList();
+        if (skill.Skills.Length == 0) {
+            foreach (var paragraph in slots) paragraph.Remove();
+            return;
+        }
+        if (slots.Count == 0 && group.Heading is not null && skill.Category.Length > 0)
+            slots.Add(InsertClone(group.Heading));
+        FillRepeated(slots, new List<string> { skill.Skills }, slots.Any(IsBulletParagraph));
+    }
+
+    static void FillExperience(List<Paragraph> section, List<ExperienceBlock> jobs) {
+        var groups = Groups(section);
+        RemoveLooseText(section, groups);
+        if (jobs.Count == 0) {
+            foreach (var group in groups) RemoveGroup(group);
+            return;
+        }
+        var count = Math.Min(groups.Count, jobs.Count);
+        for (var i = 0; i < count; i++)
+            FillJob(groups[i], jobs[i]);
+
+        if (jobs.Count > groups.Count && groups.Count > 0) {
+            var sample = groups[^1];
+            var anchor = LastOf(sample);
+            for (var i = groups.Count; i < jobs.Count; i++) {
+                var created = CloneGroup(sample, ref anchor);
+                FillJob(created, jobs[i]);
+            }
+        }
+
+        for (var i = jobs.Count; i < groups.Count; i++)
+            RemoveGroup(groups[i]);
+    }
+
+    /// <summary>
+    /// Heading, then location/employment/arrangement, then an optional subtitle.
+    /// Any further source line (a project name or a technology line the JSON does not have)
+    /// is removed. Bullets are created or removed so the accepted lines all appear.
+    /// </summary>
+    static void FillJob(ParagraphGroup group, ExperienceBlock job) {
+        if (group.Heading is not null) {
+            if (job.Heading.Length > 0) Apply(group.Heading, job.Heading);
+            else SetParagraphText(group.Heading, "");
+        }
+
+        var intro = new List<string>();
+        if (job.Metadata.Length > 0) intro.Add(job.Metadata);
+        if (job.Subtitle.Length > 0) intro.Add(job.Subtitle);
+        if (group.Intro.Count == 0 && intro.Count > 0 && group.Heading is not null)
+            group.Intro.Add(InsertClone(group.Heading));
+        FillRepeated(group.Intro, intro, keepBullet: false);
+
+        var lines = job.Lines.Select(line => line.Text).Where(text => text.Length > 0).ToList();
+        if (group.Bullets.Count == 0 && lines.Count > 0) {
+            var prototype = group.Intro.LastOrDefault(paragraph => paragraph.Parent is not null) ?? group.Heading;
+            if (prototype is not null) group.Bullets.Add(InsertClone(prototype));
+        }
+        FillRepeated(group.Bullets, lines, keepBullet: true);
+    }
+
+    static void FillCertifications(List<Paragraph> section, List<string> certifications) {
+        var slots = ContentParagraphs(section);
+        if (slots.Count == 0) return;
+        FillRepeated(slots, certifications, keepBullet: slots.Any(IsBulletParagraph));
+    }
+
+    static void FillEducation(List<Paragraph> section, List<EducationBlock> entries) {
+        var lines = ContentParagraphs(section);
+        if (entries.Count == 0) {
+            foreach (var paragraph in lines) paragraph.Remove();
+            return;
+        }
+        if (lines.Count == 0) return;
+
+        if (lines.Count == entries.Count * 2) {
+            for (var i = 0; i < entries.Count; i++) {
+                var heading = entries[i].Heading.Replace(" — ", " - ");
+                if (heading.Length > 0) Apply(lines[i * 2], heading);
+                else SetParagraphText(lines[i * 2], "");
+                if (entries[i].Dates.Length > 0) Apply(lines[i * 2 + 1], entries[i].Dates);
+                else lines[i * 2 + 1].Remove();
+            }
+            return;
+        }
+
+        var written = new List<string>();
+        foreach (var entry in entries) {
+            var line = EducationLine(entry, ParagraphText(lines[0]));
+            if (line.Length > 0) written.Add(line);
+        }
+        FillRepeated(lines, written, keepBullet: false);
+    }
+
+    static List<Paragraph> ContentParagraphs(List<Paragraph> section) =>
+        section.Where(paragraph => HeadingLevel(paragraph) == 0 && ParagraphText(paragraph).Length > 0).ToList();
+
+    /// <summary>Text that sits in the section but not under a company or skill heading is source residue.</summary>
+    static void RemoveLooseText(List<Paragraph> section, List<ParagraphGroup> groups) {
+        if (groups.Count == 0) return;
+        var used = new HashSet<Paragraph>();
+        foreach (var group in groups) {
+            if (group.Heading is not null) used.Add(group.Heading);
+            foreach (var paragraph in group.Intro) used.Add(paragraph);
+            foreach (var paragraph in group.Bullets) used.Add(paragraph);
+        }
+        foreach (var paragraph in section) {
+            if (used.Contains(paragraph) || HeadingLevel(paragraph) != 0) continue;
+            if (ParagraphText(paragraph).Length > 0) paragraph.Remove();
+        }
+    }
+
+    static Paragraph InsertClone(Paragraph prototype) {
+        var clone = (Paragraph)prototype.CloneNode(true);
+        prototype.InsertAfterSelf(clone);
+        return clone;
+    }
+
+    static string EducationLine(EducationBlock entry, string template) {
+        var degree = entry.Degree.Trim();
+        if (entry.Major.Length > 0 && degree.IndexOf(entry.Major, StringComparison.OrdinalIgnoreCase) < 0)
+            degree = degree.Length > 0 ? degree + " " + entry.Major : entry.Major.Trim();
+        var school = entry.School.Trim();
+        var separator = template.Contains(" — ", StringComparison.Ordinal) ? " — " : " - ";
+        var head = degree.Length > 0 && school.Length > 0 ? degree + separator + school
+            : degree.Length > 0 ? degree : school;
+        if (entry.Dates.Length > 0 && !head.Contains(entry.Dates, StringComparison.Ordinal))
+            head = head.Length > 0 ? head + " | " + entry.Dates.Trim() : entry.Dates.Trim();
+        return head;
+    }
+
+    static void FillRepeated(List<Paragraph> slots, List<string> lines, bool keepBullet) {
+        if (lines.Count == 0) {
+            foreach (var slot in slots) Detach(slot);
+            return;
+        }
+        if (slots.Count == 0) return;
+        var count = Math.Min(slots.Count, lines.Count);
+        for (var i = 0; i < count; i++)
+            Apply(slots[i], lines[i], keepBullet);
+
+        var anchor = slots[count - 1];
+        for (var i = count; i < lines.Count; i++) {
+            var clone = (Paragraph)anchor.CloneNode(true);
+            anchor.InsertAfterSelf(clone);
+            anchor = clone;
+            Apply(clone, lines[i], keepBullet);
+        }
+
+        for (var i = lines.Count; i < slots.Count; i++)
+            Detach(slots[i]);
+    }
+
+    static void Apply(Paragraph paragraph, string incoming, bool keepBullet = false) {
+        var existing = ParagraphText(paragraph);
+        var text = incoming ?? "";
+        if (!existing.Contains("  |  ", StringComparison.Ordinal))
+            text = text.Replace("  |  ", " | ");
+        if (keepBullet || IsBulletParagraph(paragraph)) {
+            var prefix = BulletPrefix(existing);
+            if (prefix.Length > 0) {
+                var marker = prefix.Trim();
+                if (text.StartsWith(marker, StringComparison.Ordinal))
+                    text = text[marker.Length..].TrimStart();
+                text = prefix + text.TrimStart();
+            }
+        }
+        SetParagraphText(paragraph, MatchCase(existing, Clean(text)));
+    }
+
+    static void SetParagraphText(Paragraph paragraph, string text) {
+        var nodes = paragraph.Descendants<Text>().ToList();
+        if (nodes.Count == 0) {
+            var run = paragraph.Elements<Run>().FirstOrDefault() ?? paragraph.AppendChild(new Run());
+            run.AppendChild(new Text(text) { Space = SpaceProcessingModeValues.Preserve });
+            return;
+        }
+        nodes[0].Space = SpaceProcessingModeValues.Preserve;
+        nodes[0].Text = text;
+        for (var i = 1; i < nodes.Count; i++)
+            nodes[i].Text = "";
+    }
+
+    static List<ParagraphGroup> Groups(List<Paragraph> section) {
+        var groups = new List<ParagraphGroup>();
+        ParagraphGroup? current = null;
+        foreach (var paragraph in section) {
+            if (HeadingLevel(paragraph) == 2) {
+                current = new ParagraphGroup { Heading = paragraph };
+                groups.Add(current);
+                continue;
+            }
+            if (current is null || ParagraphText(paragraph).Length == 0) continue;
+            if (IsBulletParagraph(paragraph)) current.Bullets.Add(paragraph);
+            else current.Intro.Add(paragraph);
+        }
+        return groups;
+    }
+
+    static ParagraphGroup CloneGroup(ParagraphGroup sample, ref Paragraph anchor) {
+        var created = new ParagraphGroup();
+        if (sample.Heading is { Parent: not null }) {
+            var clone = (Paragraph)sample.Heading.CloneNode(true);
+            anchor.InsertAfterSelf(clone);
+            anchor = clone;
+            created.Heading = clone;
+        }
+        foreach (var paragraph in sample.Intro) {
+            if (paragraph.Parent is null) continue;
+            var clone = (Paragraph)paragraph.CloneNode(true);
+            anchor.InsertAfterSelf(clone);
+            anchor = clone;
+            created.Intro.Add(clone);
+        }
+        foreach (var paragraph in sample.Bullets) {
+            if (paragraph.Parent is null) continue;
+            var clone = (Paragraph)paragraph.CloneNode(true);
+            anchor.InsertAfterSelf(clone);
+            anchor = clone;
+            created.Bullets.Add(clone);
+        }
+        return created;
+    }
+
+    static Paragraph LastOf(ParagraphGroup group) {
+        for (var i = group.Bullets.Count - 1; i >= 0; i--)
+            if (group.Bullets[i].Parent is not null) return group.Bullets[i];
+        for (var i = group.Intro.Count - 1; i >= 0; i--)
+            if (group.Intro[i].Parent is not null) return group.Intro[i];
+        return group.Heading!;
+    }
+
+    static void RemoveGroup(ParagraphGroup group) {
+        Detach(group.Heading);
+        foreach (var paragraph in group.Intro) Detach(paragraph);
+        foreach (var paragraph in group.Bullets) Detach(paragraph);
+    }
+
+    static void Detach(Paragraph? paragraph) {
+        if (paragraph?.Parent is not null) paragraph.Remove();
+    }
+
+    static int HeadingLevel(Paragraph paragraph) {
+        var style = paragraph.ParagraphProperties?.ParagraphStyleId?.Val?.Value?.Replace(" ", "") ?? "";
+        if (style.StartsWith("Heading", StringComparison.OrdinalIgnoreCase) && style.Length > "Heading".Length) {
+            var suffix = style["Heading".Length..];
+            if ((suffix is "1" or "2" or "3") && int.TryParse(suffix, out var level))
+                return level;
+        }
+
+        var text = ParagraphText(paragraph).Trim();
+        if (text.Length == 0 || text.Length > 40 || IsBulletParagraph(paragraph)) return 0;
+        if (SectionKind(text) == "other") return 0;
+        if (LettersAreUpper(text)) return 1;
+        return 0;
+    }
+
+    static string SectionKind(string heading) {
+        var text = heading.ToLowerInvariant();
+        if (text.Contains("summary") || text.Contains("objective") || text.Contains("profile")) return "summary";
+        if (text.Contains("skill")) return "skills";
+        if (text.Contains("experience") || text.Contains("employment") || text.Contains("work history")) return "experience";
+        if (text.Contains("certif") || text.Contains("licen")) return "certs";
+        if (text.Contains("educat")) return "education";
+        return "other";
+    }
+
+    static bool IsBulletParagraph(Paragraph paragraph) {
+        if (paragraph.ParagraphProperties?.NumberingProperties is not null) return true;
+        var text = ParagraphText(paragraph);
+        var i = 0;
+        while (i < text.Length && char.IsWhiteSpace(text[i])) i++;
+        if (i >= text.Length) return false;
+        var c = text[i];
+        if (c is '•' or '·' or '●' or '◦' or '▪' or '▸' or '►' or '\u2023' or '\u2043' or '\u2219' or '\uF0B7')
+            return true;
+        return c is '-' or '*' or '–' or '—' && i + 1 < text.Length && text[i + 1] == ' ';
+    }
+
+    static string BulletPrefix(string existing) {
+        var i = 0;
+        while (i < existing.Length && !char.IsLetterOrDigit(existing[i])) i++;
+        if (i == 0 || i > 6) return "";
+        var prefix = existing[..i];
+        return prefix.Trim().Length == 0 ? "" : prefix;
+    }
+
+    static string ParagraphText(Paragraph paragraph) =>
+        string.Concat(paragraph.Descendants<Text>().Select(node => node.Text));
+
+    static bool IsField(Paragraph paragraph) => paragraph.Descendants<FieldChar>().Any();
+
+    static string MatchCase(string existing, string incoming) =>
+        LettersAreUpper(existing) ? incoming.ToUpperInvariant() : incoming;
+
+    static bool LettersAreUpper(string text) {
+        var any = false;
+        foreach (var c in text) {
+            if (!char.IsLetter(c)) continue;
+            if (char.IsLower(c)) return false;
+            any = true;
+        }
+        return any;
+    }
+
+    static string Clean(string text) {
+        var buffer = new char[text.Length];
+        var n = 0;
+        foreach (var c in text) {
+            if (c is '\r' or '\n' or '\t') {
+                if (n == 0 || buffer[n - 1] == ' ') continue;
+                buffer[n++] = ' ';
+                continue;
+            }
+            if (char.IsControl(c)) continue;
+            buffer[n++] = c;
+        }
+        return new string(buffer, 0, n).Trim();
+    }
+
+    static List<string> SplitAcross(string text, int slots) {
+        var parts = new string[slots];
+        for (var i = 0; i < slots; i++) parts[i] = "";
+        var pieces = BreakText(text);
+        if (pieces.Count == 0 || slots == 0) return parts.ToList();
+        if (slots == 1) {
+            parts[0] = string.Join(" ", pieces);
+            return parts.ToList();
+        }
+        for (var i = 0; i < pieces.Count; i++) {
+            var bucket = (int)((long)i * slots / pieces.Count);
+            if (bucket >= slots) bucket = slots - 1;
+            parts[bucket] = parts[bucket].Length == 0 ? pieces[i] : parts[bucket] + " " + pieces[i];
+        }
+        return parts.ToList();
+    }
+
+    static List<string> BreakText(string text) {
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+        var nonempty = new List<string>();
+        foreach (var line in lines) {
+            var trimmed = line.Trim();
+            if (trimmed.Length > 0) nonempty.Add(trimmed);
+        }
+        if (nonempty.Count != 1) return nonempty;
+
+        var source = nonempty[0];
+        var sentences = new List<string>();
+        var start = 0;
+        for (var i = 0; i < source.Length; i++) {
+            if (source[i] is '.' or '!' or '?' && i + 1 < source.Length && source[i + 1] == ' ') {
+                var sentence = source[start..(i + 1)].Trim();
+                if (sentence.Length > 0) sentences.Add(sentence);
+                start = i + 2;
+            }
+        }
+        var tail = source[start..].Trim();
+        if (tail.Length > 0) sentences.Add(tail);
+        return sentences.Count > 0 ? sentences : nonempty;
+    }
+
+    sealed class ParagraphGroup {
+        public Paragraph? Heading;
+        public List<Paragraph> Intro = new();
+        public List<Paragraph> Bullets = new();
+    }
 }

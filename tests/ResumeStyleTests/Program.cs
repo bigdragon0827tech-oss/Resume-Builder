@@ -21,12 +21,19 @@ static class Program {
     static int Passed;
     static string TempRoot = "";
 
-    static int Main() {
+    static string? OnlyTest;
+
+    static int Main(string[] args) {
+        if (args.Length > 0) OnlyTest = args[0];
         TempRoot = Path.Combine(Path.GetTempPath(), "ResumeBuilderStyleTests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(TempRoot);
+        // Job saves mirror into SQLite. Keep that file in the temp folder, never the user's database.
+        JobStore.DatabasePathOverride = Path.Combine(TempRoot, "test-default.db");
 
         // The harness must not append to the user's real diagnostics.log.
         PerfLog.Enabled = false;
+        // Existing prepare checks read the prompt file they just wrote. A converted copy is opt-in.
+        PromptConversion.AllowUnadaptedSource = true;
         Console.WriteLine("ResumeBuilder — style system regression tests");
         Console.WriteLine("Working folder: " + TempRoot);
         Console.WriteLine();
@@ -141,6 +148,21 @@ static class Program {
             Test("a Normal-mode answer runs the whole pipeline", NormalModeAnswerRunsThePipeline);
 
             Console.WriteLine();
+            Console.WriteLine("Tailored DOCX content");
+            Test("accepted tailored text replaces every stale source paragraph", TailoredDocxDropsStaleSourceText);
+            Test("a request resume is the style source, not the original resume", RequestResumeBeatsOriginalStyle);
+            Test("the last selected style reference is used when the request names none", SelectedStyleReferenceIsUsed);
+            Test("no style reference uses the app default, not the original resume", DefaultStyleIgnoresOriginalResume);
+
+            Console.WriteLine();
+            Console.WriteLine("Prompt conversion");
+            Test("an unchanged prompt reuses its converted copy", PromptConversionReusesUnchangedSource);
+            Test("a changed prompt is not treated as ready", PromptConversionDetectsSourceChange);
+            Test("a rejected conversion keeps the previous copy", PromptConversionKeepsPreviousOnFailure);
+            Test("an unconverted prompt is refused for job preparation", UnadaptedPromptIsRefused);
+            Test("an old JSON prompt adaptation is not reused", PromptConversionRejectsJsonContract);
+
+            Console.WriteLine();
             Console.WriteLine("Job application tracking");
             Test("a newly extracted task starts as Viewed", NewTaskStartsViewed);
             Test("a generated resume moves the job to Ready", ResumeGenerationMarksReady);
@@ -168,6 +190,10 @@ static class Program {
             Test("several selected platforms match with OR", PlatformFilterOrMatching);
             Test("the platform filter combines with search, status and dates", PlatformFilterCombined);
             Test("the platform filter label and choice order", PlatformFilterLabelAndOrder);
+            Test("import captures the company icon and the job-site icon", ImportCapturesCompanyAndPlatformIcons);
+            Test("Applications consistency: Failed is application status only", ApplicationsConsistencyFailedCount);
+            Test("Applications consistency: company logo URL", ApplicationsConsistencyLogoUrl);
+            Test("Applications consistency: platform list comes from the jobs", ApplicationsConsistencyPlatformList);
             Test("each readiness state filters on its own; none selected shows all", ReadinessFilterSingleStates);
             Test("several readiness states match with OR", ReadinessFilterOrMatching);
             Test("readiness combines with status, search, platforms and dates; Board = List", ReadinessFilterCombined);
@@ -224,20 +250,108 @@ static class Program {
             Test("only an outside http(s) application address is captured", ApplyUrlCaptureRule);
             Test("the address is recorded on the matching Jobright job only", ApplyUrlMatchesJob);
             Test("the extractor reads applyLink, falling back to originalUrl", ExtractorReadsApplyLink);
+            Test("a helper without an external link uses __NEXT_DATA__", ExtractorApplyUrlFallsBackToNextData);
             Test("a missing or invalid page link leaves ApplyUrl empty", ExtractorApplyLinkMissingOrInvalid);
             Test("import saves a discovered ApplyUrl with its time and platform", ImportRecordsApplyUrl);
             Test("import without a usable link still succeeds, link empty", ImportWithoutApplyUrl);
             Test("an existing ApplyUrl is never overwritten; an empty one is filled", ImportFillsOnlyEmptyApplyUrl);
 
             Console.WriteLine();
+            Console.WriteLine("ChatGPT rate limit and pacing");
+            Test("the rate-limit wording is detected; the probe only reads", RateLimitIsDetectedFromItsWording);
+            Test("a rate limit ends the answer watch at once", RateLimitEndsTheWatchAtOnce);
+            Test("nothing is sent during the configured cooldown; Stop cancels it", NothingIsSentDuringACooldown);
+            Test("the same job resumes afterwards, not failed", TheSameJobResumesAfterTheCooldown);
+            Test("the configured pause separates jobs; 0 = immediately; Stop cancels", TheConfiguredPauseSeparatesJobs);
+            Test("pacing settings default, persist and validate", PacingSettingsPersistAndValidate);
+
+            Console.WriteLine();
+            Console.WriteLine("Phase 1: runtime safety and install-readiness");
+            Test("settings.json is saved atomically with a .bak", SettingsSaveIsAtomicWithBackup);
+            Test("tasks.json is saved atomically with a .bak", TasksSaveIsAtomicWithBackup);
+            Test("a corrupt settings.json is kept and never overwritten", CorruptSettingsIsNeverOverwritten);
+            Test("a corrupt tasks.json is kept and never overwritten", CorruptTasksIsNeverOverwritten);
+            Test("a corrupt file is restored from its .bak", CorruptFileRecoversFromBackup);
+            Test("missing files are a normal first run", MissingStateFilesAreAFirstRun);
+            Test("a locked file returns the last good copy, not an empty list", LockedStateFileKeepsTheLastGoodCopy);
+            Test("the default output folder only fills a blank setting", DefaultResumeRootOnlyFillsABlank);
+            Test("CurrentResume.docx follows the Resume Root", CurrentResumeFollowsTheResumeRoot);
+            Test("only one instance can hold the mutex", SingleInstanceAllowsOnlyOne);
+            Test("logs rotate and crash logs are bounded", LogsAreRotatedAndBounded);
+            Test("a crash is logged once and logging never throws", CrashLogIsWrittenOncePerException);
+            Test("a missing WebView2 runtime is a clear message", WebView2CheckIsFriendly);
+            Test("first-run setup names exactly what is missing", SetupCheckNamesWhatIsMissing);
+
+            Console.WriteLine();
+            Console.WriteLine("Resume upload: Copy Resume Path and CurrentResume.docx");
+            Test("Copy Resume Path copies the folder of the job's exact DOCX", CopyResumePathCopiesTheExactDocx);
+            Test("no DOCX, a PDF, a folder or a URL copies nothing and says so", CopyResumePathRefusesAnythingButARealDocx);
+            Test("CurrentResume.docx is created after a successful DOCX", CurrentResumeIsCreatedAfterGeneration);
+            Test("the newest job replaces the alias; originals stay unchanged", CurrentResumeFollowsTheNewestJobAndLeavesOriginalsAlone);
+            Test("an alias failure is logged, leaves the old alias, never fails the job", CurrentResumeFailureNeverFailsTheJob);
+            Test("paths with spaces and special characters work as-is", UploadPathsSurviveSpacesAndSpecialCharacters);
+            Test("the alias comes from the Documents folder, no user name in code", UploadAliasUsesTheDocumentsFolderNotAUserName);
+            Test("tasks.json, settings.json and the real alias are untouched", UploadHelpersLeaveLiveDataAlone);
+
+            Console.WriteLine();
+            Console.WriteLine("Normal Prompt style contract (nested schema, 9 pt body)");
+            Test("9 pt is accepted for body, bullet, skillValues and education", NinePointAcceptedInBodySections);
+            Test("8.9 pt is an error strictly and clamped to 9 on capture", BelowNinePointIsCorrectedPerApi);
+            Test("the 8-24 pt range, line spacing and weight rules are unchanged", GlobalFontAndSpacingRulesUnchanged);
+            Test("flat style fields such as bodyFontSize stay unsupported", FlatStylePropertiesStayUnsupported);
+            Test("9 pt survives normalize -> save -> ResumeDocument", NinePointSurvivesSaveAndReachesTheModel);
+            Test("the DOCX renders summary, bullets, skills and education at 9 pt", NinePointReachesTheDocx);
+            Test("the PDF model renders the same sizes; both documents generate", NinePointReachesThePdfModel);
+            Test("the preset sizes Resume mode relies on are unchanged", PresetDefaultsUnchanged);
+            Test("Normal Prompt mode refuses an answer without a style object", NormalModeRequiresStyle);
+            Test("Resume mode still accepts an answer without style", ResumeModeStyleStaysOptional);
+            Test("a prepared request records the mode it was sent in", PreparedRequestRecordsItsMode);
+            Test("the Normal contract describes exactly the accepted schema", NormalContractDescribesTheRealSchema);
+
+            Console.WriteLine();
+            Console.WriteLine("Job import filter: rules");
+            Test("a LinkedIn apply destination is refused; another ATS is not", FilterLinkedInPlatform);
+            Test("LinkedIn in the text, a profile link or no link never rejects", FilterLinkedInIsAboutTheDestinationOnly);
+            Test("clearance demanded of the applicant is refused", FilterSecurityClearanceRequirements);
+            Test("security work, certifications and secure systems still import", FilterSecurityIsNotClearance);
+            Test("explicit U.S. citizenship restrictions are refused", FilterCitizenshipRequirements);
+            Test("work authorization and EEO wording are not citizenship rules", FilterWorkAuthorizationIsNotCitizenship);
+            Test("one sentence matching two rules has a fixed precedence", FilterCitizenshipAndClearancePrecedence);
+            Test("export-control / U.S.-person restrictions are refused when on", FilterExportControlRestrictions);
+            Test("ordinary compliance and governance wording still imports", FilterExportControlLeavesOrdinaryComplianceAlone);
+            Test("an explicit refusal of sponsorship is refused when on", FilterNoVisaSponsorship);
+            Test("offered sponsorship and work authorization still import", FilterSponsorshipOfferedIsAccepted);
+            Test("the five switches are one shared definition", FilterSwitchesAreOneSharedDefinition);
+            Test("every filter off accepts everything", FilterAllOffAcceptsEverything);
+
+            Console.WriteLine();
+            Console.WriteLine("Job import filter: persistence");
+            Test("the five defaults, and the Filters (N) count", FilterSettingsDefaults);
+            Test("a settings.json written before the filters loads with the defaults", FilterSettingsOldFileLoadsWithDefaults);
+            Test("all five survive save and reload", FilterSettingsSurviveSaveAndReload);
+            Test("toggling one filter preserves every unrelated setting", FilterToggleKeepsUnrelatedSettings);
+
+            Console.WriteLine();
+            Console.WriteLine("Job import filter: the import gate");
+            Test("a refused job creates no task and writes no tasks.json", FilterGateCreatesNoTask);
+            Test("an accepted job still follows the existing import path", FilterGateStillImportsAcceptedJobs);
+            Test("the filter runs after the duplicate decision; backfill is intact", FilterGateRunsAfterTheDuplicateDecision);
+            Test("changing a switch affects the next ImportOne call", FilterSettingsChangeAffectsTheNextImport);
+            Test("the Incoming folder inherits the same gate", FilterIncomingFolderSharesTheGate);
+            Test("the Auto Import target counts accepted imports only", FilterAutoImportTargetCountsImportsOnly);
+            Test("a rejected job is tried once per session and never blacklisted", FilterSessionNeverRetriesTheSameRejection);
+
+            Console.WriteLine();
             Console.WriteLine("Application platform detection");
             Test("each known ATS address maps to its platform", PlatformMatching);
             Test("look-alike domains are not mistaken for an ATS", PlatformLookAlikes);
             Test("embedded Greenhouse / Ashby job links are recognised", PlatformEmbeddedLinks);
-            Test("a missing or unusable ApplyUrl is Unknown; an unrecognised site is Other", PlatformMissingOrUnknown);
+            Test("a missing or unusable ApplyUrl is Unknown; an unrecognised site is Unknown", PlatformMissingOrUnknown);
+            Test("the twenty application platforms are detected and cached", AtsPlatformsIconsAndFilter);
             Test("an unreadable stored platform loads as Unknown and keeps every task", PlatformTolerantLoading);
             Test("the platform survives save and reload; older tasks load as Unknown", PlatformSaveReload);
             Test("capture and startup refresh derive the platform from ApplyUrl", PlatformDerivedFromApplyUrl);
+            Test("fifty ATS platforms and custom-domain fingerprints", PlatformFingerprints);
 
             Console.WriteLine();
             Console.WriteLine("Critical pipeline (isolated — no live ChatGPT / Jobright)");
@@ -250,6 +364,7 @@ static class Program {
             Test("copy shortcut VK is OEM_1 (semicolon), not letter I", CopyShortcutIsSemicolon);
             Test("composer readiness waits until the probe reports ready", ComposerReadyWaitsForProbe);
             Test("Start refuses while a queue run is already active", QueueStartRefusesWhileRunning);
+            Test("queue and stack order waiting jobs only", QueueAndStackOrder);
             Test("Next never reselects a Failed job after it was marked terminal", QueueNextSkipsFailed);
             Test("clipboard sequence change detection for copy-keystroke verification", ClipboardChangedSinceArm);
             Test("browser generation invalidates delayed focus after dispose", BrowserGenerationInvalidatesStaleOps);
@@ -260,6 +375,48 @@ static class Program {
             Console.WriteLine("Theme input readability");
             Test("dark and light input ink contrast against Bg.Input", ThemeInputContrast);
             Test("shared control styles bind inputs with DynamicResource", ThemeControlStylesUseDynamicResources);
+
+            Console.WriteLine();
+            Console.WriteLine("SQLite job store");
+            Test("migration imports existing jobs and applications", SqliteMigrationImportsJobs);
+            Test("migration links a resume by internal job id, not company or title", SqliteMigrationLinksByJobId);
+            Test("a repeated migration creates no duplicate rows", SqliteMigrationIsIdempotent);
+            Test("a finished migration still stores a new job without removing older rows", SqliteAlreadyMigratedStillUpsertsNewJobs);
+            Test("Jobright source and external id are unique together", SqliteJobrightIdentityIsUnique);
+            Test("recording a generated resume creates then updates one output", SqliteResumeOutputUpserts);
+            Test("loading applications does not scan resume folders", SqliteApplicationsLoadDoesNotScan);
+            Test("SQLite is the only job store", SqliteIsTheOnlyJobStore);
+            Test("a missing DOCX is kept and does not start a folder search", SqliteMissingDocxDoesNotScan);
+            Test("Apply is enabled only for an application URL while the job can still be applied", ApplyButtonUsesOnlyTheApplicationUrl);
+            Test("Apply stays enabled for every status when a job or application URL exists", ApplyEnabledForEveryStatus);
+            Test("Apply opens a stored application URL and captures a missing one from Jobright", ApplyCaptureFlow);
+            Test("an empty ApplyUrl is filled from SQLite and a known resume path is stored", SqliteRepairFillsEmptyApplyUrlAndResumePath);
+            Test("an empty incoming value does not wipe a stored job field", SqliteUpsertKeepsNonEmptyFields);
+
+            Console.WriteLine();
+            Console.WriteLine("Profiles");
+            Test("a profile gets its own id and database", ProfileCreateIsUnique);
+            Test("two profiles do not share a database", ProfileDatabasesAreIsolated);
+            Test("the single-user database is copied and the original is kept", ProfileMigrationKeepsTheOriginal);
+            Test("the same profile cannot be locked twice", ProfileLockIsOneWorkspace);
+            Test("different profiles can be open together", ProfileLocksAreIndependent);
+            Test("rename keeps the profile id and its files", ProfileRenameKeepsData);
+            Test("the profile list reloads for the chooser", ProfileChooserReloads);
+            Test("a profile avatar stays in that profile folder", ProfileAvatarIsPerProfile);
+
+            Console.WriteLine();
+            Console.WriteLine("HTML round trip");
+            Test("a constructed resume keeps its text through HTML", HtmlRoundTripKeepsConstructedText);
+            Test("the same DOCX becomes the same HTML twice", HtmlRoundTripIsDeterministic);
+            Test("the sample resumes keep their text through HTML", HtmlRoundTripSamples);
+            Test("HTML tailoring keeps Billy Lin's locked facts and writes a new resume", HtmlTailorBilly);
+            Test("Word PDF conversion closes its process", WordPdfConversionClosesWord);
+            Test("email tasks tailor through the HTML pipeline", EmailHtmlTailoring);
+            Test("HTML tailoring accepts a returned resume with fewer bullets", HtmlTailorRejectedResume);
+            Test("HTML tailoring uses the Original Resume only", HtmlOriginalResumeIsTheOnlySource);
+            Test("HTML tailoring regenerates source HTML when the Original Resume changes", HtmlOriginalResumeRegenerates);
+            Test("HTML tailoring restores style and allows section edits", HtmlTailorLocksStyleAndSectionOrder);
+            Test("HTML line height is Word multiple spacing", HtmlLineHeightUsesMultipleSpacing);
 
             Console.WriteLine();
             Console.WriteLine("Sample output");
@@ -359,9 +516,9 @@ static class Program {
         var style = resume.Style;
 
         Equal("promV4.12", style.Preset, "an unknown preset falls back to the default");
-        Equal(11.0, style.Body.FontSize, "9 pt body text was raised to the floor");
+        Equal(9.0, style.Body.FontSize, "8.5 pt body text was raised to the 9 pt floor");
         Equal(24.0, style.Name.FontSize, "40 pt name was lowered to the maximum");
-        Equal(10.5, style.SkillValues.FontSize, "8 pt skill values were raised to the floor");
+        Equal(9.0, style.SkillValues.FontSize, "8 pt skill values were raised to the 9 pt floor");
         Equal(1.0, style.Bullet.LineSpacing, "0.8 line spacing was raised to 1.0");
         Equal(1.25, style.Page.MarginLeft, "a 2 inch margin was lowered to the maximum");
         Equal("#1F4E79", style.Colors.Primary, "an invalid colour keeps the preset value");
@@ -393,9 +550,9 @@ static class Program {
 
     static void InvalidFontSizesFail() {
         var errors = StyleErrors("resume-invalid-style.json");
-        Check(errors.Contains("style.body.fontSize must be >= 11 pt"), "expected the body font size error, got: " + Join(errors));
+        Check(errors.Contains("style.body.fontSize must be >= 9 pt"), "expected the body font size error, got: " + Join(errors));
         Check(errors.Contains("style.name.fontSize must be <= 24 pt"), "expected the name font size error, got: " + Join(errors));
-        Check(errors.Contains("style.skillValues.fontSize must be >= 10.5 pt"), "expected the skill values error, got: " + Join(errors));
+        Check(errors.Contains("style.skillValues.fontSize must be >= 9 pt"), "expected the skill values error, got: " + Join(errors));
     }
 
     static void InvalidColorsFail() {
@@ -1175,6 +1332,284 @@ static class Program {
         NormalPrompt = normalPrompt ?? ""
     };
 
+    static void TailoredDocxDropsStaleSourceText() {
+        var path = Path.Combine(NewDir("stale-docx"), "source.docx");
+        using (var word = WordprocessingDocument.Create(path, WordprocessingDocumentType.Document)) {
+            var main = word.AddMainDocumentPart();
+            main.Document = new W.Document(new W.Body());
+            var body = main.Document.Body!;
+            void Para(string text, string? style = null) {
+                var paragraph = new W.Paragraph();
+                if (style is not null)
+                    paragraph.ParagraphProperties = new W.ParagraphProperties(new W.ParagraphStyleId { Val = style });
+                paragraph.Append(new W.Run(new W.Text(text) { Space = SpaceProcessingModeValues.Preserve }));
+                body.Append(paragraph);
+            }
+            Para("Old Name");
+            Para("PROFESSIONAL SUMMARY");
+            Para("Old summary that must disappear");
+            Para("TECHNICAL SKILLS");
+            Para("Old Category", "Heading2");
+            Para("old skills OLD_SKILLS_TEXT_456");
+            Para("second old skill line");
+            Para("PROFESSIONAL EXPERIENCE");
+            Para("Old Co | Old Title | 2010 - 2011", "Heading2");
+            Para("Old City | Contract | On-site");
+            Para("OLD_PROJECT_TEXT_123");
+            Para("Kubernetes only technology line");
+            Para("• Old bullet one");
+            Para("• Old bullet two");
+            Para("CERTIFICATIONS");
+            Para("Old Certificate");
+            Para("EDUCATION");
+            Para("Old Degree - Old School | 2000 - 2004");
+            main.Document.Save();
+        }
+
+        var resume = new ResumeDocument {
+            Name = "New Name",
+            Summary = "NEW_SUMMARY_TEXT",
+            Skills = {
+                new SkillBlock { Category = "Languages", Skills = "NEW_SKILL_VALUES" },
+                new SkillBlock { Category = "Cloud", Skills = "NEW_CLOUD_SKILL" }
+            },
+            Experience = {
+                new ExperienceBlock {
+                    Company = "New Co",
+                    Title = "New Role",
+                    StartDate = "Jan 2024",
+                    EndDate = "Present",
+                    Location = "Austin, TX",
+                    EmploymentType = "Full-time",
+                    WorkArrangement = "Remote",
+                    Lines = {
+                        BulletLine.Plain("NEW_BULLET_ONE"),
+                        BulletLine.Plain("NEW_BULLET_TWO"),
+                        BulletLine.Plain("NEW_BULLET_THREE")
+                    }
+                }
+            },
+            Certifications = { "NEW_CERT_NAME" },
+            Education = {
+                new EducationBlock { Degree = "NEW_DEGREE_NAME", School = "NEW_SCHOOL_NAME", Dates = "2018 - 2022" }
+            }
+        };
+        TemplateDocxWriter.ReplaceText(path, resume);
+        using var saved = WordprocessingDocument.Open(path, false);
+        var text = string.Concat(saved.MainDocumentPart!.Document!.Body!.Descendants<W.Text>().Select(node => node.Text));
+        foreach (var stale in new[] {
+            "OLD_PROJECT_TEXT_123", "OLD_SKILLS_TEXT_456", "Kubernetes only",
+            "Old bullet", "Old summary", "Old Certificate", "Old Degree", "Old Co", "second old skill"
+        })
+            Check(!text.Contains(stale, StringComparison.Ordinal), "stale text survived: " + stale);
+        foreach (var expected in new[] {
+            "NEW_SUMMARY_TEXT", "NEW_SKILL_VALUES", "NEW_CLOUD_SKILL",
+            "New Co", "New Role", "Austin, TX", "Full-time", "Remote",
+            "NEW_BULLET_ONE", "NEW_BULLET_TWO", "NEW_BULLET_THREE",
+            "NEW_CERT_NAME", "NEW_DEGREE_NAME", "NEW_SCHOOL_NAME"
+        })
+            Check(text.Contains(expected, StringComparison.Ordinal), "missing tailored text: " + expected);
+    }
+
+    static void WriteStyleDocx(string path, string marker) {
+        using var word = WordprocessingDocument.Create(path, WordprocessingDocumentType.Document);
+        var main = word.AddMainDocumentPart();
+        main.Document = new W.Document(new W.Body());
+        var body = main.Document.Body!;
+        void Para(string text, string? style = null) {
+            var paragraph = new W.Paragraph();
+            if (style is not null)
+                paragraph.ParagraphProperties = new W.ParagraphProperties(new W.ParagraphStyleId { Val = style });
+            paragraph.Append(new W.Run(new W.Text(text) { Space = SpaceProcessingModeValues.Preserve }));
+            body.Append(paragraph);
+        }
+        Para("Style Name");
+        Para("PROFESSIONAL SUMMARY");
+        Para(marker);
+        Para("TECHNICAL SKILLS");
+        Para("Old Category", "Heading2");
+        Para("old skill line");
+        Para("PROFESSIONAL EXPERIENCE");
+        Para("Old Co | Old Title | 2010 - 2011", "Heading2");
+        Para("Old City | Contract | On-site");
+        Para("• Old bullet one");
+        main.Document.Save();
+    }
+
+    static string DocxBody(string path) {
+        using var saved = WordprocessingDocument.Open(path, false);
+        return string.Concat(saved.MainDocumentPart!.Document!.Body!.Descendants<W.Text>().Select(node => node.Text));
+    }
+
+    static void RequestResumeBeatsOriginalStyle() {
+        var dir = NewDir("style-priority");
+        var master = Path.Combine(dir, "master.docx");
+        var selected = Path.Combine(dir, "selected.docx");
+        var request = Path.Combine(dir, "request.docx");
+        WriteStyleDocx(master, "old master OLD_MASTER_MARKER_123");
+        WriteStyleDocx(selected, "old style OLD_STYLE_MARKER_456");
+        WriteStyleDocx(request, "old request OLD_REQUEST_MARKER_789");
+        var chosen = ResumeGenerator.ResumeStyleSource.Resolve(request, selected);
+        Equal("request", chosen!.Priority, "the request resume wins");
+        Equal(Path.GetFullPath(request), chosen.Path, "the request file is the template");
+        Check(ResumeGenerator.ResumeStyleSource.Resolve(Path.Combine(dir, "missing.docx"), selected)!.Priority == "selected",
+            "a missing request file falls through to the selected reference");
+
+        var settings = new AppSettings {
+            ResumeRootFolder = Path.Combine(dir, "out"),
+            Docx = true,
+            Pdf = false,
+            OriginalResume = master,
+            StyleReferenceResume = selected
+        };
+        var result = ResumeGenerator.Generate("Caterpillar Inc.", "Senior AI Software Engineer",
+            Fixture("resume-basic.json"), settings, null, "STYLE-REQ", null, null, request);
+        Check(result.DocxGenerated, result.DocxError ?? result.FatalError ?? "docx");
+        var text = DocxBody(result.DocxPath!);
+        Check(text.Contains("twelve years", StringComparison.Ordinal), "tailored summary is written");
+        Check(!text.Contains("OLD_REQUEST_MARKER_789", StringComparison.Ordinal), "request template text is not kept");
+        Check(!text.Contains("OLD_STYLE_MARKER_456", StringComparison.Ordinal), "selected template text is not kept");
+        Check(!text.Contains("OLD_MASTER_MARKER_123", StringComparison.Ordinal), "the original resume is not the style source");
+    }
+
+    static void SelectedStyleReferenceIsUsed() {
+        var dir = NewDir("style-selected");
+        var master = Path.Combine(dir, "master.docx");
+        var selected = Path.Combine(dir, "selected.docx");
+        WriteStyleDocx(master, "old master OLD_MASTER_MARKER_123");
+        WriteStyleDocx(selected, "old style OLD_STYLE_MARKER_456");
+        var chosen = ResumeGenerator.ResumeStyleSource.Resolve(null, selected);
+        Equal("selected", chosen!.Priority, "the last selected reference is used");
+        var settings = new AppSettings {
+            ResumeRootFolder = Path.Combine(dir, "out"),
+            Docx = true,
+            Pdf = false,
+            OriginalResume = master,
+            StyleReferenceResume = selected
+        };
+        var result = ResumeGenerator.Generate("Caterpillar Inc.", "Senior AI Software Engineer",
+            Fixture("resume-basic.json"), settings, null, "STYLE-SEL");
+        Check(result.DocxGenerated, result.DocxError ?? result.FatalError ?? "docx");
+        var text = DocxBody(result.DocxPath!);
+        Check(text.Contains("twelve years", StringComparison.Ordinal), "tailored summary is written");
+        Check(!text.Contains("OLD_STYLE_MARKER_456", StringComparison.Ordinal), "selected template text is not kept");
+        Check(!text.Contains("OLD_MASTER_MARKER_123", StringComparison.Ordinal), "the original resume is not the style source");
+    }
+
+    static void DefaultStyleIgnoresOriginalResume() {
+        var dir = NewDir("style-default");
+        var master = Path.Combine(dir, "master.docx");
+        WriteStyleDocx(master, "old master OLD_MASTER_MARKER_123");
+        Check(ResumeGenerator.ResumeStyleSource.Resolve(null, null) is null, "no reference means the app default");
+        Check(ResumeGenerator.ResumeStyleSource.Resolve("", " ") is null, "blank paths are not a reference");
+        var settings = new AppSettings {
+            ResumeRootFolder = Path.Combine(dir, "out"),
+            Docx = true,
+            Pdf = false,
+            OriginalResume = master
+        };
+        var result = ResumeGenerator.Generate("Caterpillar Inc.", "Senior AI Software Engineer",
+            Fixture("resume-basic.json"), settings, null, "STYLE-DEF");
+        Check(result.DocxGenerated, result.DocxError ?? result.FatalError ?? "docx");
+        var text = DocxBody(result.DocxPath!);
+        Check(text.Contains("twelve years", StringComparison.Ordinal), "default style still writes the tailored summary");
+        Check(!text.Contains("OLD_MASTER_MARKER_123", StringComparison.Ordinal), "the original resume is not copied");
+    }
+
+    static void WithAdaptationRoot(Action body) {
+        var previous = PromptConversion.Root;
+        var allow = PromptConversion.AllowUnadaptedSource;
+        var followedProfile = previous == Path.Combine(ProfileContext.ProfileRoot, "PromptAdaptation");
+        PromptConversion.Root = NewDir("prompt-adaptation");
+        try { body(); }
+        finally {
+            PromptConversion.Root = followedProfile ? "" : previous;
+            PromptConversion.AllowUnadaptedSource = allow;
+        }
+    }
+
+    static string AdaptedSample() =>
+        "Preserve the user's tailoring strategy and tone.\r\n"
+        + PromptConversion.HtmlContract;
+
+    static void PromptConversionReusesUnchangedSource() => WithAdaptationRoot(() => {
+        var source = Path.Combine(NewDir("prompt-src"), "mine.txt");
+        File.WriteAllText(source, "Tailor every bullet to the job description. Do not invent employers.");
+        var before = File.ReadAllBytes(source);
+        Check(PromptConversion.TrySave(source, AdaptedSample(), out var error), error);
+        Check(before.AsSpan().SequenceEqual(File.ReadAllBytes(source)), "the user's prompt file must stay unchanged");
+        Check(PromptConversion.Matches(source), "the same file and hash is ready");
+        Equal(File.ReadAllText(PromptConversion.ConvertedPath), PromptConversion.RequireText(source), "jobs read the converted copy");
+        var saved = PromptConversion.Load();
+        Equal(PromptConversion.OutputModeHtml, saved?.OutputMode ?? "", "the adaptation is HTML");
+        Equal(PromptConversion.HtmlContractVersion.ToString(), (saved?.HtmlContractVersion ?? 0).ToString(), "the HTML contract version is current");
+        var instruction = PromptConversion.BuildInstruction(File.ReadAllText(source), resumeMode: true);
+        Check(instruction.Contains(PromptConversion.HtmlContract, StringComparison.Ordinal), "the HTML contract is the required output");
+        Check(instruction.Contains("top-level section order", StringComparison.Ordinal), "section order is locked");
+        Check(instruction.Contains("<style> block exactly", StringComparison.Ordinal), "the style block is locked");
+        Check(instruction.Contains("Do not invent employers", StringComparison.Ordinal), "the user's strategy is included");
+        Check(!instruction.Contains("descriptionLines", StringComparison.Ordinal), "the JSON schema is not the HTML contract");
+    });
+
+    static void PromptConversionDetectsSourceChange() => WithAdaptationRoot(() => {
+        var source = Path.Combine(NewDir("prompt-src"), "mine.txt");
+        File.WriteAllText(source, "First version of the tailoring rules.");
+        Check(PromptConversion.TrySave(source, AdaptedSample(), out _), "first conversion");
+        Check(PromptConversion.Matches(source), "unchanged source matches");
+        File.AppendAllText(source, " Added a new rule.");
+        Check(!PromptConversion.Matches(source), "a changed file is not ready");
+        Check(File.Exists(PromptConversion.ConvertedPath), "the previous converted file stays on disk");
+    });
+
+    static void PromptConversionKeepsPreviousOnFailure() => WithAdaptationRoot(() => {
+        var source = Path.Combine(NewDir("prompt-src"), "mine.txt");
+        File.WriteAllText(source, "Tailor to the posting.");
+        Check(PromptConversion.TrySave(source, AdaptedSample(), out _), "first conversion");
+        var kept = File.ReadAllBytes(PromptConversion.ConvertedPath);
+        var profile = """{"info":{"name":"A"},"summary":"S","skills":[],"experience":[]}""";
+        Check(!PromptConversion.TrySave(source, profile, out var error), "a profile JSON is not a prompt");
+        Check(error.Contains("previous prepared prompt", StringComparison.Ordinal), error);
+        Check(kept.AsSpan().SequenceEqual(File.ReadAllBytes(PromptConversion.ConvertedPath)), "the previous converted prompt was kept");
+        Check(!PromptConversion.TrySave(source, "too short", out _), "a short reply is refused");
+        Check(kept.AsSpan().SequenceEqual(File.ReadAllBytes(PromptConversion.ConvertedPath)), "a short reply does not replace the file");
+    });
+
+    static void UnadaptedPromptIsRefused() => WithAdaptationRoot(() => {
+        var source = Path.Combine(NewDir("prompt-src"), "mine.txt");
+        File.WriteAllText(source, "A prompt that has not been prepared.");
+        PromptConversion.AllowUnadaptedSource = false;
+        try {
+            PromptConversion.RequireText(source);
+            Check(false, "an unconverted prompt must be refused");
+        } catch (InvalidOperationException ex) {
+            Check(ex.Message.Contains("Prompt ready", StringComparison.Ordinal), ex.Message);
+        }
+        PromptConversion.AllowUnadaptedSource = true;
+        Equal(File.ReadAllText(source), PromptConversion.RequireText(source), "the test harness may still read the source file");
+    });
+
+    static void PromptConversionRejectsJsonContract() => WithAdaptationRoot(() => {
+        var source = Path.Combine(NewDir("prompt-src"), "mine.txt");
+        File.WriteAllText(source, "Tailor every bullet to the job description.");
+        Directory.CreateDirectory(PromptConversion.Root);
+        File.WriteAllText(PromptConversion.ConvertedPath, AdaptedSample());
+        var record = new PromptConversion.Record {
+            OriginalPromptPath = Path.GetFullPath(source),
+            OriginalPromptHash = PromptConversion.HashFile(source),
+            ConvertedPromptPath = Path.GetFullPath(PromptConversion.ConvertedPath),
+            ConvertedPromptHash = PromptConversion.HashFile(PromptConversion.ConvertedPath),
+            ConvertedAt = DateTimeOffset.Now.ToString("o"),
+            OutputMode = "JSON",
+            HtmlContractVersion = 0
+        };
+        File.WriteAllText(PromptConversion.MetadataPath, System.Text.Json.JsonSerializer.Serialize(record));
+        Check(!PromptConversion.Matches(source), "a JSON adaptation is rebuilt even when the prompt file is unchanged");
+        record.OutputMode = "";
+        record.HtmlContractVersion = 0;
+        File.WriteAllText(PromptConversion.MetadataPath, System.Text.Json.JsonSerializer.Serialize(record));
+        Check(!PromptConversion.Matches(source), "a prompt adapted before the HTML contract is not ready");
+    });
+
     /// <summary>Prepare writes prepared-request.json/.txt in the live data folder; both are restored.</summary>
     static void WithPreparedFiles(Action body) {
         var paths = new[] { RequestPreparation.PreparedPath, RequestPreparation.PreparedTextPath };
@@ -1246,14 +1681,20 @@ static class Program {
         var resumeContract = Contract(resume);
         var normalContract = Contract(normal);
 
-        // One schema: the two blocks differ only in their first sentence.
-        Equal(resumeContract.Replace(PromptContract.ResumeOpening, PromptContract.NormalOpening), normalContract,
-              "only the opening sentence differs");
+        // One schema. Normal mode differs in exactly three places: the opening sentence, the verification
+        // rule (which adds style), and the STYLE CONTRACT appended at the end. Everything else is shared.
+        var resumeVerify = resumeContract.Split("\r\n").Single(l => l.StartsWith("Before responding, verify the top-level", StringComparison.Ordinal));
+        var expectedNormal = resumeContract.Replace(PromptContract.ResumeOpening, PromptContract.NormalOpening)
+                                           .Replace(resumeVerify, PromptContract.NormalVerify)
+                             + "\r\n\r\n" + PromptContract.StyleContract();
+        Equal(expectedNormal, normalContract, "Normal = Resume + opening, verify rule and style contract");
+        Check(!resumeContract.Contains("STYLE CONTRACT", StringComparison.Ordinal), "Resume mode carries no style contract");
+        Check(normalContract.Contains("===== STYLE CONTRACT (REQUIRED) =====", StringComparison.Ordinal), "Normal mode carries it");
         Check(resumeContract.Contains(PromptContract.ResumeOpening, StringComparison.Ordinal), "Resume names the Master Prompt");
         Check(normalContract.Contains(PromptContract.NormalOpening, StringComparison.Ordinal), "Normal names the user's instructions");
 
         foreach (var rule in new[] { "Return ONLY the updated profile object in a Markdown code block fenced with json.",
-                                     "info, summary, skills, experience, certifications, and education",
+                                     "info, summary, skills, experience, certifications, education, and style",
                                      "experience must use startDate, endDate, and descriptionLines",
                                      "any text outside the JSON code block" })
             Check(normalContract.Contains(rule, StringComparison.Ordinal), "Normal mode still demands: " + rule);
@@ -1357,14 +1798,29 @@ static class Program {
 
         var expectedFolder = Path.Combine(root, today, "Caterpillar Inc - Senior AI Software Engineer");
         Equal(expectedFolder, result.OutputFolder, "job folder");
-        Equal(Path.Combine(expectedFolder, "Resume.docx"), result.DocxPath, "DOCX path");
-        Equal(Path.Combine(expectedFolder, "Resume.pdf"), result.PdfPath, "PDF path");
+        // The documents are named after the candidate (profile info.name = "BILLY LIN").
+        Equal(Path.Combine(expectedFolder, "BILLY LIN.docx"), result.DocxPath, "DOCX path");
+        Equal(Path.Combine(expectedFolder, "BILLY LIN.pdf"), result.PdfPath, "PDF path");
         Equal(Path.Combine(expectedFolder, "resume-info.json"), result.MetadataPath, "metadata path");
 
-        Check(File.Exists(result.DocxPath!), "Resume.docx should exist");
-        Check(File.Exists(result.PdfPath!), "Resume.pdf should exist");
+        Check(File.Exists(result.DocxPath!), "BILLY LIN.docx should exist");
+        Check(File.Exists(result.PdfPath!), "BILLY LIN.pdf should exist");
         Check(File.Exists(result.MetadataPath!), "resume-info.json should exist");
         Equal(0, Directory.GetFiles(root).Length, "nothing may be written loose in the Resume Root");
+
+        // Spaces kept, Windows-invalid characters sanitized, a blank name falls back to "Resume".
+        Equal("Billy Lin", ResumeOutputManager.DocumentBaseName("Billy Lin"), "spaces are kept");
+        Equal("Jane O Doe", ResumeOutputManager.DocumentBaseName("Jane: O/Doe?"), "invalid characters sanitized");
+        foreach (var blank in new string?[] { null, "", "   ", "***" })
+            Equal("Resume", ResumeOutputManager.DocumentBaseName(blank), $"blank name '{blank ?? "null"}' falls back");
+
+        // Open Resume's relink finds the candidate-named DOCX through resume-info.json, not "Resume*.docx".
+        var job = new JobTask {
+            JobId = "STRESS-114209-001",
+            Company = "Caterpillar Inc.",
+            Title = "Senior AI Software Engineer"
+        };
+        Equal(result.DocxPath, JobTracker.FindExistingResume(job, root), "the generated DOCX is found by its real name");
         Equal(1, Directory.GetDirectories(root).Length, "exactly one date folder");
     }
 
@@ -1398,12 +1854,12 @@ static class Program {
         var third = ResumeGenerator.Generate("Caterpillar Inc.", "Senior AI Software Engineer", Fixture("resume-basic.json"), settings, null, "JOB-1");
 
         Equal(first.OutputFolder, second.OutputFolder, "the same job reuses its folder");
-        Equal("Resume.docx", Path.GetFileName(first.DocxPath!), "first run");
-        Equal("Resume (2).docx", Path.GetFileName(second.DocxPath!), "second run");
-        Equal("Resume (3).docx", Path.GetFileName(third.DocxPath!), "third run");
+        Equal("BILLY LIN.docx", Path.GetFileName(first.DocxPath!), "first run");
+        Equal("BILLY LIN (2).docx", Path.GetFileName(second.DocxPath!), "second run");
+        Equal("BILLY LIN (3).docx", Path.GetFileName(third.DocxPath!), "third run");
 
         // The whole set moves together, so a pair is never split across revisions.
-        Equal("Resume (2).pdf", Path.GetFileName(second.PdfPath!), "second run PDF");
+        Equal("BILLY LIN (2).pdf", Path.GetFileName(second.PdfPath!), "second run PDF");
         Equal("resume-info (2).json", Path.GetFileName(second.MetadataPath!), "second run metadata");
 
         var files = Directory.GetFiles(first.OutputFolder!);
@@ -1450,8 +1906,8 @@ static class Program {
         Equal("https://example.com/job/123", metadata["jobUrl"]!.GetValue<string>(), "jobUrl");
         Equal("Caterpillar Inc.", metadata["company"]!.GetValue<string>(), "company keeps its original punctuation");
         Equal("Senior AI Software Engineer", metadata["role"]!.GetValue<string>(), "role");
-        Equal("Resume.docx", metadata["docxFile"]!.GetValue<string>(), "docxFile");
-        Equal("Resume.pdf", metadata["pdfFile"]!.GetValue<string>(), "pdfFile");
+        Equal("BILLY LIN.docx", metadata["docxFile"]!.GetValue<string>(), "docxFile");
+        Equal("BILLY LIN.pdf", metadata["pdfFile"]!.GetValue<string>(), "pdfFile");
 
         var generatedAt = metadata["generatedAt"]!.GetValue<string>();
         Check(DateTime.TryParse(generatedAt, out _), "generatedAt should be a timestamp: " + generatedAt);
@@ -1461,7 +1917,7 @@ static class Program {
         var docxOnly = new AppSettings { ResumeRootFolder = NewDir("metadata-docx"), Docx = true, Pdf = false };
         var second = ResumeGenerator.Generate("Tesla", "ML Engineer", Fixture("resume-basic.json"), docxOnly, null, "JOB-2", "");
         var record = JsonNode.Parse(File.ReadAllText(second.MetadataPath!))!.AsObject();
-        Equal("Resume.docx", record["docxFile"]!.GetValue<string>(), "docxFile");
+        Equal("BILLY LIN.docx", record["docxFile"]!.GetValue<string>(), "docxFile");
         Check(record["pdfFile"] is null, "a document that was not requested has no filename");
     }
 
@@ -1480,7 +1936,7 @@ static class Program {
 
         var written = JsonNode.Parse(File.ReadAllText(stylePath))!.AsObject();
         Equal("promV4.12", written["preset"]!.GetValue<string>(), "written preset");
-        Equal(11.0, written["body"]!["fontSize"]!.GetValue<double>(), "the written style carries the clamped value");
+        Equal(9.0, written["body"]!["fontSize"]!.GetValue<double>(), "the written style carries the clamped value");
         Check(StyleValidator.Validate(written).Count == 0, "the effective style must itself be valid");
     }
 
@@ -1625,7 +2081,7 @@ static class Program {
         var saved = JsonNode.Parse(File.ReadAllText(target))!.AsObject();
         var style = saved["style"]!.AsObject();
         Equal("promV4.12", style["preset"]!.GetValue<string>(), "the preset was corrected");
-        Equal(11.0, style["body"]!["fontSize"]!.GetValue<double>(), "the body size was clamped");
+        Equal(9.0, style["body"]!["fontSize"]!.GetValue<double>(), "the body size was clamped");
         Check(style["sidebar"] is null, "an unsupported section must not be saved");
         Check(StyleValidator.Validate(style).Count == 0, "the saved style must be valid");
 
@@ -2051,24 +2507,27 @@ static class Program {
         var today = DateTime.Now.ToString("yyyy-MM-dd");
         var yesterday = DateTime.Now.AddDays(-1).ToString("yyyy-MM-dd");
 
-        string MakeResume(string date, string folder, string file) {
+        string MakeResume(string date, string folder, string file, string jobId) {
             var dir = Path.Combine(root, date, folder);
             Directory.CreateDirectory(dir);
             var path = Path.Combine(dir, file);
             File.WriteAllText(path, "not really a docx");
+            var info = Path.Combine(dir, "resume-info.json");
+            if (!File.Exists(info))
+                File.WriteAllText(info, $$"""{ "jobId": "{{jobId}}" }""");
             return path;
         }
 
-        // A document generated before tracking existed: on disk, but no path on the task.
-        var expected = MakeResume(today, "Caterpillar Inc - Senior AI Software Engineer", "Resume.docx");
-        MakeResume(yesterday, "Caterpillar Inc - Senior AI Software Engineer", "Resume.docx");   // older, must lose
+        // On disk, but no path on the task. The link is the internal id in resume-info.json.
+        var expected = MakeResume(today, "Caterpillar Inc - Senior AI Software Engineer", "Resume.docx", "R-1");
+        MakeResume(yesterday, "Caterpillar Inc - Senior AI Software Engineer", "Resume.docx", "R-1");   // older, must lose
 
         var job = Job("R-1", "Caterpillar Inc.", "Senior AI Software Engineer");
         Check(!job.ResumeGenerated, "the job starts with no resume path");
         Equal(expected, JobTracker.FindExistingResume(job, root), "the newest dated folder wins");
 
         // The newest revision inside that folder wins too.
-        var second = MakeResume(today, "Caterpillar Inc - Senior AI Software Engineer", "Resume (2).docx");
+        var second = MakeResume(today, "Caterpillar Inc - Senior AI Software Engineer", "Resume (2).docx", "R-1");
         Equal(second, JobTracker.FindExistingResume(job, root), "Resume (2).docx beats Resume.docx");
 
         var noMatch = Job("R-2", "Nowhere Ltd", "Engineer");
@@ -2113,12 +2572,9 @@ static class Program {
 
     // ---------- sample ----------
 
-    static void StatusSurvivesRestart() {
-        // Storage writes the live tasks.json, so the real file is restored afterwards.
-        var live = Storage.TasksPath;
-        var backup = File.Exists(live) ? File.ReadAllBytes(live) : null;
-
-        try {
+    static void StatusSurvivesRestart() => WithLiveTasksFile(() => {
+        // Storage writes the live tasks.json; the helper restores it (and its .bak) afterwards.
+        {
             var applied = new DateTime(2026, 9, 17, 11, 0, 0);
             var saved = Job("RESTART-1", "Tesla", "ML Engineer", "https://example.com/job/1");
             JobTracker.UpdateStatus(saved, ApplicationStatus.Applied, applied);
@@ -2137,11 +2593,8 @@ static class Program {
             Equal(@"C:\Resumes\Resume.docx", first.ResumePath, "resume path survived");
             Equal("https://example.com/job/1", first.Link, "job link survived");
             Equal(ApplicationStatus.Viewed, reloaded[1].ApplicationStatus, "an untouched task stays Viewed");
-        } finally {
-            if (backup is byte[] content) File.WriteAllBytes(live, content);
-            else if (File.Exists(live)) File.Delete(live);
         }
-    }
+    });
 
     static void LegacyTasksLoad() {
         // Exactly the shape tasks.json had before tracking existed.
@@ -2245,7 +2698,7 @@ static class Program {
         Equal(1, JobTracker.GetTasksByStatus(tasks, ApplicationStatus.Viewed).Count, "Viewed");
         Equal("F-2", JobTracker.GetTasksByStatus(tasks, ApplicationStatus.Ready)[0].JobId, "Ready");
         Equal(0, JobTracker.GetTasksByStatus(tasks, ApplicationStatus.Done).Count, "Done");
-        Equal(6, ApplicationStatus.Filters.Length, "the filter list is All plus the five statuses");
+        Equal(7, ApplicationStatus.Filters.Length, "the filter list is All plus the six statuses");
     }
 
     static void JobUrlIsValidated() {
@@ -2488,6 +2941,13 @@ static class Program {
         Equal("ClearlyRated", mixed.Company, "the fresh page data wins over stale JSON-LD");
         Check(!mixed.Description.Contains("old text"), "stale description not used");
 
+        // JSON-LD with no job id is not proof it belongs to the open card.
+        var unscoped = JobrightPageExtractor.Parse(ScriptResultWith(p =>
+            p["ld"] = new JsonArray((JsonNode?)"{\"@type\":\"JobPosting\",\"title\":\"Other role\",\"hiringOrganization\":{\"name\":\"Other Co\"},\"description\":\"OTHER JOB TEXT\"}")));
+        Equal("ClearlyRated", unscoped.Company, "page data keeps the company");
+        Equal("Backend Software Engineer", unscoped.Title, "page data keeps the title");
+        Check(!unscoped.Description.Contains("OTHER JOB TEXT"), "an unidentified posting does not replace this job's description");
+
         // No company website stated: none is invented, and the job still extracts.
         var noSite = JobrightPageExtractor.Parse(ScriptResultWith(p => p["next"]!["companyUrl"] = null));
         Check(noSite.CompanyUrl is null, "no company URL when the page gives none: " + noSite.CompanyUrl);
@@ -2542,18 +3002,10 @@ static class Program {
     const string ApplyOtherJobPage = "https://jobright.ai/jobs/info/69d0abea366bb95ba5520be8";
 
     /// <summary>Runs a check against the real Storage path, restoring the user's tasks.json afterwards.</summary>
-    static void WithLiveTasksFile(Action body) {
-        var live = Storage.TasksPath;
-        var backup = File.Exists(live) ? File.ReadAllBytes(live) : null;
-        try { body(); }
-        finally {
-            if (backup is byte[] content) File.WriteAllBytes(live, content);
-            else if (File.Exists(live)) File.Delete(live);
-        }
-    }
+    static void WithLiveTasksFile(Action body) => WithLiveStateFile(Storage.TasksPath, body);
 
-    static void ApplyUrlOldTasksLoad() => WithLiveTasksFile(() => {
-        // The shape tasks.json had just before ApplyUrl existed, read through the real loader.
+    static void ApplyUrlOldTasksLoad() => WithLiveTasksFile(() => UsingStore(() => {
+        // An old tasks.json is left on disk and is not the job store. The same fields live in SQLite.
         Directory.CreateDirectory(Storage.DataDir);
         File.WriteAllText(Storage.TasksPath, $$"""
         [
@@ -2563,9 +3015,17 @@ static class Program {
           { "JobId": "RB-OLD-2", "Company": "Stripe", "Title": "Backend Engineer", "Jd": "...", "Status": "Queued" }
         ]
         """);
+        var before = File.ReadAllBytes(Storage.TasksPath);
+        var older = new JobTask {
+            JobId = "RB-OLD-1", Source = JobImporter.BrowserSource, Company = "Oracle", Title = "ML Engineer",
+            Jd = "...", Link = ApplyJobPage, CompanyUrl = "https://www.oracle.com/",
+            Status = "Completed", ApplicationStatus = ApplicationStatus.Ready
+        };
+        Storage.SaveTasks(new[] { older, new JobTask { JobId = "RB-OLD-2", Company = "Stripe", Title = "Backend Engineer", Jd = "...", Status = "Queued" } });
+        Check(before.AsSpan().SequenceEqual(File.ReadAllBytes(Storage.TasksPath)), "tasks.json is left untouched");
 
-        var tasks = Storage.LoadTasks();
-        Equal(2, tasks.Count, "every older task loads");
+        var tasks = Storage.LoadTasks().OrderBy(task => task.JobId, StringComparer.Ordinal).ToList();
+        Equal(2, tasks.Count, "every stored job loads from SQLite");
         foreach (var task in tasks) {
             Equal("", task.ApplyUrl, task.JobId + " has no application link");
             Check(task.ApplyUrlCapturedAt is null, task.JobId + " has no capture time");
@@ -2573,7 +3033,7 @@ static class Program {
         Equal("Completed", tasks[0].Status, "queue status untouched");
         Equal(ApplicationStatus.Ready, tasks[0].ApplicationStatus, "application status untouched");
         Equal(ApplyJobPage, tasks[0].Link, "job link untouched");
-    });
+    }));
 
     static void ApplyUrlSurvivesReload() => WithLiveTasksFile(() => {
         var at = new DateTime(2026, 9, 18, 14, 30, 0);
@@ -2884,8 +3344,8 @@ static class Program {
         Equal(6, JobTracker.ApplyFilters(tasks, null, null, null).Count, "the parameter left out");
         Equal(6, JobTracker.ApplyFilters(tasks, null, null, null, platforms: null).Count, "null");
         Equal(6, JobTracker.ApplyFilters(tasks, null, null, null, platforms: new HashSet<ApplicationPlatform>()).Count, "empty");
-        Equal(6, JobTracker.ApplyFilters(tasks, null, null, null, platforms: JobTracker.PlatformFilterOrder.ToList()).Count,
-              "every choice ticked");
+        Equal("GH-1,WD-1,WD-2", Ids(JobTracker.ApplyFilters(tasks, null, null, null, platforms: JobTracker.PlatformFilterOrder.ToList())),
+              "every ATS choice ticked still leaves out job boards and Unknown");
         Equal(Ids(tasks), Ids(JobTracker.ApplyFilters(tasks, null, null, null, platforms: new List<ApplicationPlatform>())),
               "order is kept");
     }
@@ -2944,9 +3404,16 @@ static class Program {
     }
 
     static void PlatformFilterLabelAndOrder() {
-        Equal("Greenhouse,Workday,Lever,LinkedIn,Ashby,SmartRecruiters,ICims,Other,Unknown",
+        Equal("Greenhouse,Workday,Lever,Ashby,SmartRecruiters,ICims,Taleo,BambooHr,Jobvite,SuccessFactors,AdpRecruiting,OracleRecruitingCloud,UkgPro,JazzHr,Recruitee,BreezyHr,Pinpoint,Teamtailor,Workable,RipplingRecruiting,DayforceRecruiting,CornerstoneRecruiting,Avature,Phenom,Eightfold,Beamery,Bullhorn,JobAdder,ZohoRecruit,Cats,ApplicantStack,ClearCompany,PaylocityRecruiting,PaycomRecruiting,PaycorRecruiting,IsolvedTalent,Fountain,Paradox,Comeet,Manatal,RecruitCrm,Recruiterflow,JobScore,Homerun,PersonioRecruiting,TeamEngine,TrakstarHire,Neogov,GovernmentJobs,SymplrRecruiting",
               string.Join(",", JobTracker.PlatformFilterOrder), "the explicit choice order");
-        Equal(Enum.GetValues<ApplicationPlatform>().Length, JobTracker.PlatformFilterOrder.Count, "every platform is a choice");
+        Check(!JobTracker.PlatformFilterOrder.Contains(ApplicationPlatform.Jobright)
+              && !JobTracker.PlatformFilterOrder.Contains(ApplicationPlatform.LinkedIn)
+              && !JobTracker.PlatformFilterOrder.Contains(ApplicationPlatform.Indeed)
+              && !JobTracker.PlatformFilterOrder.Contains(ApplicationPlatform.Wellfound)
+              && !JobTracker.PlatformFilterOrder.Contains(ApplicationPlatform.Dice)
+              && !JobTracker.PlatformFilterOrder.Contains(ApplicationPlatform.Unknown)
+              && !JobTracker.PlatformFilterOrder.Contains(ApplicationPlatform.Other),
+              "job boards are not platform-filter choices");
         Equal(JobTracker.PlatformFilterOrder.Count, JobTracker.PlatformFilterOrder.Distinct().Count(), "no choice twice");
 
         Equal("All platforms", JobTracker.PlatformFilterLabel(null), "null");
@@ -2958,15 +3425,120 @@ static class Program {
               JobTracker.PlatformFilterLabel(new[] { ApplicationPlatform.Workday, ApplicationPlatform.Greenhouse }),
               "two, in the fixed order whatever the tick order");
         Equal("3 platforms",
-              JobTracker.PlatformFilterLabel(new[] { ApplicationPlatform.Unknown, ApplicationPlatform.Lever, ApplicationPlatform.Ashby }),
+              JobTracker.PlatformFilterLabel(new[] { ApplicationPlatform.Lever, ApplicationPlatform.Ashby, ApplicationPlatform.Taleo }),
               "three or more");
-        Equal("8 platforms", JobTracker.PlatformFilterLabel(JobTracker.PlatformFilterOrder.Skip(1).ToList()), "all but one");
+        Equal("49 platforms", JobTracker.PlatformFilterLabel(JobTracker.PlatformFilterOrder.Skip(1).ToList()), "all but one");
 
         // The badge and the filter share these display names.
         Equal("Other", JobTracker.PlatformDisplayName(ApplicationPlatform.Other), "Other badge text");
         Equal("SmartRecruiters", JobTracker.PlatformDisplayName(ApplicationPlatform.SmartRecruiters), "SmartRecruiters badge text");
         foreach (var platform in JobTracker.PlatformFilterOrder)
             Check(JobTracker.PlatformDisplayName(platform).Length > 0, platform + " has display text");
+    }
+
+    static void ImportCapturesCompanyAndPlatformIcons() {
+        var job = Job("ICON-1", "Acme", "Engineer", "https://jobright.ai/jobs/info/aaaaaaaaaaaaaaaaaaaaaaaa");
+        job.Source = JobImporter.BrowserSource;
+        job.Jd = "Build things. Its website is https://www.acme.com/about.";
+        job.ApplicationPlatform = ApplicationPlatform.Unknown;
+
+        Equal("https://www.acme.com/about", IconCache.CompanyPageUrl(job), "the company site in the job text");
+        Equal("jobright", string.Join(",", IconCache.PlatformsFor(job).Select(IconCache.PlatformKey)),
+              "a Jobright posting captures the Jobright icon");
+        Equal("Jobright", job.PlatformToolTip, "the row names the job site when there is no ATS");
+
+        job.CompanyUrl = "https://careers.acme.com/";
+        job.NotifyIconsChanged();
+        // LogoUrl is resolved once. A company URL set before the first read wins over the job text.
+        var withSite = Job("ICON-2", "Acme", "Engineer", "https://jobright.ai/jobs/info/bbbbbbbbbbbbbbbbbbbbbbbb");
+        withSite.Jd = job.Jd;
+        withSite.CompanyUrl = "https://careers.acme.com/";
+        Equal("https://careers.acme.com/", IconCache.CompanyPageUrl(withSite), "the stored company URL wins");
+
+        withSite.ApplyUrl = "https://boards.greenhouse.io/acme/jobs/1";
+        withSite.ApplicationPlatform = ApplicationPlatform.Greenhouse;
+        Equal("greenhouse,jobright", string.Join(",", IconCache.PlatformsFor(withSite).Select(IconCache.PlatformKey)),
+              "an ATS icon is captured as well as the job site");
+        Equal("Greenhouse", withSite.PlatformToolTip, "the row names the ATS");
+    }
+
+    static void ApplicationsConsistencyFailedCount() {
+        var viewed = Job("AC-V");
+        var ready = Job("AC-R");
+        JobTracker.UpdateStatus(ready, ApplicationStatus.Ready);
+        var queueFailed = Job("AC-Q");
+        queueFailed.Status = "Failed";
+        var marked = Job("AC-M");
+        JobTracker.UpdateStatus(marked, ApplicationStatus.Failed);
+        var applied = Job("AC-P");
+        JobTracker.UpdateStatus(applied, ApplicationStatus.Applied);
+        var tasks = new[] { viewed, ready, queueFailed, marked, applied };
+
+        Equal("Queued", marked.Status, "application Failed does not change the queue");
+        Equal(ApplicationStatus.Viewed, queueFailed.ApplicationStatus, "a queue failure is not an application outcome");
+        Equal(2, JobTracker.CountStatus(tasks, ApplicationStatus.Viewed), "Viewed, including the queue failure");
+        Equal(1, JobTracker.CountStatus(tasks, ApplicationStatus.Ready), "Ready");
+        Equal(1, JobTracker.CountStatus(tasks, ApplicationStatus.Applied), "Applied");
+        Equal(0, JobTracker.CountStatus(tasks, ApplicationStatus.Interview), "Interview");
+        Equal(1, JobTracker.CountStatus(tasks, ApplicationStatus.Failed), "Failed card is the explicit status only");
+        Equal(0, JobTracker.CountStatus(tasks, ApplicationStatus.Done), "Done");
+        Equal(tasks.Length, ApplicationStatus.Known.Sum(status => JobTracker.CountStatus(tasks, status)),
+              "the six statuses cover every job");
+        Equal(JobTracker.CountStatus(tasks, ApplicationStatus.Failed),
+              JobTracker.GetTasksByStatus(tasks, ApplicationStatus.Failed).Count,
+              "the Failed filter matches the Failed card");
+        Equal("AC-M", JobTracker.GetTasksByStatus(tasks, ApplicationStatus.Failed)[0].JobId, "the same record");
+    }
+
+    static void ApplicationsConsistencyLogoUrl() {
+        var fromField = new JobTask {
+            CompanyUrl = "https://www.ford.com/cars",
+            Jd = "Its website is https://www.gm.com."
+        };
+        Equal("https://www.ford.com/cars", fromField.LogoUrl, "the stored company URL");
+
+        var fromJob = new JobTask {
+            CompanyUrl = "",
+            Jd = "Headquartered in Detroit. Its website is https://www.gm.com."
+        };
+        Equal("https://www.gm.com", fromJob.LogoUrl, "the website stated in the job");
+        Equal("https://www.gm.com", fromJob.LogoUrl, "resolved once");
+
+        var noise = new JobTask { CompanyUrl = " ", Jd = "Apply at https://boards.greenhouse.io/acme/jobs/1" };
+        Check(noise.LogoUrl is null, "a random link is not a company logo");
+        Equal("ford.com", IconCache.CompanyDomain(fromField.LogoUrl), "www is not part of the cache key");
+        Equal("gm.com", IconCache.CompanyDomain(fromJob.LogoUrl), "cache key");
+    }
+
+    static void ApplicationsConsistencyPlatformList() {
+        var tasks = new List<JobTask> {
+            PlatformJob("GH", ApplicationPlatform.Greenhouse),
+            PlatformJob("WD", ApplicationPlatform.Workday),
+            PlatformJob("JR", ApplicationPlatform.Jobright),
+            PlatformJob("UN", ApplicationPlatform.Unknown),
+            PlatformJob("WD2", ApplicationPlatform.Workday)
+        };
+        Equal("Greenhouse,Workday", string.Join(",", JobTracker.PlatformsPresent(tasks)),
+              "only ATS values, Jobright omitted even when stored");
+        Equal("", string.Join(",", JobTracker.PlatformsPresent(new[] { tasks[2], tasks[3] })),
+              "a job-site value and Unknown produce no platform choice");
+        Equal("All platforms", JobTracker.PlatformFilterLabel(null), "All platforms is the empty selection");
+
+        const string posting = "https://jobright.ai/jobs/info/aaaaaaaaaaaaaaaaaaaaaaaa";
+        Equal(ApplicationPlatform.Unknown, ApplicationPlatformDetector.Resolve(null, posting),
+              "a Jobright posting is not an ATS");
+        Equal(ApplicationPlatform.Unknown, ApplicationPlatformDetector.Resolve(posting, null),
+              "jobright.ai is not an application platform");
+        Equal(ApplicationPlatform.Greenhouse,
+              ApplicationPlatformDetector.Resolve("https://boards.greenhouse.io/acme/jobs/1", posting),
+              "the application URL supplies the ATS");
+        Equal(ApplicationPlatform.Workday,
+              ApplicationPlatformDetector.Detect("https://www.workday.com/en-us/pages/job.html"),
+              "workday.com");
+
+        var site = new JobTask { Link = posting, Source = "jobright-browser" };
+        Equal("Jobright", site.JobSite, "job site comes from the posting");
+        Equal(ApplicationPlatform.Unknown, site.ApplicationPlatform, "platform stays empty");
     }
 
     // ---------- readiness filter ----------
@@ -3122,8 +3694,8 @@ static class Program {
         Equal(ApplicationStatus.Ready, job.ApplicationStatus, "and stores nothing");
 
         // Every existing status filter behaves exactly as before.
-        Equal(7, ApplicationStatus.Filter.Options.Length, "All + the group + five statuses");
-        Equal(6, ApplicationStatus.Filters.Length, "the pre-existing filter list is unchanged");
+        Equal(8, ApplicationStatus.Filter.Options.Length, "All + the group + six statuses");
+        Equal(7, ApplicationStatus.Filters.Length, "the status filter includes Failed");
         Equal(5, ApplicationStatus.Ordered.Length, "Ordered is unchanged");
         Equal(set.Count, JobTracker.GetTasksByStatus(set, ApplicationStatus.All).Count, "All");
         foreach (var status in ApplicationStatus.Ordered)
@@ -3235,6 +3807,55 @@ static class Program {
         Check(stale.ApplyUrl is null, "a link from stale page data is never attributed to this job");
     }
 
+    static string ApplySources(string? helperApply, string? helperOriginal, string? nextApply, string? nextOriginal,
+                                string? helperJobId = null, string? nextJobId = null) {
+        const string pageId = "6aac7fec95c707f49dff195f";
+        return ScriptResultWith(p => {
+            var helper = p["next"]!.AsObject();
+            helper["jobId"] = helperJobId ?? pageId;
+            helper["applyLink"] = helperApply is null ? null : JsonValue.Create(helperApply);
+            helper["originalUrl"] = helperOriginal is null ? null : JsonValue.Create(helperOriginal);
+            p["applyFallback"] = new JsonObject {
+                ["jobId"] = nextJobId ?? pageId,
+                ["applyLink"] = nextApply is null ? null : JsonValue.Create(nextApply),
+                ["originalUrl"] = nextOriginal is null ? null : JsonValue.Create(nextOriginal)
+            };
+        });
+    }
+
+    static void ExtractorApplyUrlFallsBackToNextData() {
+        const string jobright = "https://jobright.ai/jobs/info/6aac7fec95c707f49dff195f";
+        const string otherId = "aaaaaaaaaaaaaaaaaaaaaaaa";
+
+        var helperLink = JobrightPageExtractor.Parse(ApplySources(
+            "https://boards.greenhouse.io/acme/jobs/1", "https://jobs.lever.co/acme/9",
+            "https://jobs.ashbyhq.com/acme/1", null));
+        Equal("https://boards.greenhouse.io/acme/jobs/1", helperLink.ApplyUrl, "helper applyLink wins");
+        Equal("ClearlyRated", helperLink.Company, "job text stays on the helper");
+
+        Equal("https://jobs.lever.co/acme/9",
+              JobrightPageExtractor.Parse(ApplySources(jobright, "https://jobs.lever.co/acme/9",
+                  "https://boards.greenhouse.io/acme/jobs/2", null)).ApplyUrl,
+              "helper originalUrl when applyLink is not external");
+
+        var fromNext = JobrightPageExtractor.Parse(ApplySources(jobright, "", "https://jobs.ashbyhq.com/acme/3", null));
+        Equal("https://jobs.ashbyhq.com/acme/3", fromNext.ApplyUrl, "__NEXT_DATA__ applyLink when the helper has none");
+        Equal("ClearlyRated", fromNext.Company, "helper text is kept");
+
+        Equal("https://apply.workable.com/acme/j/1",
+              JobrightPageExtractor.Parse(ApplySources(null, jobright, jobright, "https://apply.workable.com/acme/j/1")).ApplyUrl,
+              "__NEXT_DATA__ originalUrl when neither applyLink is external");
+
+        Check(JobrightPageExtractor.Parse(ApplySources(jobright, jobright, jobright, jobright)).ApplyUrl is null,
+              "jobright.ai from both sources is not an ApplyUrl");
+
+        Check(JobrightPageExtractor.Parse(ApplySources("", "", "https://jobs.lever.co/acme/4", null, nextJobId: otherId)).ApplyUrl is null,
+              "a stale __NEXT_DATA__ job id is not used");
+        var staleHelper = JobrightPageExtractor.Parse(ApplySources(
+            "https://jobs.lever.co/someone-else/1", null, null, null, helperJobId: otherId));
+        Check(staleHelper.ApplyUrl is null, "a stale helper job id is not used");
+    }
+
     static void ExtractorApplyLinkMissingOrInvalid() {
         Check(JobrightPageExtractor.Parse(ScriptResult()).ApplyUrl is null, "signed-out shape: no link fields at all");
         Check(JobrightPageExtractor.Parse(ScriptResult("jobright-page-payload-no-jsonld.json")).ApplyUrl is null, "no link fields, no JSON-LD");
@@ -3256,31 +3877,31 @@ static class Program {
         var before = DateTime.Now;
         var outcome = JobImporter.ImportOne(ImportData("https://jobright.ai/jobs/info/6aada17fde327d3e210d3913",
                                                        "https://app.dover.com/apply/Cogniify/1e3fc78f?utm_source=jr"),
-                                            JobImporter.BrowserSource, tasks);
+                                            JobImporter.BrowserSource, tasks, NoFilters);
         Equal(JobImportKind.Imported, outcome.Kind, "imported");
         Check(outcome.ApplyUrlRecorded, "the outcome says a link was recorded");
         var task = tasks.Single();
         Equal("https://app.dover.com/apply/Cogniify/1e3fc78f", task.ApplyUrl, "saved, normalized (tracking dropped)");
         Check(task.ApplyUrlCapturedAt is DateTime at && at >= before, "capture time stamped");
-        Equal(ApplicationPlatform.Other, task.ApplicationPlatform, "Dover is detected as Other");
+        Equal(ApplicationPlatform.Unknown, task.ApplicationPlatform, "an unrecognised host is not an ATS");
         Equal("https://jobright.ai/jobs/info/6aada17fde327d3e210d3913", task.Link, "Link keeps the Jobright posting");
 
         // Recognised platforms are detected at import too.
         var gh = JobImporter.ImportOne(ImportData("https://jobright.ai/jobs/info/6aac7fec95c707f49dff195f",
-                                                  "https://boards.greenhouse.io/acme/jobs/7"), JobImporter.BrowserSource, tasks);
+                                                  "https://boards.greenhouse.io/acme/jobs/7"), JobImporter.BrowserSource, tasks, NoFilters);
         Equal(ApplicationPlatform.Greenhouse, tasks.Single(t => t.JobId == gh.JobId).ApplicationPlatform, "Greenhouse detected at import");
 
         // And it is all in the saved file.
         var saved = Storage.LoadTasks().Single(t => t.JobId == outcome.JobId);
         Equal(task.ApplyUrl, saved.ApplyUrl, "ApplyUrl saved");
-        Equal(ApplicationPlatform.Other, saved.ApplicationPlatform, "platform saved");
+        Equal(ApplicationPlatform.Unknown, saved.ApplicationPlatform, "platform saved");
         Check(saved.ApplyUrlCapturedAt is not null, "time saved");
     });
 
     static void ImportWithoutApplyUrl() => WithLiveTasksFile(() => {
         var tasks = new List<JobTask>();
         foreach (var (i, link) in new[] { null, "", "javascript:alert(1)", "https://jobright.ai/jobs/info/abc", "not a url" }.Select((l, i) => (i, l))) {
-            var outcome = JobImporter.ImportOne(ImportData($"https://example.com/job/{i}", link), JobImporter.IncomingSource, tasks);
+            var outcome = JobImporter.ImportOne(ImportData($"https://example.com/job/{i}", link), JobImporter.IncomingSource, tasks, NoFilters);
             Equal(JobImportKind.Imported, outcome.Kind, $"imported despite link '{link}'");
             Check(!outcome.ApplyUrlRecorded, "nothing recorded");
             var task = tasks.Last();
@@ -3293,7 +3914,7 @@ static class Program {
         var old = JsonSerializer.Deserialize<JobImportData>(
             """{ "company": "Acme", "title": "Engineer", "jobUrl": "https://example.com/job/old", "description": "x" }""")!;
         Check(old.ApplyUrl is null, "older input has no applyUrl");
-        Equal(JobImportKind.Imported, JobImporter.ImportOne(old, JobImporter.IncomingSource, tasks).Kind, "older input imports");
+        Equal(JobImportKind.Imported, JobImporter.ImportOne(old, JobImporter.IncomingSource, tasks, NoFilters).Kind, "older input imports");
     });
 
     static void ImportFillsOnlyEmptyApplyUrl() => WithLiveTasksFile(() => {
@@ -3306,7 +3927,7 @@ static class Program {
         existing.ApplyUrlCapturedAt = capturedAt;
         existing.ApplicationPlatform = ApplicationPlatform.Other;
         var tasks = new List<JobTask> { existing };
-        var outcome = JobImporter.ImportOne(ImportData(page, "https://boards.greenhouse.io/acme/jobs/7"), JobImporter.BrowserSource, tasks);
+        var outcome = JobImporter.ImportOne(ImportData(page, "https://boards.greenhouse.io/acme/jobs/7"), JobImporter.BrowserSource, tasks, NoFilters);
         Equal(JobImportKind.Duplicate, outcome.Kind, "still a duplicate");
         Check(!outcome.ApplyUrlRecorded, "nothing recorded");
         Equal("https://app.dover.com/apply/Cogniify/original", existing.ApplyUrl, "ApplyUrl not overwritten");
@@ -3318,7 +3939,7 @@ static class Program {
         var empty = Job("RB-FILL", "Acme", "Engineer", "https://jobright.ai/jobs/info/6aac7fec95c707f49dff195f");
         empty.ApplicationStatus = ApplicationStatus.Applied;
         tasks = new List<JobTask> { empty };
-        outcome = JobImporter.ImportOne(ImportData(empty.Link, "https://jobs.lever.co/acme/1"), JobImporter.BrowserSource, tasks);
+        outcome = JobImporter.ImportOne(ImportData(empty.Link, "https://jobs.lever.co/acme/1"), JobImporter.BrowserSource, tasks, NoFilters);
         Equal(JobImportKind.Duplicate, outcome.Kind, "duplicate");
         Check(outcome.ApplyUrlRecorded, "the empty link was filled");
         Equal("https://jobs.lever.co/acme/1", empty.ApplyUrl, "filled");
@@ -3329,12 +3950,140 @@ static class Program {
         // A duplicate with no usable link changes and saves nothing.
         File.Delete(Storage.TasksPath);
         var none = Job("RB-NONE", "Acme", "Engineer", "https://jobright.ai/jobs/info/bbbbbbbbbbbbbbbbbbbbbbbb");
-        JobImporter.ImportOne(ImportData(none.Link, "javascript:alert(1)"), JobImporter.BrowserSource, new List<JobTask> { none });
+        JobImporter.ImportOne(ImportData(none.Link, "javascript:alert(1)"), JobImporter.BrowserSource, new List<JobTask> { none }, NoFilters);
         Equal("", none.ApplyUrl, "still empty");
         Check(!File.Exists(Storage.TasksPath), "a duplicate with nothing new is not saved");
     });
 
     // ---------- application platform detection ----------
+
+    static void AtsPlatformsIconsAndFilter() {
+        (ApplicationPlatform Platform, string Url)[] mapped = {
+            (ApplicationPlatform.Greenhouse, "https://boards.greenhouse.io/acme/jobs/1"),
+            (ApplicationPlatform.Workday, "https://acme.wd1.myworkdayjobs.com/job/1"),
+            (ApplicationPlatform.Lever, "https://jobs.lever.co/acme/1"),
+            (ApplicationPlatform.Ashby, "https://jobs.ashbyhq.com/acme/1"),
+            (ApplicationPlatform.SmartRecruiters, "https://jobs.smartrecruiters.com/Acme/1"),
+            (ApplicationPlatform.ICims, "https://careers-acme.icims.com/jobs/1/job"),
+            (ApplicationPlatform.Taleo, "https://acme.taleo.net/careersection/job/1"),
+            (ApplicationPlatform.BambooHr, "https://acme.bamboohr.com/careers/1"),
+            (ApplicationPlatform.Jobvite, "https://jobs.jobvite.com/acme/job/1"),
+            (ApplicationPlatform.SuccessFactors, "https://acme.successfactors.com/career?job=1"),
+            (ApplicationPlatform.AdpRecruiting, "https://workforcenow.adp.com/mascsr/default/mdf/recruitment/1"),
+            (ApplicationPlatform.OracleRecruitingCloud, "https://fa-ex.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX/job/1"),
+            (ApplicationPlatform.UkgPro, "https://recruiting.ultipro.com/ACM/JobBoard/1"),
+            (ApplicationPlatform.JazzHr, "https://acme.applytojob.com/apply/1"),
+            (ApplicationPlatform.Recruitee, "https://acme.recruitee.com/o/1"),
+            (ApplicationPlatform.BreezyHr, "https://acme.breezy.hr/p/1"),
+            (ApplicationPlatform.Pinpoint, "https://app.pinpoint.com/acme/jobs/1"),
+            (ApplicationPlatform.Teamtailor, "https://acme.teamtailor.com/jobs/1"),
+            (ApplicationPlatform.Workable, "https://apply.workable.com/acme/j/1"),
+            (ApplicationPlatform.RipplingRecruiting, "https://ats.rippling.com/acme/jobs/1"),
+        };
+        Equal(20, mapped.Length, "twenty platforms");
+        foreach (var (platform, url) in mapped) {
+            Equal(platform, ApplicationPlatformDetector.Detect(url), url);
+            Check(ApplicationPlatformDetector.IsAts(platform), platform + " is an application platform");
+            Equal("platform:" + IconCache.PlatformKey(platform), IconCache.PlatformCacheKey(platform), platform + " cache key");
+        }
+        Equal(ApplicationPlatform.AdpRecruiting, ApplicationPlatformDetector.Detect("https://recruiting.adp.com/jobs/1"), "ADP recruiting host");
+        Equal(ApplicationPlatform.JazzHr, ApplicationPlatformDetector.Detect("https://acme.jazz.co/apply/1"), "JazzHR host");
+        Equal(ApplicationPlatform.UkgPro, ApplicationPlatformDetector.Detect("https://acme.rec.pro.ukg.net/ACM/jobboard"), "UKG recruiting host");
+        Equal(ApplicationPlatform.Workday, ApplicationPlatformDetector.Detect("https://acme.myworkdaysite.com/recruiting/job/1"), "Workday site");
+        Equal(ApplicationPlatform.Workday, ApplicationPlatformDetector.Detect("https://www.workday.com/en-us/jobs/1"), "workday.com");
+        Equal(ApplicationPlatform.Unknown, ApplicationPlatformDetector.Detect("https://www.adp.com/"), "ADP's marketing site is not recruiting");
+        Equal(ApplicationPlatform.Unknown, ApplicationPlatformDetector.Detect("https://analytics.oraclecloud.com/analytics/1"), "an Oracle Cloud site that is not recruiting");
+        Equal(ApplicationPlatform.Unknown, ApplicationPlatformDetector.Detect("https://app.rippling.com/dashboard"), "Rippling outside recruiting");
+        Equal(ApplicationPlatform.Unknown, ApplicationPlatformDetector.Detect("https://example.com/jobs/1"), "unknown host");
+        Check(!ApplicationPlatformDetector.IsAts(ApplicationPlatform.Jobright), "Jobright is not an application platform");
+        Check(!ApplicationPlatformDetector.IsAts(ApplicationPlatform.LinkedIn), "LinkedIn is not an application platform");
+        Check(!ApplicationPlatformDetector.IsAts(ApplicationPlatform.Indeed), "Indeed is not an application platform");
+        Check(!ApplicationPlatformDetector.IsAts(ApplicationPlatform.Dice), "Dice is not an application platform");
+        Check(!ApplicationPlatformDetector.IsAts(ApplicationPlatform.Wellfound), "Wellfound is not an application platform");
+        Equal(ApplicationPlatform.Unknown, ApplicationPlatformDetector.Resolve("https://jobright.ai/jobs/info/aaaaaaaaaaaaaaaaaaaaaaaa", null),
+              "a Jobright address is not stored as the platform");
+
+        UsingStore(() => {
+            var tasks = new List<JobTask>();
+            var data = ImportData("https://jobright.ai/jobs/info/aaaaaaaaaaaaaaaaaaaaaaaa", "https://boards.greenhouse.io/acme/jobs/9");
+            Equal(JobImportKind.Imported, JobImporter.ImportOne(data, JobImporter.BrowserSource, tasks, NoFilters).Kind, "imported");
+            var saved = JobStore.GetJobs().Single();
+            Equal(ApplicationPlatform.Greenhouse, saved.ApplicationPlatform, "import stores the platform");
+            Equal("Jobright", saved.JobSite, "import stores the job site separately");
+            Check(saved.ApplyUrl.Contains("greenhouse.io", StringComparison.Ordinal), "import stores the apply address");
+            Equal(JobImportKind.Duplicate, JobImporter.ImportOne(data, JobImporter.BrowserSource, tasks, NoFilters).Kind, "duplicate");
+            Equal(1, JobStore.GetJobs().Count, "one job row");
+            Equal(ApplicationPlatform.Greenhouse, JobStore.GetJobs().Single().ApplicationPlatform, "a duplicate keeps the platform");
+        });
+
+        var jobs = new[] {
+            PlatformJob("GH", ApplicationPlatform.Greenhouse),
+            PlatformJob("GH2", ApplicationPlatform.Greenhouse),
+            PlatformJob("JR", ApplicationPlatform.Jobright),
+            PlatformJob("LI", ApplicationPlatform.LinkedIn),
+            PlatformJob("UN", ApplicationPlatform.Unknown)
+        };
+        Equal("Greenhouse", string.Join(",", JobTracker.PlatformsPresent(jobs)), "the filter lists a real ATS once");
+        Check(JobTracker.PlatformsPresent(jobs).All(ApplicationPlatformDetector.IsAts), "the filter is only application platforms");
+
+        var row = new JobTask {
+            Link = "https://jobright.ai/jobs/info/aaaaaaaaaaaaaaaaaaaaaaaa",
+            Source = "jobright-browser",
+            ApplyUrl = "https://boards.greenhouse.io/acme/jobs/9",
+            ApplicationPlatform = ApplicationPlatform.Greenhouse
+        };
+        Equal("greenhouse,jobright", string.Join(",", IconCache.PlatformsFor(row).Select(IconCache.PlatformKey)),
+              "the platform icon and the job-site icon are separate");
+        Check(IconCache.PlatformCacheKey(ApplicationPlatform.Greenhouse) != IconCache.PlatformCacheKey(ApplicationPlatform.Jobright),
+              "the two cache keys differ");
+
+        var previousRoot = IconCache.RootOverride;
+        var previousSite = IconCache.SiteForTest;
+        var previousHandler = IconCache.HandlerForTest;
+        IconCache.RootOverride = NewDir("platform-icons");
+        IconCache.ResetPlatformDownloads();
+        try {
+            var platforms = Path.Combine(IconCache.Root, "Platforms");
+            Directory.CreateDirectory(platforms);
+            var cached = Path.Combine(platforms, "greenhouse.png");
+            File.WriteAllBytes(cached, new byte[] { 9, 8, 7 });
+            IconCache.FetchPlatformForTest(new JobTask { ApplicationPlatform = ApplicationPlatform.Greenhouse }).GetAwaiter().GetResult();
+            Equal(0, IconCache.PlatformDownloadCount, "a cached platform icon is not downloaded again");
+            Check(File.ReadAllBytes(cached).AsSpan().SequenceEqual(new byte[] { 9, 8, 7 }), "an existing icon is not overwritten");
+
+            IconCache.HandlerForTest = new PlatformIconHandler();
+            IconCache.SiteForTest = _ => "http://icons.test/";
+            IconCache.FetchPlatformForTest(new JobTask { ApplicationPlatform = ApplicationPlatform.Taleo }).GetAwaiter().GetResult();
+            var savedIcon = Directory.GetFiles(platforms, "platform-taleo.*");
+            Equal(1, savedIcon.Length, "the missing platform icon was saved");
+            Equal(1, IconCache.PlatformDownloadCount, "the missing icon was downloaded once");
+            var bytes = File.ReadAllBytes(savedIcon[0]);
+            IconCache.FetchPlatformForTest(new JobTask { ApplicationPlatform = ApplicationPlatform.Taleo }).GetAwaiter().GetResult();
+            Equal(1, IconCache.PlatformDownloadCount, "the saved icon is reused");
+            Check(File.ReadAllBytes(savedIcon[0]).AsSpan().SequenceEqual(bytes), "the saved icon was not rewritten");
+        } finally {
+            IconCache.RootOverride = previousRoot;
+            IconCache.SiteForTest = previousSite;
+            IconCache.HandlerForTest = previousHandler;
+        }
+    }
+
+    sealed class PlatformIconHandler : System.Net.Http.HttpMessageHandler {
+        static readonly byte[] Png = Convert.FromBase64String(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, CancellationToken cancellationToken) {
+            var path = request.RequestUri?.AbsolutePath ?? "/";
+            if (path.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) {
+                var image = new System.Net.Http.ByteArrayContent(Png);
+                image.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
+                return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = image });
+            }
+            var html = new System.Net.Http.StringContent("<html><head><link rel=\"icon\" href=\"/logo.png\"></head></html>");
+            html.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/html");
+            return Task.FromResult(new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = html });
+        }
+    }
 
     static void PlatformIs(ApplicationPlatform expected, string? url) =>
         Equal(expected, ApplicationPlatformDetector.Detect(url), url ?? "null");
@@ -3346,6 +4095,7 @@ static class Program {
         PlatformIs(ApplicationPlatform.Workday, "https://company.wd5.myworkdayjobs.com/job/12345");
         PlatformIs(ApplicationPlatform.Workday, "https://COMPANY.WD1.MYWORKDAYJOBS.COM/en-US/External/job/X_R1");
         PlatformIs(ApplicationPlatform.Workday, "https://wd3.myworkdaysite.com/recruiting/company/External/job/1");
+        PlatformIs(ApplicationPlatform.Workday, "https://company.wd1.workday.com/job/1");
         PlatformIs(ApplicationPlatform.Lever, "https://jobs.lever.co/company/12345");
         PlatformIs(ApplicationPlatform.Lever, "https://jobs.eu.lever.co/company/12345/apply");
         PlatformIs(ApplicationPlatform.LinkedIn, "https://www.linkedin.com/jobs/view/12345");
@@ -3356,12 +4106,12 @@ static class Program {
     }
 
     static void PlatformLookAlikes() {
-        PlatformIs(ApplicationPlatform.Other, "https://notgreenhouse.io/company/jobs/1");
-        PlatformIs(ApplicationPlatform.Other, "https://greenhouse.io.evil.com/company/jobs/1");
-        PlatformIs(ApplicationPlatform.Other, "https://mylever.co/jobs/1");
-        PlatformIs(ApplicationPlatform.Other, "https://fakemyworkdayjobs.com/job/1");
-        PlatformIs(ApplicationPlatform.Other, "https://example.com/boards.greenhouse.io/jobs/1");
-        PlatformIs(ApplicationPlatform.Other, "https://example.com/apply?next=https://jobs.lever.co/x/1");
+        PlatformIs(ApplicationPlatform.Unknown, "https://notgreenhouse.io/company/jobs/1");
+        PlatformIs(ApplicationPlatform.Unknown, "https://greenhouse.io.evil.com/company/jobs/1");
+        PlatformIs(ApplicationPlatform.Unknown, "https://mylever.co/jobs/1");
+        PlatformIs(ApplicationPlatform.Unknown, "https://fakemyworkdayjobs.com/job/1");
+        PlatformIs(ApplicationPlatform.Unknown, "https://example.com/boards.greenhouse.io/jobs/1");
+        PlatformIs(ApplicationPlatform.Unknown, "https://example.com/apply?next=https://jobs.lever.co/x/1");
         // LinkedIn counts only for its job postings.
         PlatformIs(ApplicationPlatform.Other, "https://www.linkedin.com/company/1028");
         PlatformIs(ApplicationPlatform.Other, "https://www.linkedin.com/in/someone/");
@@ -3372,15 +4122,15 @@ static class Program {
         PlatformIs(ApplicationPlatform.Greenhouse, "https://www.example.com/open-roles/?utm_source=x&GH_JID=7");
         PlatformIs(ApplicationPlatform.Ashby, "https://example.com/careers?ashby_jid=5b1c-22");
         // A parameter that only contains the name is not the embed id.
-        PlatformIs(ApplicationPlatform.Other, "https://example.com/careers?not_gh_jid=1");
-        PlatformIs(ApplicationPlatform.Other, "https://example.com/careers#gh_jid=1");
+        PlatformIs(ApplicationPlatform.Unknown, "https://example.com/careers?not_gh_jid=1");
+        PlatformIs(ApplicationPlatform.Unknown, "https://example.com/careers#gh_jid=1");
     }
 
     static void PlatformMissingOrUnknown() {
         foreach (var missing in new[] { null, "", "   ", "not a url", "/jobs/1", "about:blank", "mailto:jobs@x.com", "ftp://jobs.lever.co/x" })
             PlatformIs(ApplicationPlatform.Unknown, missing);
-        PlatformIs(ApplicationPlatform.Other, "https://careers.oracle.com/jobs/12345");
-        PlatformIs(ApplicationPlatform.Other, "https://example.com/");
+        PlatformIs(ApplicationPlatform.Unknown, "https://careers.oracle.com/jobs/12345");
+        PlatformIs(ApplicationPlatform.Unknown, "https://example.com/");
         Equal(ApplicationPlatform.Unknown, new JobTask().ApplicationPlatform, "a new task starts Unknown");
     }
 
@@ -3390,7 +4140,7 @@ static class Program {
         [
           { "JobId": "P-1", "ApplicationPlatform": "Greenhouse" },
           { "JobId": "P-2", "ApplicationPlatform": "greenhouse" },
-          { "JobId": "P-3", "ApplicationPlatform": "Taleo" },
+          { "JobId": "P-3", "ApplicationPlatform": "NotARealPlatform" },
           { "JobId": "P-4", "ApplicationPlatform": null },
           { "JobId": "P-5", "ApplicationPlatform": 999 },
           { "JobId": "P-6", "ApplicationPlatform": 2 },
@@ -3401,7 +4151,12 @@ static class Program {
         ]
         """);
 
-        var tasks = Storage.LoadTasks();
+        var path = Path.Combine(NewDir("platform-json"), "tasks.json");
+        File.WriteAllText(path, File.ReadAllText(Storage.TasksPath));
+        var before = File.ReadAllBytes(Storage.TasksPath);
+        var tasks = Storage.LoadTasksFrom(path);
+        Check(Storage.LoadTasks().All(task => task.JobId != "P-1"), "the app does not read tasks.json");
+        Check(before.AsSpan().SequenceEqual(File.ReadAllBytes(Storage.TasksPath)), "tasks.json is left untouched");
         Equal(10, tasks.Count, "no task is lost to an unreadable platform");
         Equal(ApplicationPlatform.Greenhouse, tasks[0].ApplicationPlatform, "a known name");
         Equal(ApplicationPlatform.Greenhouse, tasks[1].ApplicationPlatform, "case does not matter");
@@ -3422,21 +4177,19 @@ static class Program {
         captured.ApplicationPlatform = ApplicationPlatform.Lever;
         Storage.SaveTasks(new[] { captured, Job("RB-PLAT-2") });
 
-        var text = File.ReadAllText(Storage.TasksPath);
-        Check(text.Contains("\"ApplicationPlatform\": \"Lever\""), "stored as the name, not a number");
-
-        var reloaded = Storage.LoadTasks();
+        var reloaded = Storage.LoadTasks().OrderBy(task => task.JobId, StringComparer.Ordinal).ToList();
         Equal(ApplicationPlatform.Lever, reloaded[0].ApplicationPlatform, "platform survived");
         Equal("https://jobs.lever.co/oracle/1", reloaded[0].ApplyUrl, "ApplyUrl survived");
         Equal(ApplicationPlatform.Unknown, reloaded[1].ApplicationPlatform, "an uncaptured task stays Unknown");
 
         // The shape tasks.json had before the platform existed.
-        File.WriteAllText(Storage.TasksPath, $$"""
+        var olderPath = Path.Combine(NewDir("platform-older-json"), "tasks.json");
+        File.WriteAllText(olderPath, $$"""
         [ { "JobId": "RB-OLD-P", "Link": "{{ApplyJobPage}}", "ApplyUrl": "https://boards.greenhouse.io/o/jobs/1",
             "ApplyUrlCapturedAt": "2026-09-18T14:00:00", "Status": "Completed" },
           { "JobId": "RB-OLD-Q", "Status": "Queued" } ]
         """);
-        var older = Storage.LoadTasks();
+        var older = Storage.LoadTasksFrom(olderPath);
         Equal(2, older.Count, "older tasks load");
         Equal(ApplicationPlatform.Unknown, older[0].ApplicationPlatform, "no stored platform reads as Unknown");
         Equal("https://boards.greenhouse.io/o/jobs/1", older[0].ApplyUrl, "its ApplyUrl is kept");
@@ -3452,11 +4205,11 @@ static class Program {
         Equal(ApplicationPlatform.Ashby, job.ApplicationPlatform, "capture detects the platform");
 
         ApplyCapture.Record(tasks, ApplyJobPage, "https://careers.oracle.com/jobs/2", now);
-        Equal(ApplicationPlatform.Other, job.ApplicationPlatform, "a replaced address re-detects");
+        Equal(ApplicationPlatform.Unknown, job.ApplicationPlatform, "a replaced address re-detects");
 
         // An unknown job and a refused address leave the platform alone.
         ApplyCapture.Record(tasks, ApplyJobPage, "https://www.linkedin.com/in/someone/", now);
-        Equal(ApplicationPlatform.Other, job.ApplicationPlatform, "a refused address changes nothing");
+        Equal(ApplicationPlatform.Unknown, job.ApplicationPlatform, "a refused address changes nothing");
 
         // Startup refresh: a task loaded with an ApplyUrl but no platform gets one; the rest are untouched.
         var loaded = Job("RB-DER-2"); loaded.ApplyUrl = "https://boards.greenhouse.io/x/jobs/1";
@@ -3469,6 +4222,116 @@ static class Program {
         Equal(ApplicationPlatform.Lever, stale.ApplicationPlatform, "corrected from its ApplyUrl");
         Equal(ApplicationPlatform.Unknown, none.ApplicationPlatform, "no ApplyUrl stays Unknown");
         Equal(0, ApplicationPlatformDetector.Refresh(set), "a second refresh changes nothing (no needless save)");
+    }
+
+    static void PlatformFingerprints() {
+        Equal(50, ApplicationPlatformDetector.SupportedCount, "fifty recruiting platforms");
+        (ApplicationPlatform Platform, string Url)[] each = {
+            (ApplicationPlatform.Greenhouse, "https://boards.greenhouse.io/acme/jobs/1"),
+            (ApplicationPlatform.Workday, "https://acme.wd1.myworkdayjobs.com/job/1"),
+            (ApplicationPlatform.Lever, "https://jobs.lever.co/acme/1"),
+            (ApplicationPlatform.Ashby, "https://jobs.ashbyhq.com/acme/1"),
+            (ApplicationPlatform.SmartRecruiters, "https://jobs.smartrecruiters.com/Acme/1"),
+            (ApplicationPlatform.ICims, "https://careers-acme.icims.com/jobs/1/job"),
+            (ApplicationPlatform.Taleo, "https://cognizant.taleo.net/careersection/job/1"),
+            (ApplicationPlatform.BambooHr, "https://acme.bamboohr.com/careers/1"),
+            (ApplicationPlatform.Jobvite, "https://jobs.jobvite.com/acme/job/1"),
+            (ApplicationPlatform.SuccessFactors, "https://acme.successfactors.com/career?job=1"),
+            (ApplicationPlatform.AdpRecruiting, "https://recruiting.adp.com/jobs/1"),
+            (ApplicationPlatform.OracleRecruitingCloud, "https://careersearch.stanford.edu/hcmUI/CandidateExperience/en/sites/CX/job/1"),
+            (ApplicationPlatform.UkgPro, "https://recruiting.ultipro.com/ACM/JobBoard/1"),
+            (ApplicationPlatform.JazzHr, "https://acme.jazz.co/apply/1"),
+            (ApplicationPlatform.Recruitee, "https://acme.recruitee.com/o/1"),
+            (ApplicationPlatform.BreezyHr, "https://acme.breezy.hr/p/1"),
+            (ApplicationPlatform.Pinpoint, "https://app.pinpoint.com/acme/jobs/1"),
+            (ApplicationPlatform.Teamtailor, "https://acme.teamtailor.com/jobs/1"),
+            (ApplicationPlatform.Workable, "https://apply.workable.com/acme/j/1"),
+            (ApplicationPlatform.RipplingRecruiting, "https://ats.rippling.com/acme/jobs/1"),
+            (ApplicationPlatform.DayforceRecruiting, "https://acme.dayforcehcm.com/CandidatePortal/en-US/acme"),
+            (ApplicationPlatform.CornerstoneRecruiting, "https://acme.csod.com/ux/ats/careersite/1/home"),
+            (ApplicationPlatform.Avature, "https://acme.avature.net/careers/JobDetail/1"),
+            (ApplicationPlatform.Phenom, "https://jobs.phenompeople.com/acme/1"),
+            (ApplicationPlatform.Eightfold, "https://acme.eightfold.ai/careers/job/1"),
+            (ApplicationPlatform.Beamery, "https://app.beamery.com/acme/jobs/1"),
+            (ApplicationPlatform.Bullhorn, "https://acme.bullhornstaffing.com/JobBoard/1"),
+            (ApplicationPlatform.JobAdder, "https://acme.jobadder.com/job/1"),
+            (ApplicationPlatform.ZohoRecruit, "https://recruit.zoho.com/recruit/PortalDetail.na?job=1"),
+            (ApplicationPlatform.Cats, "https://acme.catsone.com/careers/1"),
+            (ApplicationPlatform.ApplicantStack, "https://acme.applicantstack.com/x/openings/1"),
+            (ApplicationPlatform.ClearCompany, "https://acme.clearcompany.com/careers/jobs/1"),
+            (ApplicationPlatform.PaylocityRecruiting, "https://recruiting.paylocity.com/Recruiting/Jobs/Details/1"),
+            (ApplicationPlatform.PaycomRecruiting, "https://www.paycomonline.net/v4/ats/web.php/jobs/1"),
+            (ApplicationPlatform.PaycorRecruiting, "https://recruiting.paycor.com/job/1"),
+            (ApplicationPlatform.IsolvedTalent, "https://acme.isolvedhire.com/jobs/1"),
+            (ApplicationPlatform.Fountain, "https://web.fountain.com/apply/acme/opening/1"),
+            (ApplicationPlatform.Paradox, "https://olivia.paradox.ai/co/acme/Job/1"),
+            (ApplicationPlatform.Comeet, "https://www.comeet.com/jobs/acme/1"),
+            (ApplicationPlatform.Manatal, "https://www.careers-page.com/acme/job/1"),
+            (ApplicationPlatform.RecruitCrm, "https://app.recruitcrm.io/apply/1"),
+            (ApplicationPlatform.Recruiterflow, "https://recruiterflow.com/acme/jobs/1"),
+            (ApplicationPlatform.JobScore, "https://careers.jobscore.com/careers/acme/jobs/1"),
+            (ApplicationPlatform.Homerun, "https://acme.homerun.hr/job/1"),
+            (ApplicationPlatform.PersonioRecruiting, "https://acme.jobs.personio.de/job/1"),
+            (ApplicationPlatform.TeamEngine, "https://app.teamengine.io/apply/1"),
+            (ApplicationPlatform.TrakstarHire, "https://acme.recruiterbox.com/jobs/1"),
+            (ApplicationPlatform.Neogov, "https://www.neogov.com/careers/job/1"),
+            (ApplicationPlatform.GovernmentJobs, "https://www.governmentjobs.com/careers/acme/jobs/1"),
+            (ApplicationPlatform.SymplrRecruiting, "https://careers.symplr.com/acme/jobs/1"),
+        };
+        Equal(50, each.Length, "one address per platform");
+        var seen = new HashSet<ApplicationPlatform>();
+        foreach (var (platform, url) in each) {
+            var result = ApplicationPlatformDetector.Inspect(url);
+            Equal(platform, result.Platform, url);
+            Equal(PlatformConfidence.High, result.Confidence, platform + " confidence");
+            Check(ApplicationPlatformDetector.IsAts(platform), platform + " is an ATS");
+            Check(seen.Add(platform), platform + " once");
+            Equal("platform:" + IconCache.PlatformKey(platform), IconCache.PlatformCacheKey(platform), platform + " cache key");
+        }
+
+        var oracle = ApplicationPlatformDetector.Inspect(
+            "https://careersearch.stanford.edu/hcmUI/CandidateExperience/en/sites/CX/job/1");
+        Equal(ApplicationPlatform.OracleRecruitingCloud, oracle.Platform, "custom domain path");
+        Equal(PlatformConfidence.High, oracle.Confidence, "path confidence");
+        Equal("path:/hcmUI/CandidateExperience/", oracle.Evidence, "path evidence");
+
+        var beaten = ApplicationPlatformDetector.Inspect(
+            "https://acme.wd1.myworkdayjobs.com/hcmUI/CandidateExperience/job/1");
+        Equal(ApplicationPlatform.OracleRecruitingCloud, beaten.Platform, "path beats the Workday host");
+        Check(beaten.Evidence.StartsWith("path:", StringComparison.Ordinal), "path evidence wins");
+
+        Equal(ApplicationPlatform.Unknown, ApplicationPlatformDetector.Detect("https://careers.cognizant.com/global/en/search-results"),
+              "a company careers page stays Unknown");
+        Equal(ApplicationPlatform.Taleo, ApplicationPlatformDetector.Detect("https://cognizant.taleo.net/job/1"),
+              "Taleo host");
+        Equal(ApplicationPlatform.Workable, ApplicationPlatformDetector.Detect("https://apply.workable.com/acme/j/1"), "Workable");
+        Equal(ApplicationPlatform.Teamtailor, ApplicationPlatformDetector.Detect("https://career.teamtailor.com/jobs/1"), "Teamtailor");
+        Equal(ApplicationPlatform.RipplingRecruiting, ApplicationPlatformDetector.Detect("https://ats.rippling.com/acme/jobs/9"),
+              "Rippling recruiting path");
+        Equal(ApplicationPlatform.Unknown, ApplicationPlatformDetector.Detect("https://app.rippling.com/dashboard"),
+              "Rippling outside recruiting");
+        Equal(ApplicationPlatform.Unknown, ApplicationPlatformDetector.Detect("https://example.com/jobs/1"), "unknown stays Unknown");
+
+        var page = ApplicationPlatformDetector.InspectPage("https://careers.example.edu/search", new PlatformPageSignals {
+            Scripts = ["https://static.oracle.com/hcmUI/CandidateExperience/main.js"]
+        });
+        Equal(ApplicationPlatform.OracleRecruitingCloud, page.Platform, "page fingerprint");
+        Equal(PlatformConfidence.Medium, page.Confidence, "page confidence");
+        Check(page.Evidence.StartsWith("page:", StringComparison.Ordinal), "page evidence");
+        var already = ApplicationPlatformDetector.InspectPage("https://jobs.lever.co/acme/1", new PlatformPageSignals {
+            Scripts = ["https://boards.greenhouse.io/embed.js"]
+        });
+        Equal(ApplicationPlatform.Lever, already.Platform, "a known URL is not overridden by the page");
+
+        var kept = Job("RB-KEEP", "Cognizant", "Engineer", "https://jobright.ai/jobs/info/aaaaaaaaaaaaaaaaaaaaaaaa");
+        kept.ApplyUrl = "https://careers.cognizant.com/global/en/search-results";
+        kept.ApplicationPlatform = ApplicationPlatform.Greenhouse;
+        Equal(0, ApplicationPlatformDetector.Refresh(new[] { kept }), "Unknown does not replace a stored ATS");
+        Equal(ApplicationPlatform.Greenhouse, kept.ApplicationPlatform, "Greenhouse kept");
+        Check(!ApplicationPlatformDetector.ShouldUpdate(ApplicationPlatform.Greenhouse, page),
+              "a page guess does not downgrade a stored ATS");
+        Check(ApplicationPlatformDetector.ShouldUpdate(ApplicationPlatform.Unknown, page),
+              "a page guess can fill an empty platform");
     }
 
     // ---------- critical pipeline (isolated component chain) ----------
@@ -3487,7 +4350,7 @@ static class Program {
             JobUrl = jobUrl,
             CompanyUrl = "https://example.com/",
             Description = "Validate the Resume Builder end-to-end document path."
-        }, JobImporter.BrowserSource, tasks);
+        }, JobImporter.BrowserSource, tasks, NoFilters);
 
         Equal(JobImportKind.Imported, outcome.Kind, "import succeeded");
         var job = tasks.Single();
@@ -3761,6 +4624,68 @@ static class Program {
         queue.Stop();
     }
 
+    static void QueueAndStackOrder() {
+        var older = new JobTask { JobId = "RB-OLD", Company = "A", Title = "T", Status = "Queued", CreatedAt = new DateTime(2026, 9, 1, 8, 0, 0) };
+        var newer = new JobTask { JobId = "RB-NEW", Company = "B", Title = "T", Status = "Queued", CreatedAt = new DateTime(2026, 9, 2, 8, 0, 0) };
+        var sameTime = new JobTask { JobId = "RB-AAA", Company = "C", Title = "T", Status = "Queued", CreatedAt = newer.CreatedAt };
+        var running = new JobTask { JobId = "RB-RUN", Company = "D", Title = "T", Status = "Processing", CreatedAt = new DateTime(2026, 9, 3, 8, 0, 0) };
+        var failed = new JobTask { JobId = "RB-FAIL", Company = "E", Title = "T", Status = "Failed", CreatedAt = new DateTime(2026, 8, 1, 8, 0, 0) };
+        var done = new JobTask { JobId = "RB-DONE", Company = "F", Title = "T", Status = "Completed", CreatedAt = new DateTime(2026, 8, 2, 8, 0, 0) };
+        var stamp = older.CreatedAt;
+        var list = new List<JobTask> { newer, failed, older, running, done, sameTime };
+        string Ids(IEnumerable<JobTask> jobs) => string.Join(",", jobs.Select(job => job.JobId));
+
+        var fifo = JobQueueOrder.Arrange(list, QueueModes.Queue);
+        Equal("RB-RUN,RB-OLD,RB-AAA,RB-NEW,RB-FAIL,RB-DONE", Ids(fifo), "queue runs the oldest waiting job first");
+        var lifo = JobQueueOrder.Arrange(list, QueueModes.Stack);
+        Equal("RB-RUN,RB-AAA,RB-NEW,RB-OLD,RB-FAIL,RB-DONE", Ids(lifo), "stack runs the newest waiting job first");
+        Equal("Processing", running.Status, "the processing job stays processing");
+        Equal("Failed", failed.Status, "a failed job is not requeued");
+        Equal("Completed", done.Status, "a completed job is not requeued");
+        Equal(stamp, older.CreatedAt, "timestamps are not rewritten");
+        Equal(ApplicationStatus.Viewed, older.ApplicationStatus, "application status is untouched");
+
+        var imported = new JobTask { JobId = "RB-IMP", Company = "G", Title = "T", Status = "Queued", CreatedAt = new DateTime(2026, 9, 4, 8, 0, 0) };
+        Equal("RB-RUN,RB-OLD,RB-AAA,RB-NEW,RB-IMP,RB-FAIL,RB-DONE",
+              Ids(JobQueueOrder.Arrange(fifo.Append(imported).ToList(), QueueModes.Queue)),
+              "a new job goes to the bottom of the queue");
+        Equal("RB-RUN,RB-IMP,RB-AAA,RB-NEW,RB-OLD,RB-FAIL,RB-DONE",
+              Ids(JobQueueOrder.Arrange(lifo.Append(imported).ToList(), QueueModes.Stack)),
+              "a new job goes to the top of the stack");
+
+        var first = new JobTask { JobId = "RB-A", Company = "A", Title = "T", Status = "Queued", CreatedAt = new DateTime(2026, 9, 1) };
+        var second = new JobTask { JobId = "RB-B", Company = "B", Title = "T", Status = "Queued", CreatedAt = new DateTime(2026, 9, 2) };
+        var third = new JobTask { JobId = "RB-C", Company = "C", Title = "T", Status = "Queued", CreatedAt = new DateTime(2026, 9, 3) };
+        var runner = new QueueRunner();
+        runner.Start(JobQueueOrder.Arrange(new[] { third, first, second }, QueueModes.Queue));
+        var active = runner.Next();
+        Equal("RB-A", active!.JobId, "the run starts with the oldest");
+        active.Status = "Processing";
+        runner.ReorderRemaining(JobQueueOrder.Arrange(new[] { active, second, third }, QueueModes.Stack));
+        Equal("RB-A", runner.ActiveJobId, "changing mode leaves the active job active");
+        Equal("Processing", active.Status, "changing mode does not requeue it");
+        active.Status = "Completed";
+        Equal("RB-C", runner.Next()!.JobId, "the rest of the run follows stack order");
+        runner.Stop();
+
+        UsingStore(() => {
+            var savedOlder = new JobTask { JobId = "RB-A", Company = "A", Title = "T", Status = "Queued", CreatedAt = new DateTime(2026, 9, 1, 9, 0, 0) };
+            var savedNewer = new JobTask { JobId = "RB-B", Company = "B", Title = "T", Status = "Queued", CreatedAt = new DateTime(2026, 9, 2, 9, 0, 0) };
+            Storage.SaveTasks(new[] { savedNewer, savedOlder });
+            var loaded = Storage.LoadTasks();
+            Equal("RB-B,RB-A", Ids(JobQueueOrder.Arrange(loaded, QueueModes.Stack)), "restart keeps stack order");
+            Equal("RB-A,RB-B", Ids(JobQueueOrder.Arrange(loaded, QueueModes.Queue)), "restart keeps queue order");
+            Equal("Queued", loaded.Single(job => job.JobId == "RB-A").Status, "saved queue status");
+            Equal(savedOlder.CreatedAt, loaded.Single(job => job.JobId == "RB-A").CreatedAt, "saved import time");
+        });
+
+        var path = Path.Combine(NewDir("queue-mode"), "settings.json");
+        Storage.SaveSettingsTo(path, new AppSettings { QueueOrder = "stack" });
+        Equal(QueueModes.Stack, QueueModes.Normalize(Storage.LoadSettingsFrom(path).QueueOrder), "the selected mode is saved");
+        Equal(QueueModes.Queue, QueueModes.Normalize(new AppSettings().QueueOrder), "a missing mode is Queue");
+        Equal(QueueModes.Queue, QueueModes.Normalize("lifo"), "an unknown mode is Queue");
+    }
+
     static void QueueNextSkipsFailed() {
         var a = new JobTask { JobId = "RB-F-1", Company = "A", Title = "T", Status = "Queued" };
         var queue = new QueueRunner();
@@ -3890,19 +4815,11 @@ static class Program {
     };
 
     /// <summary>Runs a body with the live tasks.json backed up and put back afterwards.</summary>
-    static void WithTasksFileRestored(Action body) {
-        var live = Storage.TasksPath;
-        var backup = File.Exists(live) ? File.ReadAllBytes(live) : null;
-        try { body(); }
-        finally {
-            if (backup is byte[] content) File.WriteAllBytes(live, content);
-            else if (File.Exists(live)) File.Delete(live);
-        }
-    }
+    static void WithTasksFileRestored(Action body) => WithLiveStateFile(Storage.TasksPath, body);
 
     static void ImportOneCreatesOneViewedTask() => WithTasksFileRestored(() => {
         var tasks = new List<JobTask> { Job("OLD-TASK-1") };
-        var outcome = JobImporter.ImportOne(CanonicalJob(), JobImporter.BrowserSource, tasks);
+        var outcome = JobImporter.ImportOne(CanonicalJob(), JobImporter.BrowserSource, tasks, NoFilters);
 
         Equal(JobImportKind.Imported, outcome.Kind, "imported");
         Equal(2, tasks.Count, "exactly one task added");
@@ -3924,8 +4841,8 @@ static class Program {
 
     static void InternalJobIdIsGenerated() => WithTasksFileRestored(() => {
         var tasks = new List<JobTask>();
-        JobImporter.ImportOne(CanonicalJob("https://example.com/jobs/1"), JobImporter.IncomingSource, tasks);
-        JobImporter.ImportOne(CanonicalJob("https://example.com/jobs/2"), JobImporter.IncomingSource, tasks);
+        JobImporter.ImportOne(CanonicalJob("https://example.com/jobs/1"), JobImporter.IncomingSource, tasks, NoFilters);
+        JobImporter.ImportOne(CanonicalJob("https://example.com/jobs/2"), JobImporter.IncomingSource, tasks, NoFilters);
 
         foreach (var task in tasks)
             Check(System.Text.RegularExpressions.Regex.IsMatch(task.JobId, @"^RB-\d{8}-\d{6}-[0-9a-f]{8}$"),
@@ -3940,7 +4857,7 @@ static class Program {
 
     static void InternalIdAndCompanyUrlPersist() => WithTasksFileRestored(() => {
         var tasks = new List<JobTask>();
-        JobImporter.ImportOne(CanonicalJob(), JobImporter.BrowserSource, tasks);
+        JobImporter.ImportOne(CanonicalJob(), JobImporter.BrowserSource, tasks, NoFilters);
         var original = tasks[0];
 
         var reloaded = Storage.LoadTasks().Single();
@@ -3950,7 +4867,7 @@ static class Program {
         Equal(ApplicationStatus.Viewed, reloaded.ApplicationStatus, "status persisted");
 
         // Importing the same job again after the reload finds it by URL and keeps its id.
-        var again = JobImporter.ImportOne(CanonicalJob(), JobImporter.BrowserSource, Storage.LoadTasks());
+        var again = JobImporter.ImportOne(CanonicalJob(), JobImporter.BrowserSource, Storage.LoadTasks(), NoFilters);
         Equal(JobImportKind.Duplicate, again.Kind, "still a duplicate after reload");
         Equal(original.JobId, again.JobId, "the duplicate names the original task, not a new id");
     });
@@ -3958,14 +4875,14 @@ static class Program {
     static void DuplicatesAreFoundByJobUrl() => WithTasksFileRestored(() => {
         var tasks = new List<JobTask>();
         const string url = "https://jobright.ai/jobs/info/6aac7fec95c707f49dff195f";
-        var first = JobImporter.ImportOne(CanonicalJob(url), JobImporter.BrowserSource, tasks);
+        var first = JobImporter.ImportOne(CanonicalJob(url), JobImporter.BrowserSource, tasks, NoFilters);
 
         foreach (var same in new[] {
             url,                                                 // raw-identical
             url + "?utm_source=1146",                            // tracking
             url + "/#apply",                                     // slash and fragment
             "HTTPS://JOBRIGHT.AI/jobs/info/6aac7fec95c707f49dff195f" }) {
-            var outcome = JobImporter.ImportOne(CanonicalJob(same), JobImporter.BrowserSource, tasks);
+            var outcome = JobImporter.ImportOne(CanonicalJob(same), JobImporter.BrowserSource, tasks, NoFilters);
             Equal(JobImportKind.Duplicate, outcome.Kind, "duplicate: " + same);
             Equal(first.JobId, outcome.JobId, "reports the existing task for " + same);
             Equal("Senior AI Software Engineer", outcome.Title, "reports the existing title");
@@ -3975,13 +4892,13 @@ static class Program {
 
         // A different job at the same company is a different job.
         var other = JobImporter.ImportOne(CanonicalJob("https://jobright.ai/jobs/info/bbbbbbbbbbbbbbbbbbbbbbbb"),
-                                          JobImporter.BrowserSource, tasks);
+                                          JobImporter.BrowserSource, tasks, NoFilters);
         Equal(JobImportKind.Imported, other.Kind, "two job URLs at the same company are both allowed");
         Equal(2, tasks.Count, "second job added");
 
         // The duplicate key is the job URL, not the id: an old task with a matching link is found.
         var legacy = new List<JobTask> { new() { JobId = "STRESS-1-001", Company = "X", Title = "Y", Link = url + "?utm_source=old" } };
-        Equal(JobImportKind.Duplicate, JobImporter.ImportOne(CanonicalJob(url), JobImporter.BrowserSource, legacy).Kind,
+        Equal(JobImportKind.Duplicate, JobImporter.ImportOne(CanonicalJob(url), JobImporter.BrowserSource, legacy, NoFilters).Kind,
               "an older task with the same job URL is recognised");
     });
 
@@ -3999,7 +4916,7 @@ static class Program {
         }) {
             var data = CanonicalJob();
             change(data);
-            var outcome = JobImporter.ImportOne(data, JobImporter.IncomingSource, tasks);
+            var outcome = JobImporter.ImportOne(data, JobImporter.IncomingSource, tasks, NoFilters);
             Equal(JobImportKind.Invalid, outcome.Kind, reason);
             Equal(reason, outcome.Reason, "reason");
             Equal(0, tasks.Count, "nothing added for: " + reason);
@@ -4009,7 +4926,7 @@ static class Program {
         foreach (var companyUrl in new string?[] { null, "", "not a url" }) {
             var data = CanonicalJob("https://example.com/jobs/" + Guid.NewGuid().ToString("N"));
             data.CompanyUrl = companyUrl;
-            Equal(JobImportKind.Imported, JobImporter.ImportOne(data, JobImporter.IncomingSource, tasks).Kind, "companyUrl " + (companyUrl ?? "null"));
+            Equal(JobImportKind.Imported, JobImporter.ImportOne(data, JobImporter.IncomingSource, tasks, NoFilters).Kind, "companyUrl " + (companyUrl ?? "null"));
             Equal("", tasks[^1].CompanyUrl, "no company URL stored");
         }
     });
@@ -4057,7 +4974,7 @@ static class Program {
 
         // The browser already has one of these jobs.
         var tasks = new List<JobTask>();
-        JobImporter.ImportOne(CanonicalJob("https://example.com/jobs/one?utm_source=email"), JobImporter.BrowserSource, tasks);
+        JobImporter.ImportOne(CanonicalJob("https://example.com/jobs/one?utm_source=email"), JobImporter.BrowserSource, tasks, NoFilters);
 
         var result = JobImporter.Import(settings, tasks);
 
@@ -4221,6 +5138,3075 @@ static class Program {
         return dir?.FullName ?? throw new DirectoryNotFoundException("Could not locate the ResumeBuilder project folder.");
     }
 
+    // ================= ChatGPT rate limit + pacing =================
+
+    static void RateLimitIsDetectedFromItsWording() {
+        foreach (var text in new[] { "Too many requests", "Error: TOO MANY REQUESTS.",
+                                     "You’re making requests too quickly. Please wait a few minutes before trying again.",
+                                     "Please wait a few minutes before trying again" })
+            Check(RateLimit.IsRateLimitText(text), "detected: " + text);
+        foreach (var text in new[] { null, "", "Too many cooks", "Network error", "Something went wrong" })
+            Check(!RateLimit.IsRateLimitText(text), "not a rate limit: " + (text ?? "null"));
+
+        // The page probe returns only its two tokens and never acts on the page.
+        var script = RateLimit.ProbeScript;
+        var returns = System.Text.RegularExpressions.Regex.Matches(script, @"return\s+'([^']*)'").Select(m => m.Groups[1].Value).Distinct().OrderBy(s => s);
+        Equal("ok,rate-limited", string.Join(",", returns), "only the two tokens are returned");
+        foreach (var skipped in new[] { "data-message-author-role=\"user\"", ".markdown", "contenteditable", "#prompt-textarea", "pre, code" })
+            Check(script.Contains(skipped, StringComparison.Ordinal), "the user's message, composer and rendered answer are skipped: " + skipped);
+        foreach (var forbidden in new[] { "click(", "dispatchEvent", "clipboard", "fetch(", ".value =", "submit(" })
+            Check(!script.Contains(forbidden, StringComparison.Ordinal), "the probe never acts: " + forbidden);
+        foreach (var phrase in RateLimit.Phrases)
+            Check(script.Contains(phrase, StringComparison.Ordinal), "the probe uses the same wording: " + phrase);
+    }
+
+    static void RateLimitEndsTheWatchAtOnce() {
+        // Generating, then the popup appears on the 5th poll: the watch stops there, it does not keep polling.
+        var probe = new ScriptedProbe(_ => "generating");
+        var checks = 0;
+        var outcome = ChatCompletionWatcher.WaitForAnswerAsync(probe, default, (_, _) => Task.CompletedTask, null,
+                          () => Task.FromResult(++checks >= 5)).GetAwaiter().GetResult();
+        Equal(CompletionOutcome.RateLimited, outcome, "the rate limit ends the watch");
+        Equal(4, probe.Polls, "no further state polls after it was seen");
+
+        // Without a rate limit the watch behaves exactly as before.
+        var normal = ChatCompletionWatcher.WaitForAnswerAsync(new ScriptedProbe(p => p < 5 ? "generating" : "idle"), default,
+                          (_, _) => Task.CompletedTask, null, () => Task.FromResult(false)).GetAwaiter().GetResult();
+        Equal(CompletionOutcome.Ready, normal, "no rate limit -> Ready as usual");
+    }
+
+    /// <summary>A virtual clock the gate reads, advanced only by the delays it asks for.</summary>
+    sealed class VirtualClock {
+        public DateTime Now = new(2026, 9, 21, 9, 0, 0);
+        public readonly List<TimeSpan> Delays = new();
+        public Task Delay(TimeSpan span, CancellationToken ct) {
+            ct.ThrowIfCancellationRequested();
+            Delays.Add(span);
+            Now += span;
+            return Task.CompletedTask;
+        }
+    }
+
+    static void NothingIsSentDuringACooldown() {
+        var clock = new VirtualClock();
+        var gate = new RateLimitGate(() => clock.Now);
+        var start = clock.Now;
+
+        // The CONFIGURED cooldown is used, not a fixed 10 minutes.
+        var configured = RateLimit.Cooldown(new AppSettings { RateLimitCooldownMinutes = 15 });
+        Equal(TimeSpan.FromMinutes(15), configured, "the configured 15 minutes");
+        Equal("RATE LIMIT detected — queue paused for 15 minutes RB-1", RateLimit.DetectedLog("RB-1", configured), "the log names it");
+
+        Check(!gate.IsActive, "no cooldown before a rate limit");
+        Equal(start + TimeSpan.FromMinutes(15), gate.Start(configured), "a 15-minute cooldown");
+        Check(gate.IsActive, "the cooldown is active");
+
+        DateTime? sentAt = null;
+        var resumed = RateLimit.CooldownThenResumeAsync(gate, () => { sentAt = clock.Now; return Task.CompletedTask; },
+                                                         default, clock.Delay).GetAwaiter().GetResult();
+        Check(resumed, "resumed after the cooldown");
+        Check(sentAt >= start + TimeSpan.FromMinutes(15), "nothing is sent before the 15 minutes are up: sent at " + sentAt);
+        Check(clock.Delays.All(d => d <= TimeSpan.FromSeconds(30)), "waited in short local steps, polling nothing remote");
+
+        // Stop cancels an active cooldown: it returns at once and nothing is sent.
+        gate.Start(configured);
+        var sent = false;
+        using var stop = new CancellationTokenSource();
+        var steps = 0;
+        Task StopDuringWait(TimeSpan span, CancellationToken ct) { if (++steps == 2) stop.Cancel(); return clock.Delay(span, ct); }
+        Check(!RateLimit.CooldownThenResumeAsync(gate, () => { sent = true; return Task.CompletedTask; }, stop.Token, StopDuringWait)
+                  .GetAwaiter().GetResult(), "a stopped cooldown reports so");
+        Check(!sent, "and sends nothing");
+        Check(steps <= 3, "it stops waiting immediately, not after the full cooldown");
+
+        // Seen again: another cooldown with the CURRENT configured value.
+        clock.Now += TimeSpan.FromMinutes(20);
+        var changed = RateLimit.Cooldown(new AppSettings { RateLimitCooldownMinutes = 5 });
+        Equal(clock.Now + TimeSpan.FromMinutes(5), gate.Start(changed), "a repeat uses the value configured now");
+    }
+
+    static void TheSameJobResumesAfterTheCooldown() {
+        var clock = new VirtualClock();
+        var gate = new RateLimitGate(() => clock.Now);
+        var job = Job("RB-RATE-1");
+        var attempt = 2;                                   // the attempt that hit the rate limit
+        var resent = new List<(string JobId, int Attempt)>();
+
+        gate.Start(RateLimit.Cooldown(new AppSettings()));
+        RateLimit.CooldownThenResumeAsync(gate, () => { resent.Add((job.JobId, attempt)); return Task.CompletedTask; },
+                                          default, clock.Delay).GetAwaiter().GetResult();
+
+        Equal(1, resent.Count, "re-sent exactly once");
+        Equal("RB-RATE-1", resent[0].JobId, "the same job");
+        Equal(2, resent[0].Attempt, "at the same attempt number: a rate limit is not a used attempt");
+        Equal("Queued", job.Status, "the job is not marked Failed");
+        Check(string.IsNullOrEmpty(job.FailureReason), "and carries no failure reason");
+    }
+
+    static void TheConfiguredPauseSeparatesJobs() {
+        Equal(TimeSpan.FromSeconds(30), RateLimit.JobDelay(new AppSettings()), "30 seconds by default");
+
+        // The configured value is used instead of 30.
+        var clock = new VirtualClock();
+        var delay = RateLimit.JobDelay(new AppSettings { GptJobDelaySeconds = 45 });
+        Check(RateLimit.WaitBetweenJobsAsync(delay, default, clock.Delay).GetAwaiter().GetResult(), "then the queue advances");
+        Equal(TimeSpan.FromSeconds(45), clock.Delays.Single(), "one 45-second wait");
+
+        // 0 seconds: the next job starts immediately, with no wait at all.
+        var immediate = new VirtualClock();
+        Check(RateLimit.WaitBetweenJobsAsync(RateLimit.JobDelay(new AppSettings { GptJobDelaySeconds = 0 }), default, immediate.Delay)
+                  .GetAwaiter().GetResult(), "0 advances");
+        Equal(0, immediate.Delays.Count, "without waiting");
+
+        // Stop during the delay: stop waiting, do not advance.
+        using var stopped = new CancellationTokenSource();
+        stopped.Cancel();
+        Check(!RateLimit.WaitBetweenJobsAsync(delay, stopped.Token, clock.Delay).GetAwaiter().GetResult(), "a stopped queue does not advance");
+    }
+
+    static void PacingSettingsPersistAndValidate() {
+        var dir = NewDir("pacing-settings");
+
+        // A settings.json written before these fields existed gets 30 / 10 and keeps everything else.
+        var old = Path.Combine(dir, "old.json");
+        File.WriteAllText(old, """{ "MasterPrompt": "C:\\p.txt", "AutoSend": false, "SkipExportControl": true }""");
+        var loaded = Storage.LoadSettingsFrom(old);
+        Equal(30, loaded.GptJobDelaySeconds, "job delay default");
+        Equal(10, loaded.RateLimitCooldownMinutes, "cooldown default");
+        Equal(@"C:\p.txt", loaded.MasterPrompt, "other settings kept");
+        Check(!loaded.AutoSend && loaded.SkipExportControl, "other flags kept");
+
+        // Values persist and reload through the safe storage.
+        var path = Path.Combine(dir, "settings.json");
+        Check(Storage.SaveSettingsTo(path, new AppSettings { GptJobDelaySeconds = 0, RateLimitCooldownMinutes = 45, MasterPrompt = "x" }), "saved");
+        var reloaded = Storage.LoadSettingsFrom(path);
+        Equal(0, reloaded.GptJobDelaySeconds, "0 seconds persists");
+        Equal(45, reloaded.RateLimitCooldownMinutes, "45 minutes persists");
+        Equal("x", reloaded.MasterPrompt, "an unrelated setting persists");
+
+        // Settings -> Save validation: whole numbers in range; nothing is guessed or turned into 0.
+        foreach (var ok in new[] { "0", "30", "600", " 45 " })
+            Check(RateLimit.ValidateJobDelay(ok, out _) is null, "job delay accepted: " + ok);
+        foreach (var bad in new[] { "", "abc", "-1", "601", "2.5", "1e3", "30s" })
+            Check(RateLimit.ValidateJobDelay(bad, out _) is string, "job delay refused: [" + bad + "]");
+        foreach (var ok in new[] { "1", "10", "120" })
+            Check(RateLimit.ValidateCooldown(ok, out _) is null, "cooldown accepted: " + ok);
+        foreach (var bad in new[] { "0", "121", "", "ten", "-5" })
+            Check(RateLimit.ValidateCooldown(bad, out _) is string, "cooldown refused: [" + bad + "]");
+        Equal("GPT Job Delay must be a whole number from 0 to 600 seconds.", RateLimit.ValidateJobDelay("x", out _), "the message");
+        Check(RateLimit.ValidateJobDelay("75", out var seconds) is null && seconds == 75, "the parsed value is returned");
+
+        // A hand-edited out-of-range value is clamped at use and never breaks a run.
+        Equal(TimeSpan.FromSeconds(600), RateLimit.JobDelay(new AppSettings { GptJobDelaySeconds = 99999 }), "clamped to 600 s");
+        Equal(TimeSpan.FromMinutes(1), RateLimit.Cooldown(new AppSettings { RateLimitCooldownMinutes = 0 }), "clamped to 1 min");
+    }
+
+    // ================= Phase 1: runtime safety and install-readiness =================
+    //
+    // Every file here is in a temporary folder; nothing touches the live settings.json / tasks.json.
+
+    static void SettingsSaveIsAtomicWithBackup() {
+        var dir = NewDir("p1-settings-atomic");
+        var path = Path.Combine(dir, "settings.json");
+
+        Check(Storage.SaveSettingsTo(path, new AppSettings { MasterPrompt = @"C:\prompts\first.txt" }), "first save");
+        Check(!File.Exists(path + ".bak"), "nothing to back up on the first save");
+        Check(Storage.SaveSettingsTo(path, new AppSettings { MasterPrompt = @"C:\prompts\second.txt" }), "second save");
+
+        Equal(@"C:\prompts\second.txt", Storage.LoadSettingsFrom(path).MasterPrompt, "the saved value");
+        Check(File.Exists(path + ".bak"), "the previous version is kept as .bak");
+        Check(File.ReadAllText(path + ".bak").Contains("first.txt", StringComparison.Ordinal), ".bak is the previous version");
+        Check(!File.Exists(path + ".tmp"), "no temporary file is left");
+
+        // Same JSON shape as before: an older reader (plain System.Text.Json) still reads it.
+        var plain = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path))!;
+        Equal(@"C:\prompts\second.txt", plain.MasterPrompt, "backward-compatible JSON");
+    }
+
+    static void TasksSaveIsAtomicWithBackup() {
+        var dir = NewDir("p1-tasks-atomic");
+        var path = Path.Combine(dir, "tasks.json");
+
+        Check(Storage.SaveTasksTo(path, new[] { Job("T-1") }), "first save");
+        Check(Storage.SaveTasksTo(path, new[] { Job("T-1"), Job("T-2") }), "second save");
+
+        Equal(2, Storage.LoadTasksFrom(path).Count, "the saved jobs");
+        Equal(1, JsonSerializer.Deserialize<List<JobTask>>(File.ReadAllText(path + ".bak"))!.Count, ".bak holds the previous version");
+        Check(!File.Exists(path + ".tmp"), "no temporary file is left");
+    }
+
+    static void CorruptSettingsIsNeverOverwritten() {
+        var dir = NewDir("p1-settings-corrupt");
+        var path = Path.Combine(dir, "settings.json");
+        const string bad = "{ \"MasterPrompt\": \"C:\\\\my prompt.txt\", this is not json";
+        File.WriteAllText(path, bad);
+
+        var loaded = Storage.LoadSettingsFrom(path);
+        Equal(AppPaths.DefaultResumeRoot, loaded.ResumeRootFolder, "the app runs on defaults");
+        Check(Storage.WriteBlockedReason(path) is not null, "saving settings.json is refused this session");
+        Check(!Storage.SaveSettingsTo(path, new AppSettings { MasterPrompt = "overwrite!" }), "the save is refused");
+        Equal(bad, File.ReadAllText(path), "the user's file is untouched");
+
+        var copies = Directory.GetFiles(dir, "settings.corrupt-*.json");
+        Equal(1, copies.Length, "an exact copy is kept");
+        Equal(bad, File.ReadAllText(copies[0]), "the copy is byte-identical");
+        Check(Storage.Problems.Any(p => p.Contains("settings.json", StringComparison.Ordinal)), "reported for the startup notice");
+
+        // Launching again on the same bad file does not pile up copies.
+        Storage.ClearWriteBlock(path);
+        Storage.LoadSettingsFrom(path);
+        Equal(1, Directory.GetFiles(dir, "settings.corrupt-*.json").Length, "no duplicate copy");
+    }
+
+    static void CorruptTasksIsNeverOverwritten() {
+        var dir = NewDir("p1-tasks-corrupt");
+        var path = Path.Combine(dir, "tasks.json");
+        const string bad = "[ { \"JobId\": \"RB-REAL-1\", \"Company\": \"Acme\" }, { broken";
+        File.WriteAllText(path, bad);
+
+        Equal(0, Storage.LoadTasksFrom(path).Count, "no jobs are shown");
+        Check(!Storage.SaveTasksTo(path, new[] { Job("NEW-1") }), "a save cannot wipe the real jobs");
+        Equal(bad, File.ReadAllText(path), "tasks.json is untouched");
+        Equal(bad, File.ReadAllText(Directory.GetFiles(dir, "tasks.corrupt-*.json").Single()), "an exact copy is kept");
+    }
+
+    static void CorruptFileRecoversFromBackup() {
+        var dir = NewDir("p1-tasks-backup");
+        var path = Path.Combine(dir, "tasks.json");
+        Storage.SaveTasksTo(path, new[] { Job("A") });
+        Storage.SaveTasksTo(path, new[] { Job("A"), Job("B") });   // .bak = [A]
+        File.WriteAllText(path, "not json at all");
+
+        var loaded = Storage.LoadTasksFrom(path);
+        Equal("A", loaded.Single().JobId, "the .bak is used");
+        Check(Storage.WriteBlockedReason(path) is null, "saving is allowed again once recovered");
+        Equal("not json at all", File.ReadAllText(Directory.GetFiles(dir, "tasks.corrupt-*.json").Single()), "the bad file is kept");
+        Check(Storage.SaveTasksTo(path, loaded), "the recovered list saves");
+        Equal(1, Storage.LoadTasksFrom(path).Count, "and reloads");
+    }
+
+    static void MissingStateFilesAreAFirstRun() {
+        var dir = NewDir("p1-first-run");
+        var settingsPath = Path.Combine(dir, "settings.json");
+        var tasksPath = Path.Combine(dir, "tasks.json");
+
+        var settings = Storage.LoadSettingsFrom(settingsPath);
+        Equal(AppPaths.DefaultResumeRoot, settings.ResumeRootFolder, "first-run default output folder");
+        Equal(0, Storage.LoadTasksFrom(tasksPath).Count, "no jobs yet");
+        Check(Storage.WriteBlockedReason(settingsPath) is null && Storage.WriteBlockedReason(tasksPath) is null, "nothing is refused");
+        Check(Storage.SaveSettingsTo(settingsPath, settings) && Storage.SaveTasksTo(tasksPath, new[] { Job("F-1") }), "first saves work");
+        Equal(0, Directory.GetFiles(dir, "*.corrupt-*").Length, "a missing file is not treated as corrupt");
+    }
+
+    static void LockedStateFileKeepsTheLastGoodCopy() {
+        var dir = NewDir("p1-locked");
+        var path = Path.Combine(dir, "tasks.json");
+        Storage.SaveTasksTo(path, new[] { Job("L-1"), Job("L-2") });
+        Equal(2, Storage.LoadTasksFrom(path).Count, "a good load");
+
+        using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) {
+            Equal(2, Storage.LoadTasksFrom(path).Count, "a locked file returns the last good copy, not an empty list");
+            Check(Storage.WriteBlockedReason(path) is null, "a lock is not treated as corruption");
+        }
+    }
+
+    static void DefaultResumeRootOnlyFillsABlank() {
+        var expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ResumeAutomation", "Resumes");
+        Equal(expected, AppPaths.DefaultResumeRoot, "Documents\\ResumeAutomation\\Resumes via the Documents folder");
+
+        var dir = NewDir("p1-root");
+        var custom = Path.Combine(dir, "custom.json");
+        File.WriteAllText(custom, """{ "ResumeRootFolder": "D:\\My Resume Output" }""");
+        Equal(@"D:\My Resume Output", Storage.LoadSettingsFrom(custom).ResumeRootFolder, "a configured path is never replaced");
+
+        var blank = Path.Combine(dir, "blank.json");
+        File.WriteAllText(blank, """{ "ResumeRootFolder": "", "MasterPrompt": "C:\\p.txt" }""");
+        var loaded = Storage.LoadSettingsFrom(blank);
+        Equal(expected, loaded.ResumeRootFolder, "a blank path gets the default");
+        Equal(@"C:\p.txt", loaded.MasterPrompt, "other values are kept");
+
+        var set = new AppSettings { ResumeRootFolder = @"E:\Out" };
+        Check(!AppPaths.ApplyFirstRunDefaults(set) && set.ResumeRootFolder == @"E:\Out", "ApplyFirstRunDefaults leaves a set value");
+    }
+
+    static void CurrentResumeFollowsTheResumeRoot() {
+        Equal(Path.Combine(AppPaths.DefaultAutomationFolder, "CurrentResume.docx"),
+              ResumeUpload.CurrentResumePathFor(AppPaths.DefaultResumeRoot), "default layout: ResumeAutomation\\CurrentResume.docx");
+        Equal(@"D:\Jobs\CurrentResume.docx", ResumeUpload.CurrentResumePathFor(@"D:\Jobs\Resumes"), "a Resumes root -> its parent");
+        Equal(@"D:\Jobs\CurrentResume.docx", ResumeUpload.CurrentResumePathFor(@"D:\Jobs\Resumes\"), "trailing separator");
+        Equal(@"D:\My Output\CurrentResume.docx", ResumeUpload.CurrentResumePathFor(@"D:\My Output"), "a custom root -> inside it");
+        Equal(@"D:\Resumes\CurrentResume.docx", ResumeUpload.CurrentResumePathFor(@"D:\Resumes"), "never the drive root itself");
+        Equal(ResumeUpload.DefaultCurrentResumePath, ResumeUpload.CurrentResumePathFor(""), "blank -> Documents default");
+        Equal(ResumeUpload.DefaultCurrentResumePath, ResumeUpload.CurrentResumePathFor(null), "null -> Documents default");
+    }
+
+    static void SingleInstanceAllowsOnlyOne() {
+        Equal("ResumeBuilder.SingleInstance", SingleInstance.MutexName, "the name the installer will use");
+
+        var name = "ResumeBuilder.Test." + Guid.NewGuid().ToString("N");
+        var first = SingleInstance.TryAcquire(name);
+        Check(first is not null, "the first instance gets it");
+        Check(SingleInstance.TryAcquire(name) is null, "a second instance is refused");
+        first!.Dispose();
+
+        var again = SingleInstance.TryAcquire(name);
+        Check(again is not null, "free again once the first exits");
+        again!.Dispose();
+    }
+
+    static void LogsAreRotatedAndBounded() {
+        var dir = NewDir("p1-logs");
+        var log = Path.Combine(dir, "diagnostics.log");
+        for (var session = 1; session <= 8; session++) {
+            File.WriteAllText(log, "session " + session);
+            LogRetention.Rotate(log, 5);
+        }
+        Check(!File.Exists(log), "the current log was rotated");
+        Equal("session 8", File.ReadAllText(Path.Combine(dir, "diagnostics.1.log")), "newest kept as .1");
+        Equal("session 4", File.ReadAllText(Path.Combine(dir, "diagnostics.5.log")), "oldest kept as .5");
+        Check(!File.Exists(Path.Combine(dir, "diagnostics.6.log")), "never more than five");
+
+        File.WriteAllText(log, "");
+        LogRetention.Rotate(log, 5);
+        Check(File.Exists(log), "an empty log is not rotated");
+
+        var crashDir = NewDir("p1-crash");
+        for (var i = 0; i < 14; i++) {
+            var f = Path.Combine(crashDir, $"crash-old-{i:D2}.log");
+            File.WriteAllText(f, "x");
+            File.SetLastWriteTimeUtc(f, DateTime.UtcNow.AddHours(-24 + i));
+        }
+        var written = CrashLog.Write(new InvalidOperationException("boom"), "test", crashDir);
+        Check(written is not null && File.Exists(written), "a crash log is written");
+        var text = File.ReadAllText(written!);
+        Check(text.Contains("InvalidOperationException", StringComparison.Ordinal) && text.Contains("boom", StringComparison.Ordinal)
+              && text.Contains("Source:  test", StringComparison.Ordinal), "it names the exception and where it was caught");
+        Equal(CrashLog.Kept, Directory.GetFiles(crashDir, "crash-*.log").Length, "only the newest ten are kept");
+        Check(File.Exists(written!), "and the new one is among them");
+    }
+
+    static void CrashLogIsWrittenOncePerException() {
+        var dir = NewDir("p1-crash-once");
+        var ex = new InvalidOperationException("same");
+        Check(CrashLog.Write(ex, "UI thread", dir) is not null, "first report");
+        Check(CrashLog.Write(ex, "background thread", dir) is null, "the same exception is not logged twice");
+        Equal(1, Directory.GetFiles(dir, "crash-*.log").Length, "one file");
+        Check(CrashLog.Write(new Exception("x"), "t", Path.Combine(dir, "a\0b")) is null, "a bad folder never throws");
+    }
+
+    static void WebView2CheckIsFriendly() {
+        var ok = WebView2Runtime.Check(() => "153.0.4234.48");
+        Check(ok.Available && ok.Version == "153.0.4234.48", "an installed runtime is found");
+        Check(!WebView2Runtime.Check(() => null).Available, "no version means not installed");
+        var failed = WebView2Runtime.Check(() => throw new FileNotFoundException("WebView2Loader.dll"));
+        Check(!failed.Available && failed.Reason!.Contains("could not be checked", StringComparison.Ordinal), "a probe failure is reported, not thrown");
+
+        var message = WebView2Runtime.Message(failed);
+        Check(message.Contains(WebView2Runtime.DownloadPage, StringComparison.Ordinal) && message.Contains("Yes", StringComparison.Ordinal)
+              && message.Contains("No to exit", StringComparison.Ordinal), "the message names the runtime, where to get it, and Retry / Exit");
+        Check(!message.Contains("at Microsoft", StringComparison.Ordinal), "no stack trace in the message");
+    }
+
+    static void SetupCheckNamesWhatIsMissing() {
+        var fresh = new AppSettings();
+        var missing = SetupCheck.Missing(fresh, candidateProfileExists: false);
+        Equal("Prompts,Candidate Profile", string.Join(",", missing.Select(m => m.Section)), "a fresh install needs a prompt and a profile");
+        Check(SetupCheck.Describe(missing, @"C:\Out")!.Contains(@"C:\Out", StringComparison.Ordinal), "the notice names the output folder");
+
+        var normal = new AppSettings { PromptMode = PromptModes.Normal, MasterPrompt = "" };
+        Check(SetupCheck.Missing(normal, true).Single().What.Contains("Normal Prompt", StringComparison.Ordinal), "Normal mode needs its own prompt");
+
+        var prompt = Path.Combine(NewDir("p1-setup"), "prompt.txt");
+        File.WriteAllText(prompt, "x");
+        var ready = new AppSettings { MasterPrompt = prompt };
+        Equal(0, SetupCheck.Missing(ready, true).Count, "configured -> nothing missing");
+        Check(SetupCheck.Describe(SetupCheck.Missing(ready, true), "x") is null, "and no notice");
+        Equal(prompt, ready.MasterPrompt, "the check never changes a setting");
+    }
+
+    // ================= resume upload: Copy Resume Path + CurrentResume.docx =================
+    //
+    // Every file lives under the temp root, and the clipboard is a recording fake, so neither the
+    // user's clipboard nor Documents\ResumeAutomation is ever touched.
+
+    /// <summary>A clipboard stand-in that records what it was asked to copy.</summary>
+    sealed class FakeClipboard {
+        public List<string> Copied { get; } = new();
+        public bool Fail { get; init; }
+        public (bool Success, string Message) Set(string text) {
+            if (Fail) return (false, "The clipboard is busy.");
+            Copied.Add(text);
+            return (true, "");
+        }
+    }
+
+    /// <summary>Generates a real DOCX (and PDF) for one company/role under a temp root, like the app does.</summary>
+    static GenerationResult GenerateFor(string root, string company, string role, bool docx = true) =>
+        ResumeGenerator.Generate(company, role, Fixture("resume-basic.json"),
+                                 new AppSettings { ResumeRootFolder = root, Docx = docx, Pdf = true },
+                                 jobId: "RB-UPLOAD-TEST", jobUrl: "https://example.com/job");
+
+    static JobTask UploadJob(string? resumePath, string company = "Acme Corp", string role = "AI Engineer") => new() {
+        JobId = "RB-UPLOAD-1", Company = company, Title = role, ResumePath = resumePath ?? "",
+        Status = "Completed", ApplicationStatus = ApplicationStatus.Ready
+    };
+
+    static string Sha(string path) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)));
+
+    static void CopyResumePathCopiesTheExactDocx() {
+        var root = NewDir("upload-exact");
+        var first = GenerateFor(root, "Acme Corp", "AI Engineer");
+        var second = GenerateFor(root, "Acme Corp", "AI Engineer");     // same job again -> BILLY LIN (2).docx
+        Check(second.DocxPath!.EndsWith("BILLY LIN (2).docx", StringComparison.Ordinal), "the second run is BILLY LIN (2).docx");
+
+        foreach (var generated in new[] { first.DocxPath!, second.DocxPath! }) {
+            var clipboard = new FakeClipboard();
+            var job = UploadJob(generated);
+            var copy = ResumeUpload.CopyResumePath(job, clipboard.Set);
+
+            Check(copy.Copied, "copied: " + copy.Message);
+            Equal(1, clipboard.Copied.Count, "one thing copied");
+            var text = clipboard.Copied[0];
+            Equal(Path.GetDirectoryName(Path.GetFullPath(generated)), text, "exactly the folder holding the job's own DOCX");
+            Check(Path.IsPathFullyQualified(text), "an absolute Windows path");
+            Check(Directory.Exists(text), "the copied folder exists");
+            Check(!text.StartsWith("file:", StringComparison.OrdinalIgnoreCase) &&
+                  !text.StartsWith("http", StringComparison.OrdinalIgnoreCase), "never a URL");
+            Check(!text.EndsWith(".docx", StringComparison.OrdinalIgnoreCase), "the folder, not Resume.docx");
+            Equal("Resume folder path copied.", copy.Message, "the confirmation");
+
+            // Copying changes nothing about the job.
+            Equal(generated, job.ResumePath, "ResumePath untouched");
+            Equal("Completed", job.Status, "queue status untouched");
+            Equal(ApplicationStatus.Ready, job.ApplicationStatus, "application status untouched");
+        }
+    }
+
+    static void CopyResumePathRefusesAnythingButARealDocx() {
+        var root = NewDir("upload-refuse");
+        var generated = GenerateFor(root, "Acme Corp", "AI Engineer");
+
+        var bad = new (string What, JobTask? Job)[] {
+            ("no job", null),
+            ("no resume path", UploadJob("")),
+            ("a relative path", UploadJob(@"Resumes\Resume.docx")),
+            ("the PDF", UploadJob(generated.PdfPath)),
+            ("the folder", UploadJob(Path.GetDirectoryName(generated.DocxPath!))),
+            ("a deleted DOCX", UploadJob(Path.Combine(root, "gone", "Resume.docx"))),
+            ("a file:// URL", UploadJob(new Uri(generated.DocxPath!).AbsoluteUri))
+        };
+
+        foreach (var (what, job) in bad) {
+            var clipboard = new FakeClipboard();
+            var copy = ResumeUpload.CopyResumePath(job, clipboard.Set);
+            Check(!copy.Copied, what + ": nothing copied");
+            Equal(ResumeUpload.NotFound, copy.Message, what + ": the safe message");
+            Equal(0, clipboard.Copied.Count, what + ": the clipboard was never touched");
+        }
+
+        // A clipboard that refuses is reported, not claimed as success.
+        var failing = ResumeUpload.CopyResumePath(UploadJob(generated.DocxPath), new FakeClipboard { Fail = true }.Set);
+        Check(!failing.Copied && failing.Message.Contains("could not be copied", StringComparison.Ordinal), "a clipboard failure is reported");
+
+        // The alias action refuses a missing alias the same way.
+        var noAlias = ResumeUpload.CopyCurrentResumePath(Path.Combine(root, "none", ResumeUpload.AliasFileName), new FakeClipboard().Set);
+        Check(!noAlias.Copied, "a missing CurrentResume.docx is not copied");
+    }
+
+    static void CurrentResumeIsCreatedAfterGeneration() {
+        var root = NewDir("upload-alias-create");
+        var alias = Path.Combine(root, "ResumeAutomation", ResumeUpload.AliasFileName);   // folder does not exist yet
+        var generated = GenerateFor(Path.Combine(root, "Resumes"), "Acme Corp", "AI Engineer");
+
+        var update = ResumeUpload.PublishCurrentResume(UploadJob(generated.DocxPath), generated, alias);
+        Check(update is { Updated: true }, "the alias was written: " + update?.Reason);
+        Check(File.Exists(alias), "CurrentResume.docx exists");
+        Equal(Sha(generated.DocxPath!), Sha(alias), "it is a byte copy of the generated DOCX");
+        Check(!File.Exists(alias + ".tmp"), "no temporary file is left behind");
+        Equal($"CURRENT RESUME updated RB-UPLOAD-1 {alias}", update!.LogLine("RB-UPLOAD-1"), "the log line");
+
+        // The alias action copies it.
+        var clipboard = new FakeClipboard();
+        Check(ResumeUpload.CopyCurrentResumePath(alias, clipboard.Set).Copied, "Copy Current Resume Path works");
+        Equal(Path.GetFullPath(alias), clipboard.Copied.Single(), "the alias path is copied");
+
+        // No DOCX produced (DOCX output off) -> nothing to publish.
+        var pdfOnly = GenerateFor(Path.Combine(root, "Resumes"), "Pdf Only Co", "Engineer", docx: false);
+        Check(ResumeUpload.PublishCurrentResume(UploadJob(pdfOnly.PdfPath), pdfOnly, alias) is null, "a PDF-only run does not touch the alias");
+        Equal(Sha(generated.DocxPath!), Sha(alias), "the alias still holds the last DOCX");
+    }
+
+    static void CurrentResumeFollowsTheNewestJobAndLeavesOriginalsAlone() {
+        var root = NewDir("upload-alias-replace");
+        var alias = Path.Combine(root, "ResumeAutomation", ResumeUpload.AliasFileName);
+
+        var a = GenerateFor(Path.Combine(root, "Resumes"), "First Company", "AI Engineer");
+        var aHash = Sha(a.DocxPath!);
+        ResumeUpload.PublishCurrentResume(UploadJob(a.DocxPath), a, alias);
+        Equal(aHash, Sha(alias), "the alias holds job A");
+
+        var b = GenerateFor(Path.Combine(root, "Resumes"), "Second Company", "Staff Engineer");
+        var update = ResumeUpload.PublishCurrentResume(UploadJob(b.DocxPath), b, alias);
+        Check(update is { Updated: true }, "replaced: " + update?.Reason);
+        Equal(Sha(b.DocxPath!), Sha(alias), "the alias now holds job B, the newest");
+
+        // The company-specific originals are exactly where they were, unchanged.
+        Check(File.Exists(a.DocxPath!) && File.Exists(b.DocxPath!), "both originals still exist");
+        Equal(aHash, Sha(a.DocxPath!), "job A's own resume is unchanged");
+        Check(File.Exists(a.PdfPath!) && File.Exists(b.PdfPath!), "the PDFs are untouched");
+    }
+
+    static void CurrentResumeFailureNeverFailsTheJob() {
+        var root = NewDir("upload-alias-locked");
+        var alias = Path.Combine(root, "ResumeAutomation", ResumeUpload.AliasFileName);
+
+        var a = GenerateFor(Path.Combine(root, "Resumes"), "First Company", "AI Engineer");
+        ResumeUpload.PublishCurrentResume(UploadJob(a.DocxPath), a, alias);
+        var before = Sha(alias);
+
+        var b = GenerateFor(Path.Combine(root, "Resumes"), "Second Company", "Staff Engineer");
+        var job = UploadJob(b.DocxPath, "Second Company", "Staff Engineer");
+
+        CurrentResumeUpdate? update;
+        // CurrentResume.docx open exclusively — as when it is open in Word.
+        using (new FileStream(alias, FileMode.Open, FileAccess.Read, FileShare.None))
+            update = ResumeUpload.PublishCurrentResume(job, b, alias);
+
+        Check(update is { Updated: false }, "the locked alias is reported as a failure, not thrown");
+        Check(update!.LogLine(job.JobId).StartsWith("WARN current resume alias update failed RB-UPLOAD-1 ", StringComparison.Ordinal),
+              "the warning log line: " + update.LogLine(job.JobId));
+        Equal(before, Sha(alias), "the previous alias is intact — never zero-byte or partial");
+        Check(!File.Exists(alias + ".tmp"), "no temporary file is left behind");
+
+        // The job is exactly as generation left it.
+        Equal("Completed", job.Status, "queue status still Completed");
+        Equal(ApplicationStatus.Ready, job.ApplicationStatus, "application status still Ready");
+        Equal(b.DocxPath, job.ResumePath, "ResumePath still the company-specific resume");
+        Check(File.Exists(b.DocxPath!), "the new company-specific resume exists");
+
+        // A missing source is a failure too, never an exception.
+        Check(ResumeUpload.UpdateCurrentResume(Path.Combine(root, "missing.docx"), alias) is { Updated: false }, "missing source reported");
+    }
+
+    static void UploadPathsSurviveSpacesAndSpecialCharacters() {
+        var root = NewDir("upload special root with spaces");
+        const string company = "O'Brien & Sons, Inc. (Café)";
+        const string role = "Sr. Engineer: AI/ML #1 <Remote>";
+        var generated = GenerateFor(Path.Combine(root, "My Resumes"), company, role);
+        Check(generated.DocxGenerated, "generated: " + generated.Describe());
+
+        var clipboard = new FakeClipboard();
+        var copy = ResumeUpload.CopyResumePath(UploadJob(generated.DocxPath, company, role), clipboard.Set);
+        Check(copy.Copied, "copied: " + copy.Message);
+        var text = clipboard.Copied.Single();
+        Check(Directory.Exists(text), "the copied folder opens as-is: " + text);
+        Equal(Path.GetDirectoryName(generated.DocxPath), text, "the folder of the job's DOCX");
+        Check(text.Contains(' ') && text.Contains('&') && text.Contains("Café", StringComparison.Ordinal), "spaces and symbols are kept, not escaped");
+        Check(!text.Contains('%') && !text.StartsWith("file:", StringComparison.OrdinalIgnoreCase), "no URL encoding");
+
+        var alias = Path.Combine(root, "Resume Automation", ResumeUpload.AliasFileName);
+        Check(ResumeUpload.UpdateCurrentResume(generated.DocxPath!, alias).Updated, "the alias works from a path with spaces and symbols");
+    }
+
+    static void UploadAliasUsesTheDocumentsFolderNotAUserName() {
+        var expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ResumeAutomation", "CurrentResume.docx");
+        Equal(expected, ResumeUpload.DefaultCurrentResumePath, "resolved from the Documents known folder");
+
+        var source = File.ReadAllText(Path.Combine(Root(), "ResumeUpload.cs"));
+        foreach (var hardcoded in new[] { Environment.UserName, @"C:\Users", "Teddy" })
+            Check(!source.Contains(hardcoded, StringComparison.OrdinalIgnoreCase), "no hard-coded '" + hardcoded + "' in ResumeUpload.cs");
+    }
+
+    static void UploadHelpersLeaveLiveDataAlone() {
+        string? Hash(string path) => File.Exists(path) ? Sha(path) : null;
+        var tasks = Hash(Storage.TasksPath);
+        var settings = Hash(Storage.SettingsPath);
+        var liveAlias = Hash(ResumeUpload.DefaultCurrentResumePath);
+
+        var root = NewDir("upload-live-data");
+        var generated = GenerateFor(root, "Acme Corp", "AI Engineer");
+        ResumeUpload.CopyResumePath(UploadJob(generated.DocxPath), new FakeClipboard().Set);
+        ResumeUpload.PublishCurrentResume(UploadJob(generated.DocxPath), generated, Path.Combine(root, ResumeUpload.AliasFileName));
+
+        Equal(tasks, Hash(Storage.TasksPath), "tasks.json untouched");
+        Equal(settings, Hash(Storage.SettingsPath), "settings.json untouched");
+        Equal(liveAlias, Hash(ResumeUpload.DefaultCurrentResumePath), "the real CurrentResume.docx untouched");
+
+        // The existing Open Resume / Folder / Apply rules still refuse exactly what they did.
+        Check(!JobTracker.OpenResume(null) && !JobTracker.OpenResume(UploadJob("")), "Open Resume still refuses a missing resume");
+        Check(!JobTracker.OpenResumeFolder(UploadJob("")), "Open Folder still refuses a missing resume");
+        Check(JobTracker.ApplyUrlToOpen(UploadJob(generated.DocxPath)) is null, "Apply still needs an ApplyUrl, never the resume");
+    }
+
+    // ================= Normal Prompt style contract: nested schema, 9 pt body =================
+    //
+    // Everything here writes only to temporary folders, except the two Accept() checks, which go
+    // through the real results folder under a throwaway job id and delete what they wrote.
+
+    /// <summary>The style the promV5 Normal Prompt asks for, in the REAL nested schema.</summary>
+    const string NinePointStyleJson = """
+        {
+          "preset": "promV4.12",
+          "page": { "size": "LETTER", "marginTop": 0.45, "marginBottom": 0.45, "marginLeft": 0.55, "marginRight": 0.55 },
+          "colors": { "primary": "#1F4E79", "body": "#000000", "secondary": "#4A4A4A" },
+          "fonts": { "family": "Arial" },
+          "metadata": { "fontSize": 8.7 },
+          "skillValues": { "fontSize": 9, "bold": false, "lineSpacing": 1 },
+          "body": { "fontSize": 9, "bold": false, "lineSpacing": 1 },
+          "bullet": { "fontSize": 9, "bold": false, "lineSpacing": 1, "leftIndent": 0.18, "hangingIndent": 0.14 },
+          "education": { "fontSize": 9, "bold": false, "lineSpacing": 1 }
+        }
+        """;
+
+    /// <summary>resume-basic.json as a ChatGPT answer, with or without the 9 pt style (under any key).</summary>
+    static string NinePointAnswer(bool includeStyle = true, string styleKey = "style", string? styleJson = null) {
+        var root = JsonNode.Parse(File.ReadAllText(Fixture("resume-basic.json")))!.AsObject();
+        if (includeStyle) root[styleKey] = JsonNode.Parse(styleJson ?? NinePointStyleJson);
+        return "Here is the resume:\n\n```json\n" + root.ToJsonString() + "\n```\n";
+    }
+
+    /// <summary>A style object with one section set, for the range checks.</summary>
+    static JsonObject OneValue(string section, string key, double value) =>
+        new() { [section] = new JsonObject { [key] = value } };
+
+    static void NinePointAcceptedInBodySections() {
+        foreach (var section in StyleSchema.AlwaysRegular) {
+            var style = OneValue(section, "fontSize", 9);
+            Equal(0, StyleValidator.Validate(style).Count, section + " 9 pt is valid: " + Join(StyleValidator.Validate(style)));
+
+            var normalized = StyleNormalizer.Normalize(style);
+            Equal(9.0, normalized.Style.Section(section).FontSize, section + " 9 pt survives normalization");
+            Equal(0, normalized.Warnings.Count, section + " 9 pt needs no correction: " + Join(normalized.Warnings));
+        }
+
+        // The whole intended style, in one go: valid, and not a single warning.
+        var full = JsonNode.Parse(NinePointStyleJson);
+        Equal(0, StyleValidator.Validate(full).Count, "the full 9 pt style is valid: " + Join(StyleValidator.Validate(full)));
+        var result = StyleNormalizer.Normalize(full);
+        Equal(0, result.Warnings.Count, "the full 9 pt style raises no warning: " + Join(result.Warnings));
+        Equal(8.7, result.Style.Metadata.FontSize, "metadata keeps its own 8.7 pt");
+    }
+
+    static void BelowNinePointIsCorrectedPerApi() {
+        foreach (var section in StyleSchema.AlwaysRegular) {
+            var style = OneValue(section, "fontSize", 8.9);
+
+            // Strict contract check: an error.
+            Check(StyleValidator.Validate(style).Contains($"style.{section}.fontSize must be >= 9 pt"),
+                  section + " 8.9 pt is an error: " + Join(StyleValidator.Validate(style)));
+
+            // Capture path: clamped up to the floor and reported.
+            var normalized = StyleNormalizer.Normalize(style);
+            Equal(9.0, normalized.Style.Section(section).FontSize, section + " 8.9 pt is raised to 9");
+            Check(normalized.Warnings.Any(w => w.Contains($"style.{section}.fontSize")), section + " the correction is reported");
+        }
+    }
+
+    static void GlobalFontAndSpacingRulesUnchanged() {
+        // The general 8–24 pt range still applies to every other section.
+        var small = OneValue("name", "fontSize", 7.5);
+        Check(StyleValidator.Validate(small).Contains("style.name.fontSize must be >= 8 pt"), "7.5 pt name is an error");
+        Equal(8.0, StyleNormalizer.Normalize(small).Style.Name.FontSize, "7.5 pt name is raised to 8");
+
+        var big = OneValue("body", "fontSize", 30);
+        Check(StyleValidator.Validate(big).Contains("style.body.fontSize must be <= 24 pt"), "30 pt body is an error");
+
+        // Metadata may be smaller than the body standard, within the general range.
+        Equal(0, StyleValidator.Validate(OneValue("metadata", "fontSize", 8.7)).Count, "8.7 pt metadata is valid");
+
+        // lineSpacing below 1.0 is still refused / raised.
+        var tight = OneValue("body", "lineSpacing", 0.9);
+        Check(StyleValidator.Validate(tight).Contains("style.body.lineSpacing must be >= 1"), "0.9 line spacing is an error");
+        Equal(1.0, StyleNormalizer.Normalize(tight).Style.Body.LineSpacing, "0.9 line spacing is raised to 1.0");
+
+        // The weight rule is unchanged: bold body text is still refused.
+        var bold = new JsonObject { ["body"] = new JsonObject { ["fontSize"] = 9, ["bold"] = true } };
+        Check(StyleValidator.Validate(bold).Any(e => e.StartsWith("style.body.bold must be false")), "bold body is still an error");
+        Check(!StyleNormalizer.Normalize(bold).Style.Body.Bold, "bold body is still turned off");
+    }
+
+    static void FlatStylePropertiesStayUnsupported() {
+        var flat = JsonNode.Parse("""
+            { "bodyFontSize": 9, "nameFontSize": 17, "fontFamily": "Arial", "marginTop": 0.45, "metadataFontSize": 8.7 }
+            """);
+
+        var errors = StyleValidator.Validate(flat);
+        foreach (var key in new[] { "bodyFontSize", "nameFontSize", "fontFamily", "marginTop", "metadataFontSize" })
+            Check(errors.Contains($"style.{key} is not a supported style property"), key + " is rejected: " + Join(errors));
+
+        // The capture path ignores them — so the body keeps the preset's 11 pt, NOT the 9 it asked for.
+        var normalized = StyleNormalizer.Normalize(flat);
+        Equal(11.0, normalized.Style.Body.FontSize, "a flat bodyFontSize does not reach the body");
+        Equal(5, normalized.Warnings.Count(w => w.Contains("is not a supported style property")), "each flat key is reported");
+
+        // Unrelated unknown keys stay rejected as before.
+        var odd = JsonNode.Parse("""{ "sidebar": {}, "body": { "fontSize": 9, "dropShadow": true } }""");
+        var oddErrors = StyleValidator.Validate(odd);
+        Check(oddErrors.Contains("style.sidebar is not a supported style property"), "unknown section rejected");
+        Check(oddErrors.Contains("style.body.dropShadow is not a supported style property on body"), "unknown key rejected");
+    }
+
+    static void NinePointSurvivesSaveAndReachesTheModel() {
+        var target = Path.Combine(NewDir("nine-point-save"), "result.json");
+        var report = CandidateProfileStore.NormalizeAndSaveTo(NinePointAnswer(), target, requireStyle: true);
+
+        Check(report.StyleSupplied, "the report records that the answer carried a style");
+        Check(!report.Changes.Any(c => c.Contains("not a supported", StringComparison.Ordinal)),
+              "a valid nested style produces no unsupported-property warning: " + Join(report.Changes));
+
+        // B. The saved results JSON.
+        var saved = JsonNode.Parse(File.ReadAllText(target))!["style"]!;
+        foreach (var section in StyleSchema.AlwaysRegular)
+            Equal(9.0, saved[section]!["fontSize"]!.GetValue<double>(), "saved style." + section + ".fontSize");
+        Equal(8.7, saved["metadata"]!["fontSize"]!.GetValue<double>(), "saved style.metadata.fontSize");
+        Equal("Arial", saved["fonts"]!["family"]!.GetValue<string>(), "saved font");
+
+        // It is still a valid profile under the strict check.
+        Equal(0, CandidateProfileStore.ValidateResumeJson(File.ReadAllText(target)).Count, "the saved profile is valid");
+
+        // C. The renderer input.
+        var document = ResumeDocument.FromProfileFile(target);
+        Equal(9.0, document.Style.Body.FontSize, "ResumeDocument body");
+        Equal(9.0, document.Style.Bullet.FontSize, "ResumeDocument bullet");
+        Equal(9.0, document.Style.SkillValues.FontSize, "ResumeDocument skillValues");
+        Equal(9.0, document.Style.Education.FontSize, "ResumeDocument education");
+        Equal(8.7, document.Style.Metadata.FontSize, "ResumeDocument metadata");
+        Equal(0, document.StyleWarnings.Count, "no correction at render time: " + Join(document.StyleWarnings));
+
+        Equal("STYLE accepted preset=promV4.12 body=9 bullet=9 skills=9 education=9 font=Arial",
+              ResultCapture.StyleLogLine(report.Profile), "the diagnostics line");
+    }
+
+    static string NinePointProfileFile(string label) {
+        var target = Path.Combine(NewDir(label), "result.json");
+        CandidateProfileStore.NormalizeAndSaveTo(NinePointAnswer(), target, requireStyle: true);
+        return target;
+    }
+
+    static void NinePointReachesTheDocx() {
+        var paragraphs = ReadDocx(RenderFile(NinePointProfileFile("nine-point-docx"), "nine-point"));
+        var basic = ResumeDocument.FromProfileFile(Fixture("resume-basic.json"));
+
+        // D. Summary, every bullet, the skill values and both education lines are 9 pt.
+        Equal(9.0, paragraphs.Single(p => p.Text == basic.Summary).FontSize, "DOCX summary");
+
+        var bullets = paragraphs.Where(p => p.Text.StartsWith(ResumeDocument.Bullet, StringComparison.Ordinal)).ToList();
+        Equal(3, bullets.Count, "every experience bullet was found");
+        foreach (var bullet in bullets) Equal(9.0, bullet.FontSize, "DOCX bullet: " + bullet.Text);
+
+        foreach (var skill in basic.Skills)
+            Equal(9.0, paragraphs.Single(p => p.Text == skill.Skills).FontSize, "DOCX skill values: " + skill.Skills);
+
+        var education = basic.Education.Single();
+        Equal(9.0, paragraphs.Single(p => p.Text == education.Heading).FontSize, "DOCX education heading");
+        Equal(9.0, paragraphs.Single(p => p.Text == education.Dates).FontSize, "DOCX education dates");
+
+        // F. Metadata keeps its own size and does not leak into the body. Word stores a font size as
+        // whole HALF-points (w:sz), so the requested 8.7 pt is written as 8.5 pt in the DOCX; the PDF
+        // keeps 8.7 (see NinePointReachesThePdfModel). 9 pt, being a whole half-point, is exact in both.
+        Equal(8.5, paragraphs.Single(p => p.Text == "Peoria, IL").FontSize, "DOCX metadata (8.7 in half-points)");
+        Equal(11.5, paragraphs.First(p => p.Text == basic.Skills[0].Category).FontSize, "DOCX skill category keeps its preset size");
+        Equal(12.5, paragraphs.First(p => p.Text == ResumeDocument.SummaryHeading.ToUpperInvariant()).FontSize, "DOCX section heading");
+        Check(paragraphs.All(p => p.FontSize >= 9.0 || p.Text == "Peoria, IL"), "only the metadata line is below 9 pt");
+        Check(paragraphs.All(p => p.FontFamily == "Arial"), "every run is Arial");
+    }
+
+    /// <summary>Every paragraph of a MigraDoc model as (text, the font size of each run).</summary>
+    static List<(string Text, List<double> Sizes)> PdfRuns(MigraDoc.DocumentObjectModel.Document document) {
+        var result = new List<(string, List<double>)>();
+        foreach (var sectionObject in document.Sections) {
+            if (sectionObject is not MigraDoc.DocumentObjectModel.Section section) continue;
+            foreach (var element in section.Elements) {
+                if (element is not MigraDoc.DocumentObjectModel.Paragraph paragraph) continue;
+                var text = "";
+                var sizes = new List<double>();
+                foreach (var part in paragraph.Elements) {
+                    if (part is not MigraDoc.DocumentObjectModel.FormattedText formatted) continue;
+                    sizes.Add(formatted.Font.Size.Point);
+                    foreach (var inner in formatted.Elements)
+                        if (inner is MigraDoc.DocumentObjectModel.Text t) text += t.Content;
+                }
+                result.Add((text.Trim(), sizes));
+            }
+        }
+        return result;
+    }
+
+    static void NinePointReachesThePdfModel() {
+        // E. The PDF is built directly from the same ResumeDocument; inspect its model before rendering.
+        var document = ResumeDocument.FromProfileFile(NinePointProfileFile("nine-point-pdf"));
+        var runs = PdfRuns(PdfWriter.BuildDocument(document));
+
+        // MigraDoc keeps a Unit as a float, so compare to 0.01 pt.
+        double Only(string text, string what) {
+            var sizes = runs.Single(r => r.Text == text).Sizes.Select(s => Math.Round(s, 2)).Distinct().ToList();
+            Equal(1, sizes.Count, what + " has one size");
+            return sizes[0];
+        }
+
+        Equal(9.0, Only(document.Summary, "PDF summary"), "PDF summary");
+        foreach (var skill in document.Skills) Equal(9.0, Only(skill.Skills, "PDF skills"), "PDF skill values");
+        foreach (var bullet in runs.Where(r => r.Text.StartsWith(ResumeDocument.Bullet.Trim(), StringComparison.Ordinal)))
+            Check(bullet.Sizes.All(s => Math.Round(s, 2) == 9.0), "PDF bullet is 9 pt: " + bullet.Text);
+        Equal(3, runs.Count(r => r.Text.StartsWith(ResumeDocument.Bullet.Trim(), StringComparison.Ordinal)), "PDF bullets found");
+
+        var education = document.Education.Single();
+        Equal(9.0, Only(education.Heading, "PDF education heading"), "PDF education heading");
+        Equal(9.0, Only(education.Dates, "PDF education dates"), "PDF education dates");
+
+        // F. Metadata keeps 8.7 pt in the PDF too.
+        Equal(8.7, Only("Peoria, IL", "PDF metadata"), "PDF metadata");
+
+        // And the whole pipeline produces both files from it without a single style correction.
+        var settings = new AppSettings { ResumeRootFolder = NewDir("nine-point-generate"), Docx = true, Pdf = true };
+        var generated = ResumeGenerator.Generate("Caterpillar Inc.", "Senior AI Software Engineer",
+                                                 NinePointProfileFile("nine-point-generate-input"), settings);
+        Check(generated.DocxGenerated && generated.PdfGenerated, "both documents generated: " + generated.Describe());
+        Equal(0, generated.StyleWarnings.Count, "no style value was adjusted: " + Join(generated.StyleWarnings));
+    }
+
+    static void PresetDefaultsUnchanged() {
+        // Resume mode's look does not move: the presets still use the old sizes.
+        var prom = StylePresets.PromV412();
+        Equal(11.0, prom.Body.FontSize, "promV4.12 body");
+        Equal(11.0, prom.Bullet.FontSize, "promV4.12 bullet");
+        Equal(10.5, prom.SkillValues.FontSize, "promV4.12 skill values");
+        Equal(11.0, prom.Education.FontSize, "promV4.12 education");
+        Equal(11.0, StylePresets.Classic().SkillValues.FontSize, "classic skill values");
+        Equal(10.5, StylePresets.Compact().SkillValues.FontSize, "compact skill values");
+    }
+
+    static void NormalModeRequiresStyle() {
+        var dir = NewDir("normal-requires-style");
+
+        // Present: accepted.
+        var withStyle = Path.Combine(dir, "with.json");
+        CandidateProfileStore.NormalizeAndSaveTo(NinePointAnswer(), withStyle, requireStyle: true);
+        Check(File.Exists(withStyle), "a Normal answer with style is saved");
+
+        // Missing: refused with the fixed reason, and NOTHING is written.
+        var without = Path.Combine(dir, "without.json");
+        try {
+            CandidateProfileStore.NormalizeAndSaveTo(NinePointAnswer(includeStyle: false), without, requireStyle: true);
+            throw new Exception("a Normal answer without style must be refused");
+        } catch (InvalidDataException ex) {
+            Equal(CandidateProfileStore.MissingStyleMessage, ex.Message, "the refusal reason");
+        }
+        Check(!File.Exists(without), "nothing was saved for the refused answer");
+
+        // A style that is not an object is not a style.
+        var scalar = Path.Combine(dir, "scalar.json");
+        try {
+            var root = JsonNode.Parse(File.ReadAllText(Fixture("resume-basic.json")))!.AsObject();
+            root["style"] = "compact";
+            CandidateProfileStore.NormalizeAndSaveTo("```json\n" + root.ToJsonString() + "\n```", scalar, requireStyle: true);
+            throw new Exception("a string style must be refused in Normal mode");
+        } catch (InvalidDataException ex) {
+            Equal(CandidateProfileStore.MissingStyleMessage, ex.Message, "string style refusal");
+        }
+        Check(!File.Exists(scalar), "nothing was saved for the string style");
+
+        // A tolerated alias the normalizer already renames still counts as a style object.
+        var alias = Path.Combine(dir, "alias.json");
+        CandidateProfileStore.NormalizeAndSaveTo(NinePointAnswer(styleKey: "formatting"), alias, requireStyle: true);
+        Equal(9.0, JsonNode.Parse(File.ReadAllText(alias))!["style"]!["body"]!["fontSize"]!.GetValue<double>(), "alias style applied");
+
+        // The capture boundary: Accept reports it as an unsaved answer, which MainWindow sends down
+        // the existing InvalidOutput retry path (attempt 1 of 3 -> Retry).
+        var jobId = "RB-TEST-STYLE-" + Guid.NewGuid().ToString("N")[..8];
+        try {
+            var refused = ResultCapture.Accept(NinePointAnswer(includeStyle: false), jobId, requireStyle: true);
+            Check(!refused.Saved, "Accept does not save it");
+            Equal(CandidateProfileStore.MissingStyleMessage, refused.Error, "Accept carries the reason");
+            Check(!File.Exists(ProfileResultStore.ResultPath(jobId)), "no results json for the job");
+            Equal(AttemptDecision.Retry, GptAttempts.Decide(1), "the first invalid output is retried");
+
+            var accepted = ResultCapture.Accept(NinePointAnswer(), jobId, requireStyle: true);
+            Check(accepted.Saved, "the same job with a style is accepted: " + accepted.Error);
+        } finally {
+            foreach (var path in new[] { ProfileResultStore.ResultPath(jobId), ProfileResultStore.RawPath(jobId) })
+                if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    static void ResumeModeStyleStaysOptional() {
+        // Default parameter = Resume mode's behaviour: a style-less answer is saved and uses promV4.12.
+        var target = Path.Combine(NewDir("resume-mode-no-style"), "result.json");
+        var report = CandidateProfileStore.NormalizeAndSaveTo(NinePointAnswer(includeStyle: false), target);
+        Check(!report.StyleSupplied, "no style was supplied");
+        Check(File.Exists(target), "the answer is saved");
+
+        var document = ResumeDocument.FromProfileFile(target);
+        Equal("promV4.12", document.Style.Preset, "the preset fallback");
+        Equal(11.0, document.Style.Body.FontSize, "the preset body size, unchanged");
+        Equal(10.5, document.Style.SkillValues.FontSize, "the preset skill values size, unchanged");
+
+        // Same through Accept, exactly as MainWindow calls it for a Resume-mode request.
+        var jobId = "RB-TEST-STYLE-" + Guid.NewGuid().ToString("N")[..8];
+        try {
+            var accepted = ResultCapture.Accept(NinePointAnswer(includeStyle: false), jobId, requireStyle: false);
+            Check(accepted.Saved, "Resume mode accepts a style-less answer: " + accepted.Error);
+        } finally {
+            foreach (var path in new[] { ProfileResultStore.ResultPath(jobId), ProfileResultStore.RawPath(jobId) })
+                if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    static void PreparedRequestRecordsItsMode() => WithPreparedFiles(() => {
+        var resume = RequestPreparation.Prepare(PromptJob(), PromptSettings(PromptModes.Resume));
+        Equal(PromptModes.Resume, resume.PromptMode, "a Resume request says so");
+        Check(!PromptModes.IsNormal(RequestPreparation.Load()!.PromptMode), "and reloads as Resume");
+
+        var normal = RequestPreparation.Prepare(PromptJob(), PromptSettings(PromptModes.Normal, NormalPromptFile("My prompt.")));
+        Equal(PromptModes.Normal, normal.PromptMode, "a Normal request says so");
+        Check(PromptModes.IsNormal(RequestPreparation.Load()!.PromptMode), "and reloads as Normal");
+
+        // A prepared-request.json written before the field existed reads as Resume: style stays optional.
+        File.WriteAllText(RequestPreparation.PreparedPath, """{ "JobId": "OLD-1", "Company": "A", "Title": "B", "Text": "x" }""");
+        Check(!PromptModes.IsNormal(RequestPreparation.Load()!.PromptMode), "an older file reads as Resume");
+    });
+
+    static void NormalContractDescribesTheRealSchema() {
+        var contract = PromptContract.StyleContract();
+
+        // Every section and every section-specific key the code accepts is named.
+        foreach (var section in StyleSchema.Sections) Check(contract.Contains(section, StringComparison.Ordinal), "names " + section);
+        foreach (var key in StyleSchema.Common) Check(contract.Contains(key, StringComparison.Ordinal), "names " + key);
+        foreach (var section in StyleSchema.Sections)
+            foreach (var key in StyleSchema.Allowed(section).Except(StyleSchema.Common))
+                Check(contract.Contains($"{section} also accepts:", StringComparison.Ordinal) &&
+                      contract.Split("\r\n").Single(l => l.Contains($"{section} also accepts:", StringComparison.Ordinal)).Contains(key),
+                      $"{section} lists {key}");
+        foreach (var font in StyleLimits.FontFamilies) Check(contract.Contains(font, StringComparison.Ordinal), "names font " + font);
+        foreach (var preset in StylePresets.Names) Check(contract.Contains(preset, StringComparison.Ordinal), "names preset " + preset);
+
+        // The required checks.
+        foreach (var rule in new[] { "style is present", "style is an object", "body.fontSize = 9", "bullet.fontSize = 9",
+                                     "skillValues.fontSize = 9", "education.fontSize = 9", "every lineSpacing is >= 1.0",
+                                     "no flat style fields" })
+            Check(contract.Contains(rule, StringComparison.Ordinal), "the contract checks: " + rule);
+
+        // The minimal example it gives is itself valid, needs no correction, and hits 9 pt.
+        var exampleLine = contract.Split("\r\n").Single(l => l.StartsWith("Minimal valid style:", StringComparison.Ordinal));
+        var exampleJson = "{" + exampleLine[exampleLine.IndexOf("\"style\"", StringComparison.Ordinal)..] + "}";
+        var example = JsonNode.Parse(exampleJson)!["style"];
+        Equal(0, StyleValidator.Validate(example).Count, "the contract's example is valid: " + Join(StyleValidator.Validate(example)));
+        var normalized = StyleNormalizer.Normalize(example);
+        Equal(0, normalized.Warnings.Count, "the contract's example needs no correction");
+        foreach (var section in StyleSchema.AlwaysRegular)
+            Equal(9.0, normalized.Style.Section(section).FontSize, "the example sets " + section + " to 9");
+
+        // Flat names appear only in the "do not exist" line, never as something to send.
+        foreach (var line in contract.Split("\r\n").Where(l => l.Contains("bodyFontSize", StringComparison.Ordinal)))
+            Check(line.Contains("do not exist", StringComparison.Ordinal), "bodyFontSize is only ever named as unsupported");
+    }
+
+    // ================= job import filter =================
+    //
+    // The rules are pure, so most of this needs no files at all: a JobImportData and an AppSettings
+    // go in, a decision comes out. The persistence and integration groups below use the real
+    // settings.json and tasks.json, each restored byte-for-byte afterwards.
+
+    /// <summary>All five filters on.</summary>
+    static AppSettings AllFilters() {
+        var s = JobImportFilter.NoFilters();
+        foreach (var f in JobImportFilter.Switches) f.Set(s, true);
+        return s;
+    }
+
+    /// <summary>The shipped defaults: LinkedIn, clearance and citizenship on; export and visa off.</summary>
+    static AppSettings DefaultFilters() => new();
+
+    /// <summary>Exactly one filter on, so a rule can be proved on its own.</summary>
+    static AppSettings OnlyFilter(JobFilterReason reason) {
+        var s = JobImportFilter.NoFilters();
+        JobImportFilter.Switches.Single(f => f.Reason == reason).Set(s, true);
+        return s;
+    }
+
+    static JobImportData FilterJob(string description, string? applyUrl = null,
+                                   string title = "AI Engineer",
+                                   string jobUrl = "https://jobright.ai/jobs/info/aaaaaaaaaaaaaaaaaaaaaaaa") =>
+        new() {
+            Company = "Example Co",
+            Title = title,
+            JobUrl = jobUrl,
+            Description = description,
+            ApplyUrl = applyUrl
+        };
+
+    /// <summary>Asserts the job is refused, and refused for exactly this reason.</summary>
+    static void Rejects(JobFilterReason reason, AppSettings settings, string description,
+                        string? applyUrl = null, string? note = null, string title = "AI Engineer") {
+        var decision = JobImportFilter.Evaluate(FilterJob(description, applyUrl, title), settings);
+        Check(!decision.Accepted, $"expected a rejection for {note ?? description}");
+        Equal(reason, decision.Reason, "reason for " + (note ?? description));
+    }
+
+    /// <summary>Asserts the job is imported — the false-positive guard.</summary>
+    static void Accepts(AppSettings settings, string description, string? applyUrl = null,
+                        string? note = null, string title = "AI Engineer") {
+        var decision = JobImportFilter.Evaluate(FilterJob(description, applyUrl, title), settings);
+        Check(decision.Accepted,
+              $"expected acceptance for {note ?? description} but it was refused as {decision.Reason}");
+    }
+
+    // ---------- rule: LinkedIn application platform ----------
+
+    static void FilterLinkedInPlatform() {
+        var on = OnlyFilter(JobFilterReason.LinkedInPlatform);
+
+        Rejects(JobFilterReason.LinkedInPlatform, on, "Build models.",
+                "https://www.linkedin.com/jobs/view/4012345678", "a LinkedIn job posting");
+        Rejects(JobFilterReason.LinkedInPlatform, on, "Build models.",
+                "https://linkedin.com/jobs/collections/recommended/?currentJobId=41", "linkedin.com/jobs");
+
+        // The same job with the switch off imports.
+        Accepts(JobImportFilter.NoFilters(), "Build models.",
+                "https://www.linkedin.com/jobs/view/4012345678", "LinkedIn with the filter off");
+
+        // Another ATS is never LinkedIn.
+        Accepts(on, "Build models.", "https://boards.greenhouse.io/acme/jobs/7", "Greenhouse apply link");
+    }
+
+    static void FilterLinkedInIsAboutTheDestinationOnly() {
+        var on = OnlyFilter(JobFilterReason.LinkedInPlatform);
+
+        // Text mentioning LinkedIn is not an application destination.
+        Accepts(on, "Share your LinkedIn profile. LinkedIn Learning budget provided. Follow us on LinkedIn.",
+                "https://boards.greenhouse.io/acme/jobs/7", "LinkedIn mentioned in the description");
+        Accepts(on, "We use LinkedIn Recruiter.", null, "LinkedIn in the text, no apply link");
+
+        // No address at all is Unknown, and Unknown is never LinkedIn.
+        foreach (var missing in new string?[] { null, "", "   ", "not a url", "javascript:alert(1)" })
+            Accepts(on, "Build models.", missing, $"missing apply url '{missing ?? "null"}'");
+
+        // A LinkedIn profile or company page is not an application platform either.
+        Accepts(on, "Build models.", "https://www.linkedin.com/company/acme", "LinkedIn company page");
+        Accepts(on, "Build models.", "https://www.linkedin.com/in/someone", "LinkedIn profile");
+
+        Check(JobImportFilter.IsLinkedInApplication("https://www.linkedin.com/jobs/view/1"), "jobs path is LinkedIn");
+        Check(!JobImportFilter.IsLinkedInApplication(null), "no address is never LinkedIn");
+    }
+
+    // ---------- rule: security clearance ----------
+
+    static void FilterSecurityClearanceRequirements() {
+        var on = OnlyFilter(JobFilterReason.SecurityClearance);
+
+        string[] required = {
+            "Security clearance required.",
+            "Must have security clearance.",
+            "Candidates need an active security clearance.",
+            "Active Secret clearance required for this role.",
+            "Secret clearance required.",
+            "Top Secret clearance required.",
+            "Applicants must hold a Top Secret/SCI clearance.",
+            "TS/SCI required.",
+            "SCI clearance required.",
+            "DoD clearance required.",
+            "You must possess a clearance before starting.",
+            "The engineer must obtain a clearance within 90 days.",
+            "Must maintain a clearance throughout employment.",
+            "Must obtain and maintain a security clearance.",
+            "Must be eligible for a security clearance.",
+            "Ability to obtain a security clearance is required.",
+            "Ability to obtain and maintain a security clearance.",
+            "Public Trust clearance required.",
+            "Must be eligible for Public Trust."
+        };
+
+        foreach (var text in required)
+            Rejects(JobFilterReason.SecurityClearance, on, text);
+
+        // Case, punctuation and hyphenation must not change the answer.
+        Rejects(JobFilterReason.SecurityClearance, on, "ACTIVE TOP-SECRET / SCI CLEARANCE REQUIRED", note: "upper case, hyphens");
+        Rejects(JobFilterReason.SecurityClearance, on, "Requirements:\n• Active Secret clearance\n• 5 years of Python", note: "a bullet list");
+
+        // With the switch off the same text imports.
+        Accepts(JobImportFilter.NoFilters(), "TS/SCI required.", note: "clearance with the filter off");
+    }
+
+    static void FilterSecurityIsNotClearance() {
+        var on = OnlyFilter(JobFilterReason.SecurityClearance);
+
+        string[] ordinary = {
+            "Follow security best practices.",
+            "5+ years of cybersecurity experience.",
+            "Work on AI security and governance.",
+            "Cloud security certification preferred.",
+            "Certified in AWS.",
+            "Design secure APIs and secure systems.",
+            "Application security engineering and security monitoring.",
+            "Security compliance, security standards and security governance.",
+            "Experience with DevSecOps, FedRAMP, NIST and FISMA.",
+            "You will partner with cybersecurity teams.",
+            "Red teaming experience is a plus.",
+            "Own security/privacy reviews for new features."
+        };
+
+        foreach (var text in ordinary)
+            Accepts(on, text);
+
+        // The real postings that must keep importing.
+        Accepts(on, "Pacific Gas and Electric Company is building secure, compliant AI systems for a " +
+                    "highly regulated industry. You will work with Cybersecurity stakeholders to ensure " +
+                    "data protection and regulatory compliance across the enterprise.", note: "PG&E");
+
+        Accepts(on, "Certified in at least one Cloud or AI-related Certification. Experience with " +
+                    "enterprise security and governance frameworks is required.", note: "Ansell (certification)");
+
+        Accepts(on, "SRE - Enterprise & Cloud Security - AI Driven Security. You will build AI driven " +
+                    "security tooling and hold cloud security certifications.", note: "PwC (cybersecurity work)",
+                title: "SRE - Enterprise & Cloud Security - AI Driven Security - Manager");
+
+        Accepts(on, "Build secure backend services and follow security best practices across the " +
+                    "storage platform.", note: "Pure Storage / Everpure");
+
+        Accepts(on, "Sentry helps developers find and fix errors. You will build the AI features of our " +
+                    "error monitoring and application security products.", note: "a security product company");
+
+        // A job that says the opposite must never be read as a requirement.
+        Accepts(on, "A security clearance is not required for this position.", note: "clearance explicitly not required");
+        Accepts(on, "No clearance needed.", note: "no clearance needed");
+    }
+
+    // ---------- rule: citizenship / Public Trust ----------
+
+    static void FilterCitizenshipRequirements() {
+        var on = OnlyFilter(JobFilterReason.CitizenshipRequirement);
+
+        string[] restricted = {
+            "U.S. citizenship required.",
+            "US citizenship required.",
+            "Must be a U.S. citizen.",
+            "Must be US citizen.",
+            "U.S. citizens only.",
+            "US citizens only.",
+            "This role requires United States citizenship.",
+            "Applicants must be American citizens."
+        };
+
+        foreach (var text in restricted)
+            Rejects(JobFilterReason.CitizenshipRequirement, on, text);
+
+        Accepts(JobImportFilter.NoFilters(), "US citizenship required.", note: "citizenship with the filter off");
+    }
+
+    static void FilterWorkAuthorizationIsNotCitizenship() {
+        var on = OnlyFilter(JobFilterReason.CitizenshipRequirement);
+
+        string[] fine = {
+            "You must be authorized to work in the United States.",
+            "Valid authorization to work in the U.S. is required.",
+            "Must have valid work authorization.",
+            "Candidates must be authorized to work in the US without restriction."
+        };
+
+        foreach (var text in fine)
+            Accepts(on, text);
+
+        // Equal-opportunity boilerplate names citizenship as a protected class, not a requirement.
+        Accepts(on, "We are an equal opportunity employer and consider all applicants regardless of race, " +
+                    "religion, national origin, citizenship status or veteran status, as required by law.",
+                note: "EEO boilerplate");
+
+        Accepts(on, "U.S. citizenship is not required for this role.", note: "citizenship explicitly not required");
+    }
+
+    static void FilterCitizenshipAndClearancePrecedence() {
+        // The documented precedence is JobImportFilter.Switches order: clearance before citizenship.
+        const string both = "US Citizenship required; must be eligible for a Public Trust clearance.";
+
+        Rejects(JobFilterReason.SecurityClearance, DefaultFilters(), both, note: "both rules on -> clearance wins");
+        Rejects(JobFilterReason.SecurityClearance, AllFilters(), both, note: "all rules on -> clearance wins");
+
+        // With clearance off, the citizenship rule still catches the same posting.
+        Rejects(JobFilterReason.CitizenshipRequirement, OnlyFilter(JobFilterReason.CitizenshipRequirement), both,
+                note: "clearance off -> citizenship");
+
+        // And the precedence is the declared switch order, not an accident of the code.
+        Equal(JobFilterReason.LinkedInPlatform, JobImportFilter.Switches[0].Reason, "first switch");
+        Equal(JobFilterReason.SecurityClearance, JobImportFilter.Switches[1].Reason, "second switch");
+        Equal(JobFilterReason.CitizenshipRequirement, JobImportFilter.Switches[2].Reason, "third switch");
+        Equal(JobFilterReason.ExportControl, JobImportFilter.Switches[3].Reason, "fourth switch");
+        Equal(JobFilterReason.NoVisaSponsorship, JobImportFilter.Switches[4].Reason, "fifth switch");
+    }
+
+    // ---------- rule: export control ----------
+
+    static void FilterExportControlRestrictions() {
+        var on = OnlyFilter(JobFilterReason.ExportControl);
+
+        const string coreweave =
+            "This position requires access to export controlled information. To conform to U.S. " +
+            "Government export regulations, applicant must either be a U.S. person as defined by " +
+            "22 CFR 120.15, or eligible to obtain the required authorizations from the U.S. Department of State.";
+
+        Rejects(JobFilterReason.ExportControl, on, coreweave, note: "CoreWeave-style export control");
+
+        string[] restricted = {
+            "U.S. person required.",
+            "US person required.",
+            "Must qualify as a U.S. person under export control regulations.",
+            "ITAR restricted position.",
+            "This is an export-controlled role; applicants must be U.S. persons or permanent residents."
+        };
+
+        foreach (var text in restricted)
+            Rejects(JobFilterReason.ExportControl, on, text);
+
+        // Default-off means the same postings import until the user turns the switch on.
+        Accepts(DefaultFilters(), coreweave, note: "CoreWeave with export control off (default)");
+        Accepts(JobImportFilter.NoFilters(), "ITAR restricted position.", note: "ITAR with the filter off");
+    }
+
+    static void FilterExportControlLeavesOrdinaryComplianceAlone() {
+        var on = OnlyFilter(JobFilterReason.ExportControl);
+
+        string[] ordinary = {
+            "Strong security and compliance background.",
+            "Experience in a regulated industry.",
+            "Data governance and data protection experience.",
+            "Partner with legal and compliance teams on governance.",
+            "Familiarity with export control regulations is a plus."
+        };
+
+        foreach (var text in ordinary)
+            Accepts(on, text);
+    }
+
+    // ---------- rule: visa sponsorship ----------
+
+    static void FilterNoVisaSponsorship() {
+        var on = OnlyFilter(JobFilterReason.NoVisaSponsorship);
+
+        string[] refused = {
+            "Visa sponsorship is not available for this position.",
+            "No visa sponsorship.",
+            "The company does not provide visa sponsorship.",
+            "We do not offer sponsorship.",
+            "We are unable to provide work visa sponsorship.",
+            "Candidates are not eligible for visa sponsorship.",
+            "This role is not eligible for Visa transfer or Sponsorship.",
+            "Our company does not engage in immigration sponsorship.",
+            "We can't sponsor visas for this role."
+        };
+
+        foreach (var text in refused)
+            Rejects(JobFilterReason.NoVisaSponsorship, on, text);
+
+        Accepts(JobImportFilter.NoFilters(), "Visa sponsorship is not available for this position.",
+                note: "no sponsorship with the filter off");
+        Accepts(DefaultFilters(), "This role is not eligible for Visa transfer or Sponsorship.",
+                note: "AMD-style text with the default switches");
+    }
+
+    static void FilterSponsorshipOfferedIsAccepted() {
+        var on = OnlyFilter(JobFilterReason.NoVisaSponsorship);
+
+        Accepts(on, "Capital One will consider sponsoring a new qualified applicant for employment " +
+                    "authorization for this position.", note: "Capital One offers sponsorship");
+        Accepts(on, "Visa sponsorship is available for this role.", note: "sponsorship available");
+        Accepts(on, "We sponsor H-1B and green card applications.", note: "sponsorship offered");
+        Accepts(on, "Must have valid authorization to work in the U.S.", note: "work authorization only");
+    }
+
+    // ---------- the switch set itself ----------
+
+    static void FilterSwitchesAreOneSharedDefinition() {
+        Equal(5, JobImportFilter.Switches.Count, "five switches");
+
+        // Every reason but None has exactly one switch, and every switch reads and writes its own field.
+        foreach (var reason in Enum.GetValues<JobFilterReason>().Where(r => r != JobFilterReason.None))
+            Equal(1, JobImportFilter.Switches.Count(s => s.Reason == reason), "switches for " + reason);
+
+        var settings = JobImportFilter.NoFilters();
+        foreach (var descriptor in JobImportFilter.Switches) {
+            Check(!descriptor.Get(settings), descriptor.Reason + " starts off");
+            descriptor.Set(settings, true);
+            Check(descriptor.Get(settings), descriptor.Reason + " reads back what it wrote");
+
+            // Only its own field moved.
+            Equal(1, JobImportFilter.Switches.Count(s => s.Get(settings)), "only one switch on after setting " + descriptor.Reason);
+            descriptor.Set(settings, false);
+
+            Check(!string.IsNullOrWhiteSpace(descriptor.Label), descriptor.Reason + " has a caption");
+            Check(descriptor.Label.StartsWith("Skip ", StringComparison.Ordinal), descriptor.Reason + " caption starts with Skip");
+        }
+
+        // Every reason has its own user-facing text, and none of it leaks a pattern.
+        foreach (var reason in Enum.GetValues<JobFilterReason>().Where(r => r != JobFilterReason.None)) {
+            var text = JobImportFilter.Describe(reason);
+            Check(text.StartsWith("Not imported: ", StringComparison.Ordinal), reason + " message shape");
+            Equal(reason.ToString(), JobImportFilter.LogReason(reason), "log token for " + reason);
+        }
+
+        Equal("Not imported: LinkedIn application platform", JobImportFilter.Describe(JobFilterReason.LinkedInPlatform), "LinkedIn text");
+        Equal("Not imported: security clearance required", JobImportFilter.Describe(JobFilterReason.SecurityClearance), "clearance text");
+        Equal("Not imported: U.S. citizenship requirement", JobImportFilter.Describe(JobFilterReason.CitizenshipRequirement), "citizenship text");
+        Equal("Not imported: export-control restriction", JobImportFilter.Describe(JobFilterReason.ExportControl), "export text");
+        Equal("Not imported: visa sponsorship unavailable", JobImportFilter.Describe(JobFilterReason.NoVisaSponsorship), "visa text");
+    }
+
+    static void FilterAllOffAcceptsEverything() {
+        var off = JobImportFilter.NoFilters();
+
+        string[] wouldReject = {
+            "Active TS/SCI clearance required.",
+            "US citizenship required.",
+            "ITAR restricted position; must be a U.S. person.",
+            "Visa sponsorship is not available."
+        };
+
+        foreach (var text in wouldReject)
+            Accepts(off, text, "https://www.linkedin.com/jobs/view/4012345678", "all off: " + text);
+
+        Equal(0, JobImportFilter.EnabledCount(off), "no switches on");
+        Equal("Filters (0)", JobImportFilter.ButtonText(off), "button text with none on");
+
+        // A job with nothing to read is never refused.
+        Check(JobImportFilter.Evaluate(new JobImportData(), AllFilters()).Accepted, "an empty job is accepted");
+        Check(JobImportFilter.Evaluate(null, AllFilters()).Accepted, "no data is accepted");
+        Check(JobImportFilter.Evaluate(FilterJob("x"), null).Accepted, "no settings is accepted");
+    }
+
+    // ---------- persistence ----------
+
+    /// <summary>Runs a test against the real settings.json and restores its exact bytes afterwards.</summary>
+    static void WithSettingsFileRestored(Action body) => WithLiveStateFile(Storage.SettingsPath, body);
+
+    /// <summary>
+    /// Runs a body that writes a LIVE state file and puts everything back exactly: the file's bytes,
+    /// its ".bak" (atomic saves create one since Phase 1), any "corrupt-*" copy the test caused, a
+    /// stray ".tmp", and the per-session write refusal — so no test leaves a trace in the user's data.
+    /// </summary>
+    static void WithLiveStateFile(string live, Action body) {
+        var bak = live + ".bak";
+        var dir = Path.GetDirectoryName(live)!;
+        var pattern = Path.GetFileNameWithoutExtension(live) + ".corrupt-*" + Path.GetExtension(live);
+        byte[]? Snap(string p) => File.Exists(p) ? File.ReadAllBytes(p) : null;
+        var main = Snap(live);
+        var backup = Snap(bak);
+        var kept = Directory.Exists(dir) ? Directory.GetFiles(dir, pattern).ToHashSet(StringComparer.OrdinalIgnoreCase) : new HashSet<string>();
+
+        try { body(); }
+        finally {
+            void Put(string p, byte[]? b) { if (b is not null) File.WriteAllBytes(p, b); else if (File.Exists(p)) File.Delete(p); }
+            Put(live, main);
+            Put(bak, backup);
+            if (File.Exists(live + ".tmp")) File.Delete(live + ".tmp");
+            if (Directory.Exists(dir))
+                foreach (var copy in Directory.GetFiles(dir, pattern))
+                    if (!kept.Contains(copy)) File.Delete(copy);
+            Storage.ClearWriteBlock(live);
+        }
+    }
+
+    static void FilterSettingsDefaults() {
+        var fresh = new AppSettings();
+
+        Check(fresh.SkipLinkedInApply, "SkipLinkedInApply defaults on");
+        Check(fresh.SkipSecurityClearance, "SkipSecurityClearance defaults on");
+        Check(fresh.SkipCitizenshipRequirement, "SkipCitizenshipRequirement defaults on");
+        Check(!fresh.SkipExportControl, "SkipExportControl defaults off");
+        Check(!fresh.SkipNoVisaSponsorship, "SkipNoVisaSponsorship defaults off");
+
+        Equal(3, JobImportFilter.EnabledCount(fresh), "three filters on by default");
+        Equal("Filters (3)", JobImportFilter.ButtonText(fresh), "the default button caption");
+
+        var withExport = new AppSettings { SkipExportControl = true };
+        Equal("Filters (4)", JobImportFilter.ButtonText(withExport), "export control makes it four");
+
+        Equal("Filters (5)", JobImportFilter.ButtonText(AllFilters()), "all five on");
+    }
+
+    static void FilterSettingsOldFileLoadsWithDefaults() => WithSettingsFileRestored(() => {
+        // Exactly the shape settings.json had before the filters existed.
+        Directory.CreateDirectory(Storage.DataDir);
+        File.WriteAllText(Storage.SettingsPath, """
+        {
+          "OriginalResume": "C:\\resume.docx",
+          "MasterPrompt": "C:\\prompt.txt",
+          "PromptMode": "Normal",
+          "NormalPrompt": "C:\\normal.md",
+          "IncomingFolder": "C:\\in",
+          "ImportedFolder": "C:\\done",
+          "ResumeRootFolder": "C:\\resumes",
+          "Docx": true, "Pdf": true, "AutoSend": true, "FocusHotkey": false
+        }
+        """);
+
+        var loaded = Storage.LoadSettings();
+
+        Check(loaded.SkipLinkedInApply, "missing SkipLinkedInApply loads as on");
+        Check(loaded.SkipSecurityClearance, "missing SkipSecurityClearance loads as on");
+        Check(loaded.SkipCitizenshipRequirement, "missing SkipCitizenshipRequirement loads as on");
+        Check(!loaded.SkipExportControl, "missing SkipExportControl loads as off");
+        Check(!loaded.SkipNoVisaSponsorship, "missing SkipNoVisaSponsorship loads as off");
+        Equal(3, JobImportFilter.EnabledCount(loaded), "an old file shows Filters (3)");
+
+        // The settings that WERE in the file are untouched.
+        Equal("C:\\normal.md", loaded.NormalPrompt, "NormalPrompt kept");
+        Equal(PromptModes.Normal, loaded.PromptMode, "PromptMode kept");
+        Check(!loaded.FocusHotkey, "an explicit false is kept");
+    });
+
+    static void FilterSettingsSurviveSaveAndReload() => WithSettingsFileRestored(() => {
+        var saved = new AppSettings {
+            OriginalResume = "C:\\me.docx", MasterPrompt = "C:\\p.txt", NormalPrompt = "C:\\n.md",
+            PromptMode = PromptModes.Normal, IncomingFolder = "C:\\in", ImportedFolder = "C:\\done",
+            ResumeRootFolder = "C:\\resumes", Docx = false, Pdf = true, AutoSend = false, ReadySound = false,
+            SkipLinkedInApply = false, SkipSecurityClearance = true,
+            SkipCitizenshipRequirement = false, SkipExportControl = true, SkipNoVisaSponsorship = true
+        };
+        Storage.SaveSettings(saved);
+
+        var loaded = Storage.LoadSettings();
+        Check(!loaded.SkipLinkedInApply, "LinkedIn off survived");
+        Check(loaded.SkipSecurityClearance, "clearance on survived");
+        Check(!loaded.SkipCitizenshipRequirement, "citizenship off survived");
+        Check(loaded.SkipExportControl, "export on survived");
+        Check(loaded.SkipNoVisaSponsorship, "visa on survived");
+        Equal(3, JobImportFilter.EnabledCount(loaded), "count after reload");
+
+        // The five fields really are in the file, by name.
+        var json = File.ReadAllText(Storage.SettingsPath);
+        foreach (var field in new[] { "SkipLinkedInApply", "SkipSecurityClearance", "SkipCitizenshipRequirement",
+                                      "SkipExportControl", "SkipNoVisaSponsorship" })
+            Check(json.Contains(field, StringComparison.Ordinal), field + " is written to settings.json");
+    });
+
+    static void FilterToggleKeepsUnrelatedSettings() => WithSettingsFileRestored(() => {
+        // What the toolbar does on one tick: load, set one field, save.
+        var original = new AppSettings {
+            OriginalResume = "C:\\me.docx", CandidateProfile = "C:\\profile.json", MasterPrompt = "C:\\p.txt",
+            PromptMode = PromptModes.Normal, NormalPrompt = "C:\\n.md",
+            IncomingFolder = "C:\\in", ImportedFolder = "C:\\done", ResumeRootFolder = "C:\\resumes",
+            Docx = false, Pdf = true, AutoFillComposer = false, AutoCaptureResult = false, AutoSend = false,
+            ReadyToast = false, ReadySound = false, ReadyFlash = false, FocusHotkey = false
+        };
+        Storage.SaveSettings(original);
+
+        foreach (var descriptor in JobImportFilter.Switches) {
+            var settings = Storage.LoadSettings();
+            descriptor.Set(settings, !descriptor.Get(settings));
+            Storage.SaveSettings(settings);
+        }
+
+        var after = Storage.LoadSettings();
+
+        Equal(original.OriginalResume, after.OriginalResume, "resume path kept");
+        Equal(original.CandidateProfile, after.CandidateProfile, "candidate profile kept");
+        Equal(original.MasterPrompt, after.MasterPrompt, "master prompt kept");
+        Equal(original.NormalPrompt, after.NormalPrompt, "normal prompt kept");
+        Equal(original.PromptMode, after.PromptMode, "prompt mode kept");
+        Equal(original.IncomingFolder, after.IncomingFolder, "incoming folder kept");
+        Equal(original.ImportedFolder, after.ImportedFolder, "imported folder kept");
+        Equal(original.ResumeRootFolder, after.ResumeRootFolder, "resume root kept");
+        Equal(original.Docx, after.Docx, "docx kept");
+        Equal(original.Pdf, after.Pdf, "pdf kept");
+        Equal(original.AutoSend, after.AutoSend, "auto send kept");
+        Equal(original.ReadyToast, after.ReadyToast, "ready toast kept");
+        Equal(original.FocusHotkey, after.FocusHotkey, "focus hotkey kept");
+
+        // Each filter flipped exactly once, from its default.
+        Check(!after.SkipLinkedInApply, "LinkedIn flipped off");
+        Check(!after.SkipSecurityClearance, "clearance flipped off");
+        Check(!after.SkipCitizenshipRequirement, "citizenship flipped off");
+        Check(after.SkipExportControl, "export flipped on");
+        Check(after.SkipNoVisaSponsorship, "visa flipped on");
+        Equal(2, JobImportFilter.EnabledCount(after), "two on after flipping every switch");
+    });
+
+    // ---------- integration: the one gate ----------
+
+    static void FilterGateCreatesNoTask() => WithTasksFileRestored(() => {
+        Directory.CreateDirectory(Storage.DataDir);
+        var before = File.Exists(Storage.TasksPath) ? File.ReadAllBytes(Storage.TasksPath) : null;
+
+        var tasks = new List<JobTask> { Job("KEEP-ME-1") };
+        var outcome = JobImporter.ImportOne(
+            FilterJob("Active TS/SCI clearance required.", null, "Backend Engineer", "https://example.com/jobs/filtered"),
+            JobImporter.BrowserSource, tasks, DefaultFilters());
+
+        Equal(JobImportKind.Skipped, outcome.Kind, "the job is skipped, not failed");
+        Equal(JobFilterReason.SecurityClearance, outcome.FilterReason, "the reason travels with the outcome");
+        Equal(JobImportFilter.Describe(JobFilterReason.SecurityClearance), outcome.Reason, "a plain-words reason");
+        Equal("", outcome.JobId, "no task id was handed out");
+
+        // No task, and nothing written: the existing task list is exactly as it was.
+        Equal(1, tasks.Count, "no task was created");
+        Equal("KEEP-ME-1", tasks[0].JobId, "the existing task is untouched");
+
+        var after = File.Exists(Storage.TasksPath) ? File.ReadAllBytes(Storage.TasksPath) : null;
+        Check((before is null && after is null) || (before is not null && after is not null && before.SequenceEqual(after)),
+              "tasks.json was not written for a filtered job");
+
+        // Nothing reached the queue either: a skipped job has no Queued task to run.
+        Check(!tasks.Any(t => t.Status == "Queued" && t.Title == "Backend Engineer"), "nothing was queued");
+    });
+
+    static void FilterGateStillImportsAcceptedJobs() => WithTasksFileRestored(() => {
+        var tasks = new List<JobTask>();
+
+        var outcome = JobImporter.ImportOne(
+            FilterJob("Build AI services. Follow security best practices.", "https://boards.greenhouse.io/acme/jobs/7",
+                     jobUrl: "https://example.com/jobs/good"),
+            JobImporter.BrowserSource, tasks, DefaultFilters());
+
+        Equal(JobImportKind.Imported, outcome.Kind, "an acceptable job still imports");
+        Equal(JobFilterReason.None, outcome.FilterReason, "no filter reason on an import");
+        Equal(1, tasks.Count, "one task created");
+        Equal("Queued", tasks[0].Status, "the normal queue status");
+        Equal(ApplicationStatus.Viewed, tasks[0].ApplicationStatus, "the normal application status");
+        Equal(ApplicationPlatform.Greenhouse, tasks[0].ApplicationPlatform, "the existing ApplyUrl path still runs");
+        Check(outcome.ApplyUrlRecorded, "the application link was still recorded");
+        Equal(1, Storage.LoadTasks().Count, "it was saved");
+    });
+
+    static void FilterGateRunsAfterTheDuplicateDecision() => WithTasksFileRestored(() => {
+        const string url = "https://jobright.ai/jobs/info/cccccccccccccccccccccccc";
+
+        // A job imported while the filters were off.
+        var tasks = new List<JobTask>();
+        var first = JobImporter.ImportOne(FilterJob("Active TS/SCI clearance required.", jobUrl: url),
+                                          JobImporter.BrowserSource, tasks, NoFilters);
+        Equal(JobImportKind.Imported, first.Kind, "imported with the filters off");
+
+        // The user then turns the filters on and the same job is imported again: it stays a
+        // DUPLICATE. A filter must never make an existing job disappear.
+        var again = JobImporter.ImportOne(
+            FilterJob("Active TS/SCI clearance required.", "https://boards.greenhouse.io/acme/jobs/7", jobUrl: url),
+            JobImporter.BrowserSource, tasks, AllFilters());
+
+        Equal(JobImportKind.Duplicate, again.Kind, "a filtered re-import is still a duplicate");
+        Equal(first.JobId, again.JobId, "the same existing task");
+        Equal(1, tasks.Count, "no task was added or removed");
+
+        // And the existing ApplyUrl backfill still happened, filters or not.
+        Check(again.ApplyUrlRecorded, "the empty ApplyUrl was still filled");
+        Equal("https://boards.greenhouse.io/acme/jobs/7", tasks[0].ApplyUrl, "the address was saved");
+        Equal(ApplicationPlatform.Greenhouse, tasks[0].ApplicationPlatform, "and its platform derived");
+
+        // An existing address is still never replaced.
+        var third = JobImporter.ImportOne(
+            FilterJob("Active TS/SCI clearance required.", "https://jobs.lever.co/acme/1", jobUrl: url),
+            JobImporter.BrowserSource, tasks, AllFilters());
+        Equal(JobImportKind.Duplicate, third.Kind, "still a duplicate");
+        Check(!third.ApplyUrlRecorded, "an existing address is not replaced");
+        Equal("https://boards.greenhouse.io/acme/jobs/7", tasks[0].ApplyUrl, "the first address stands");
+    });
+
+    static void FilterSettingsChangeAffectsTheNextImport() => WithTasksFileRestored(() => {
+        var tasks = new List<JobTask>();
+        const string amd = "This role is not eligible for Visa transfer or Sponsorship.";
+
+        // Default switches: the visa rule is off, so it imports.
+        var first = JobImporter.ImportOne(FilterJob(amd, jobUrl: "https://example.com/jobs/v1"),
+                                          JobImporter.BrowserSource, tasks, DefaultFilters());
+        Equal(JobImportKind.Imported, first.Kind, "imported while the visa filter is off");
+
+        // The user turns the visa filter on; the very next call refuses a new job with the same text.
+        var withVisa = DefaultFilters();
+        withVisa.SkipNoVisaSponsorship = true;
+
+        var second = JobImporter.ImportOne(FilterJob(amd, jobUrl: "https://example.com/jobs/v2"),
+                                           JobImporter.BrowserSource, tasks, withVisa);
+        Equal(JobImportKind.Skipped, second.Kind, "refused once the switch is on");
+        Equal(JobFilterReason.NoVisaSponsorship, second.FilterReason, "for the visa reason");
+
+        // The job imported earlier is still there — filters gate imports, they never clean up.
+        Equal(1, tasks.Count, "the earlier job stayed");
+        Equal(first.JobId, tasks[0].JobId, "and it is the same task");
+    });
+
+    static void FilterIncomingFolderSharesTheGate() {
+        var root = NewDir("filter-incoming");
+        var incoming = Path.Combine(root, "in");
+        var imported = Path.Combine(root, "done");
+        Directory.CreateDirectory(incoming);
+
+        void WriteJob(string name, string description) =>
+            File.WriteAllText(Path.Combine(incoming, name), JsonSerializer.Serialize(new {
+                company = "Example Co", title = "AI Engineer",
+                jobUrl = "https://example.com/jobs/" + Path.GetFileNameWithoutExtension(name),
+                description
+            }));
+
+        WriteJob("good.json", "Build AI services and follow security best practices.");
+        WriteJob("clearance.json", "Active TS/SCI clearance required.");
+
+        WithTasksFileRestored(() => {
+            var settings = DefaultFilters();
+            settings.IncomingFolder = incoming;
+            settings.ImportedFolder = imported;
+
+            var tasks = new List<JobTask>();
+            var result = JobImporter.Import(settings, tasks);
+
+            Equal(1, result.JobsQueued, "one job queued");
+            Equal(1, result.JobsSkipped, "one job filtered out");
+            Equal(0, result.Errors.Count, "a filtered job is not an error: " + Join(result.Errors));
+            Equal(1, tasks.Count, "only the accepted job became a task");
+            Equal("https://example.com/jobs/good", tasks[0].Link, "and it is the right one");
+
+            // Both files were handled, so neither is retried forever.
+            Equal(2, result.FilesImported, "both files were archived");
+            Equal(0, Directory.GetFiles(incoming, "*.json").Length, "Incoming is empty");
+        });
+    }
+
+    static void FilterAutoImportTargetCountsImportsOnly() {
+        // The Auto Import loop's own arithmetic, with the real gate and no browser: only an
+        // Imported outcome counts toward the target, and the loop keeps going until it is met.
+        var settings = DefaultFilters();
+
+        var candidates = new List<(string Url, string Description)>();
+        for (var i = 0; i < 12; i++)
+            candidates.Add(($"https://example.com/jobs/auto-{i}",
+                            i % 3 == 0 ? "Active TS/SCI clearance required." : "Build AI services."));
+
+        WithTasksFileRestored(() => {
+            var tasks = new List<JobTask>();
+
+            // One candidate is already in Resume Builder, so it can only ever be a duplicate.
+            JobImporter.ImportOne(FilterJob("Build AI services.", jobUrl: candidates[1].Url),
+                                  JobImporter.BrowserSource, tasks, settings);
+
+            const int target = 4;
+            var imported = 0; var existing = 0; var filtered = 0; var examined = 0;
+            var processed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var (url, description) in candidates) {
+                if (imported >= target) break;
+                if (!processed.Add(JobUrls.Normalize(url) ?? url)) continue;
+
+                examined++;
+                var outcome = JobImporter.ImportOne(FilterJob(description, jobUrl: url),
+                                                    JobImporter.BrowserSource, tasks, settings);
+                switch (outcome.Kind) {
+                    case JobImportKind.Imported: imported++; break;
+                    case JobImportKind.Duplicate: existing++; break;
+                    case JobImportKind.Skipped: filtered++; break;
+                }
+            }
+
+            Equal(target, imported, "the target counts ACCEPTED imports");
+            Check(filtered > 0, "some candidates were filtered out");
+            Equal(1, existing, "the duplicate did not count");
+            Check(examined > target, $"more candidates were examined ({examined}) than the target ({target})");
+
+            // Every task in the list is a real import; nothing skipped leaked in.
+            Equal(imported + existing, tasks.Count, "tasks = accepted imports only");
+            foreach (var task in tasks)
+                Check(!task.Jd.Contains("TS/SCI", StringComparison.OrdinalIgnoreCase), "no filtered job became a task");
+        });
+    }
+
+    static void FilterSessionNeverRetriesTheSameRejection() {
+        var settings = DefaultFilters();
+
+        WithTasksFileRestored(() => {
+            var tasks = new List<JobTask>();
+            var processed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var attempts = 0;
+
+            // The same rejected card offered again and again, as a scroll would.
+            var repeated = new[] {
+                "https://example.com/jobs/rejected",
+                "https://example.com/jobs/rejected/",
+                "https://example.com/jobs/rejected?utm_source=scroll",
+                "https://example.com/jobs/rejected"
+            };
+
+            foreach (var url in repeated) {
+                if (!processed.Add(JobUrls.Normalize(url) ?? url)) continue;
+                attempts++;
+                var outcome = JobImporter.ImportOne(FilterJob("US citizenship required.", jobUrl: url),
+                                                    JobImporter.BrowserSource, tasks, settings);
+                Equal(JobImportKind.Skipped, outcome.Kind, "refused every time it is tried");
+            }
+
+            Equal(1, attempts, "the same rejected job is opened once per session");
+            Equal(0, tasks.Count, "and it never becomes a task");
+
+            // A new session starts with an empty set, and a changed setting lets the job in.
+            var laterSession = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            Check(laterSession.Add(JobUrls.Normalize(repeated[0])!), "a later session may try it again");
+
+            var relaxed = DefaultFilters();
+            relaxed.SkipCitizenshipRequirement = false;
+            Equal(JobImportKind.Imported,
+                  JobImporter.ImportOne(FilterJob("US citizenship required.", jobUrl: repeated[0]),
+                                        JobImporter.BrowserSource, tasks, relaxed).Kind,
+                  "nothing is blacklisted: the job imports once the filter is off");
+        });
+    }
+
+    // ---------- SQLite job store (Applications no longer walks the resume tree) ----------
+
+    const string JobrightExternalId = "0123456789abcdef01234567";
+
+    static void UsingStore(Action body) {
+        var previous = JobStore.DatabasePathOverride;
+        JobStore.DatabasePathOverride = Path.Combine(NewDir("jobstore-" + Guid.NewGuid().ToString("N")), "resumebuilder.db");
+        JobStore.ResetDirectoryEnumerations();
+        try { body(); }
+        finally { JobStore.DatabasePathOverride = previous; }
+    }
+
+    static JobTask StoreJob(string id, string company, string title, string source, string link) {
+        var job = Job(id, company, title, link);
+        job.Source = source;
+        job.Jd = "Build the product.";
+        job.ApplicationStatus = ApplicationStatus.Ready;
+        return job;
+    }
+
+    static void SqliteMigrationImportsJobs() {
+        UsingStore(() => {
+            var json = Path.Combine(NewDir("json-untouched"), "tasks.json");
+            File.WriteAllText(json, """[{ "jobId": "RB-KEEP" }]""");
+            var before = File.ReadAllBytes(json);
+            var tasks = new List<JobTask> {
+                StoreJob("RB-1", "Acme", "Engineer", JobImporter.BrowserSource,
+                    "https://jobright.ai/jobs/info/" + JobrightExternalId),
+                StoreJob("RB-2", "Other", "Analyst", JobImporter.IncomingSource, "https://example.com/jobs/2")
+            };
+            tasks[0].ApplyUrl = "https://boards.greenhouse.io/acme/jobs/9";
+            Equal(JobStore.SchemaVersion, JobStore.UserVersion, "opening the database creates the schema");
+            JobStore.SaveJobs(tasks);
+            var report = JobStore.MigrateIfNeeded(tasks, NewDir("no-resumes-import"));
+            Check(!report.Failed && report.AlreadyComplete, "startup does not import a task list");
+            Equal(2, report.Jobs, "jobs stored");
+            Equal(2, report.Applications, "applications stored");
+            Equal(JobStore.SchemaVersion, JobStore.UserVersion, "version stays at the schema");
+            var rows = JobStore.LoadApplications();
+            Equal(2, rows.Count, "both jobs load");
+            var jobright = rows.Single(r => r.JobId == "RB-1");
+            Equal(JobrightExternalId, jobright.ExternalJobId, "Jobright external id");
+            Equal(ApplicationStatus.Ready, jobright.ApplicationStatus, "application status");
+            Equal("https://boards.greenhouse.io/acme/jobs/9", jobright.ApplyUrl, "apply url");
+            Check(rows.Single(r => r.JobId == "RB-2").ExternalJobId is null, "a non-Jobright posting has no external id");
+            Check(before.AsSpan().SequenceEqual(File.ReadAllBytes(json)), "tasks.json bytes were not rewritten");
+        });
+    }
+
+    static void SqliteMigrationLinksByJobId() {
+        UsingStore(() => {
+            var root = NewDir("resume-root-link");
+            var folder = Path.Combine(root, "2026-09-28", "Decoy Company - Decoy Role");
+            Directory.CreateDirectory(folder);
+            ResumeOutputManager.SaveMetadata(Path.Combine(folder, "resume-info.json"), new ResumeOutputMetadata {
+                JobId = "RB-REAL",
+                Company = "Decoy Company",
+                Role = "Decoy Role",
+                DocxFile = "Billy.docx",
+                PdfFile = "Billy.pdf",
+                GeneratedAt = "2026-09-28T12:00:00"
+            });
+            var tasks = new List<JobTask> {
+                StoreJob("RB-DECOY", "Decoy Company", "Decoy Role", JobImporter.BrowserSource, "https://example.com/decoy"),
+                StoreJob("RB-REAL", "Real Co", "Real Role", JobImporter.IncomingSource, "https://example.com/real")
+            };
+            JobStore.SaveJobs(tasks);
+            JobStore.RecordResumeOutput("RB-REAL", Path.Combine(folder, "Billy.docx"), Path.Combine(folder, "Billy.pdf"), folder);
+            var report = JobStore.MigrateIfNeeded(tasks, root);
+            Equal(0, report.ResumeInfoFilesRead, "startup does not read resume-info files");
+            Equal(1, report.ResumeOutputs, "one resume output");
+            Equal(0, JobStore.DirectoryEnumerations, "startup lists no resume folders");
+            var rows = JobStore.LoadApplications();
+            Check(string.IsNullOrEmpty(rows.Single(r => r.JobId == "RB-DECOY").DocxPath),
+                "company, title and folder name did not claim the resume");
+            Equal(Path.Combine(folder, "Billy.docx"), rows.Single(r => r.JobId == "RB-REAL").DocxPath,
+                "the internal job id owns the resume");
+        });
+    }
+
+    static void SqliteMigrationIsIdempotent() {
+        UsingStore(() => {
+            var root = NewDir("resume-root-idempotent");
+            var folder = Path.Combine(root, "2026-09-28", "Acme - Engineer");
+            Directory.CreateDirectory(folder);
+            ResumeOutputManager.SaveMetadata(Path.Combine(folder, "resume-info.json"), new ResumeOutputMetadata {
+                JobId = "RB-1", Company = "Acme", Role = "Engineer", DocxFile = "Resume.docx",
+                GeneratedAt = "2026-09-28T08:00:00"
+            });
+            var tasks = new List<JobTask> { StoreJob("RB-1", "Acme", "Engineer", JobImporter.IncomingSource, "https://example.com/1") };
+            JobStore.SaveJobs(tasks);
+            JobStore.RecordResumeOutput("RB-1", Path.Combine(folder, "Resume.docx"), null, folder);
+            var first = JobStore.MigrateIfNeeded(tasks, root);
+            Equal(1, first.Jobs, "one job");
+            Equal(1, first.ResumeOutputs, "one output");
+            JobStore.ResetDirectoryEnumerations();
+            var second = JobStore.MigrateIfNeeded(tasks, root);
+            Check(second.AlreadyComplete, "a finished migration does not run again");
+            Equal(0, JobStore.DirectoryEnumerations, "the second startup does not list resume folders");
+            Equal(1, JobStore.Counts().Jobs, "still one job");
+            Equal(1, JobStore.Counts().Outputs, "still one output");
+            JobStore.SetUserVersion(0);
+            var third = JobStore.MigrateIfNeeded(tasks, root);
+            Check(!third.Failed, "a rerun after a partial migration succeeds");
+            Equal(1, JobStore.Counts().Jobs, "rerun did not duplicate the job");
+            Equal(1, JobStore.Counts().Applications, "rerun did not duplicate the application");
+            Equal(1, JobStore.Counts().Outputs, "rerun did not duplicate the resume output");
+            Equal(0, third.ResumeInfoFilesRead, "startup does not read resume-info files");
+        });
+    }
+
+    static void SqliteAlreadyMigratedStillUpsertsNewJobs() {
+        UsingStore(() => {
+            var first = JobStore.MigrateIfNeeded(Array.Empty<JobTask>(), NewDir("no-resumes-catchup"));
+            Check(first.AlreadyComplete, "schema setup does not import a task file");
+            var kept = StoreJob("RB-KEEP", "Kept", "Role", JobImporter.IncomingSource, "https://example.com/keep");
+            JobStore.SyncJob(kept);
+            var added = StoreJob("RB-NEW", "New", "Role", JobImporter.BrowserSource,
+                "https://jobright.ai/jobs/info/" + JobrightExternalId);
+            added.ApplicationStatus = ApplicationStatus.Viewed;
+            JobStore.ResetDirectoryEnumerations();
+            JobStore.UpsertTracked(added, "import");
+            var second = JobStore.MigrateIfNeeded(new[] { added }, NewDir("no-resumes-catchup-2"));
+            Check(second.AlreadyComplete, "startup does not migrate again");
+            Equal(0, JobStore.DirectoryEnumerations, "catch-up lists no resume folders");
+            var ids = JobStore.LoadApplications().Select(row => row.JobId).OrderBy(id => id, StringComparer.Ordinal).ToArray();
+            Equal("RB-KEEP,RB-NEW", string.Join(",", ids), "the new job is stored and the older row stays");
+            added.ApplicationStatus = ApplicationStatus.Ready;
+            added.ReadyAt = new DateTime(2026, 9, 28, 12, 0, 0);
+            Check(JobStore.UpsertTracked(added, "resume-ready"), "ready updates the stored job");
+            Equal(2, JobStore.Counts().Jobs, "ready does not create a second job");
+            Equal(2, JobStore.Counts().Applications, "ready does not create a second application");
+            Equal(ApplicationStatus.Ready,
+                JobStore.LoadApplications().Single(row => row.JobId == "RB-NEW").ApplicationStatus,
+                "the same application row is Ready");
+        });
+    }
+
+    static void SqliteJobrightIdentityIsUnique() {
+        UsingStore(() => {
+            var link = "https://jobright.ai/jobs/info/" + JobrightExternalId;
+            var first = StoreJob("RB-A", "Acme", "Engineer", JobImporter.BrowserSource, link);
+            var second = StoreJob("RB-B", "Other", "Analyst", JobImporter.BrowserSource, link);
+            Check(JobStore.TryAddJob(first), "the first Jobright job is stored");
+            Check(!JobStore.TryAddJob(second), "the same source and external id is rejected");
+            Equal(1, JobStore.Counts().Jobs, "the rejected job was not inserted");
+            var otherSource = StoreJob("RB-C", "Other", "Analyst", JobImporter.IncomingSource, link);
+            Check(JobStore.TryAddJob(otherSource), "a different source may carry the same external id");
+            var plainA = StoreJob("RB-D", "One", "Role", JobImporter.IncomingSource, "https://example.com/d");
+            var plainB = StoreJob("RB-E", "Two", "Role", JobImporter.IncomingSource, "https://example.com/e");
+            Check(JobStore.TryAddJob(plainA) && JobStore.TryAddJob(plainB), "missing external ids are not a collision");
+            Equal(4, JobStore.Counts().Jobs, "three accepted jobs plus the first");
+        });
+    }
+
+    static void SqliteResumeOutputUpserts() {
+        UsingStore(() => {
+            var job = StoreJob("RB-GEN", "Acme", "Engineer", JobImporter.IncomingSource, "https://example.com/gen");
+            JobStore.SyncJob(job);
+            var folder = NewDir("generated");
+            var first = Path.Combine(folder, "Resume.docx");
+            var firstPdf = Path.Combine(folder, "Resume.pdf");
+            JobStore.RecordResumeOutput(job.JobId, first, firstPdf, folder);
+            Equal(1, JobStore.Counts().Outputs, "the first generation inserts one output");
+            Equal(first, JobStore.LoadApplications().Single().DocxPath, "the first path is stored");
+            var second = Path.Combine(folder, "Resume (2).docx");
+            var secondPdf = Path.Combine(folder, "Resume (2).pdf");
+            JobStore.RecordResumeOutput(job.JobId, second, secondPdf, folder);
+            Equal(1, JobStore.Counts().Outputs, "a later generation updates that output");
+            var row = JobStore.LoadApplications().Single();
+            Equal(second, row.DocxPath, "the latest DOCX is stored");
+            Equal(secondPdf, row.PdfPath, "the latest PDF is stored");
+        });
+    }
+
+    static void SqliteApplicationsLoadDoesNotScan() {
+        UsingStore(() => {
+            var root = NewDir("resume-root-load");
+            var folder = Path.Combine(root, "2026-09-28", "Acme - Engineer");
+            Directory.CreateDirectory(folder);
+            ResumeOutputManager.SaveMetadata(Path.Combine(folder, "resume-info.json"), new ResumeOutputMetadata {
+                JobId = "RB-1", Company = "Someone Else", Role = "Other Role", DocxFile = "Resume.docx",
+                GeneratedAt = "2026-09-28T08:00:00"
+            });
+            var tasks = new List<JobTask> { StoreJob("RB-1", "Acme", "Engineer", JobImporter.IncomingSource, "https://example.com/1") };
+            JobStore.SaveJobs(tasks);
+            JobStore.RecordResumeOutput("RB-1", Path.Combine(folder, "Resume.docx"), null, folder);
+            var report = JobStore.MigrateIfNeeded(tasks, root);
+            Equal(0, report.DirectoryEnumerations, "startup lists no resume folders");
+            JobStore.ResetDirectoryEnumerations();
+            var rows = JobStore.LoadApplications();
+            JobStore.ApplyResumeLinks(tasks);
+            Equal(0, JobStore.DirectoryEnumerations, "Applications loading lists no resume folders");
+            Equal(1, rows.Count, "the job still loads from SQLite");
+            Equal(Path.Combine(folder, "Resume.docx"), tasks[0].ResumePath, "the stored path is applied");
+        });
+    }
+
+    static void SqliteIsTheOnlyJobStore() {
+        UsingStore(() => {
+            var list = new List<JobTask>();
+            var url = "https://jobright.ai/jobs/info/" + JobrightExternalId;
+            var imported = JobImporter.ImportOne(ImportData(url, null), JobImporter.BrowserSource, list, NoFilters);
+            Equal(JobImportKind.Imported, imported.Kind, "a new job imports");
+            var stored = JobStore.GetJobs().Single();
+            Equal(imported.JobId, stored.JobId, "the imported job is the stored job");
+            Equal(ApplicationStatus.Viewed, stored.ApplicationStatus, "import creates Viewed");
+            Equal(1, JobStore.Counts().Applications, "import creates one application");
+
+            var duplicate = JobImporter.ImportOne(ImportData(url, null), JobImporter.BrowserSource, list, NoFilters);
+            Equal(JobImportKind.Duplicate, duplicate.Kind, "the same posting is a duplicate");
+            Equal(1, JobStore.Counts().Jobs, "a duplicate import adds no job");
+            Equal(1, JobStore.Counts().Applications, "a duplicate import adds no application");
+
+            var folder = NewDir("only-store-resume");
+            var docx = Path.Combine(folder, "Resume.docx");
+            JobTracker.MarkResumeReady(stored, docx);
+            JobStore.CommitResume(stored, docx, null, folder);
+            var ready = JobStore.GetJobs().Single();
+            Equal(ApplicationStatus.Ready, ready.ApplicationStatus, "a resume makes the same application Ready");
+            Equal(docx, ready.ResumePath, "the resume path is stored");
+            Equal(1, JobStore.Counts().Jobs, "resume generation adds no job");
+            Equal(1, JobStore.Counts().Outputs, "one resume output");
+
+            ready.Status = "Failed";
+            ready.FailureReason = "GptInvalidOutput";
+            JobStore.SaveJobs(new[] { ready });
+            var failed = JobStore.GetJobs().Single();
+            Equal("Failed", failed.Status, "queue failure is stored");
+            Equal(ApplicationStatus.Ready, failed.ApplicationStatus, "queue failure does not change the application");
+
+            failed.Status = "Completed";
+            Check(JobTracker.MarkApplied(failed, new DateTime(2026, 9, 28, 15, 0, 0)), "mark applied");
+            JobStore.SaveJobs(new[] { failed });
+            var applied = JobStore.GetJobs().Single();
+            Equal(ApplicationStatus.Applied, applied.ApplicationStatus, "mark applied stores Applied");
+            Check(applied.AppliedAt is not null, "AppliedAt is stored");
+            Equal("Completed", applied.Status, "mark applied leaves the queue status");
+
+            var restarted = JobStore.GetJobs().Single();
+            Equal(applied.JobId, restarted.JobId, "restart reads the same job");
+            Equal(ApplicationStatus.Applied, restarted.ApplicationStatus, "restart reads the application");
+            Equal(docx, restarted.ResumePath, "restart reads the resume");
+            Equal("Completed", restarted.Status, "restart reads the queue status");
+
+            JobStore.ResetDirectoryEnumerations();
+            var opens = JobStore.ConnectionsOpened;
+            Equal(1, JobStore.GetJobs().Count, "the query returns the job");
+            Equal(0, JobStore.DirectoryEnumerations, "the query lists no folders");
+            Equal(opens + 1, JobStore.ConnectionsOpened, "the query uses one connection");
+        });
+
+        WithLiveTasksFile(() => {
+            var marker = "tasks-json-must-stay-" + Guid.NewGuid().ToString("N");
+            File.WriteAllText(Storage.TasksPath, "[{" + "\"company\":\"" + marker + "\"}]");
+            var before = File.ReadAllBytes(Storage.TasksPath);
+            var fromDb = Storage.LoadTasks();
+            Check(fromDb.All(job => job.Company != marker), "an existing tasks.json is not loaded");
+            Storage.SaveTasks(fromDb);
+            Check(before.AsSpan().SequenceEqual(File.ReadAllBytes(Storage.TasksPath)), "saving jobs does not rewrite tasks.json");
+            File.Delete(Storage.TasksPath);
+            var withoutFile = Storage.LoadTasks();
+            Equal(fromDb.Count, withoutFile.Count, "jobs still load when tasks.json is missing");
+        });
+    }
+
+    static void ApplyButtonUsesOnlyTheApplicationUrl() {
+        var job = StoreJob("RB-APPLY", "Acme", "Engineer", JobImporter.BrowserSource,
+            "https://jobright.ai/jobs/info/" + JobrightExternalId);
+        job.Status = "Failed";
+        Check(JobTracker.IsOpenableUrl(ApplicationFields.JobUrl(job)), "Open Job uses the posting");
+        Check(JobTracker.CanApply(job), "Ready enables Apply even before an application URL is stored");
+        Equal(ApplyRoute.CaptureOnJobright, JobTracker.RouteApply(job), "a missing application URL uses the Jobright capture");
+        Check(JobTracker.ApplyTarget(job) is null, "Apply does not open the Jobright posting");
+        var line = ApplicationFields.BindLine(job);
+        Check(line.Contains("jobId=RB-APPLY", StringComparison.Ordinal), "bind job id");
+        Check(line.Contains("status=Ready", StringComparison.Ordinal), "bind application status");
+        Check(line.Contains("jobUrl-present=yes", StringComparison.Ordinal), "posting is present");
+        Check(line.Contains("applyUrl-present=no", StringComparison.Ordinal), "application URL is absent");
+        Check(line.Contains("apply-enabled=yes", StringComparison.Ordinal), "Ready enables Apply");
+        Check(line.EndsWith(" ats=", StringComparison.Ordinal), "Jobright is not shown as the ATS");
+        Equal(ApplicationPlatform.Unknown, ApplicationFields.Ats(job), "the job site is not the ATS");
+
+        job.ApplicationStatus = ApplicationStatus.Viewed;
+        job.ApplyUrl = "https://boards.greenhouse.io/acme/jobs/9";
+        Check(JobTracker.CanApply(job), "Viewed with an application URL still offers Apply");
+
+        job.ApplicationStatus = ApplicationStatus.Ready;
+        job.ApplyUrl = "https://boards.greenhouse.io/acme/jobs/9";
+        job.ApplicationPlatform = ApplicationPlatform.Greenhouse;
+        Check(JobTracker.CanApply(job), "Ready plus an application URL enables Apply");
+        Equal(ApplyRoute.OpenStored, JobTracker.RouteApply(job), "a stored application URL opens directly");
+        Equal("https://boards.greenhouse.io/acme/jobs/9", JobTracker.ApplyTarget(job), "Apply opens that URL, not the posting");
+        Check(job.Status == "Failed", "queue Failed is untouched");
+        Check(ApplicationFields.BindLine(job).Contains("apply-enabled=yes", StringComparison.Ordinal), "bind shows enabled");
+        Check(ApplicationFields.BindLine(job).Contains("ats=Greenhouse", StringComparison.Ordinal), "bind shows the ATS");
+
+        job.ApplicationStatus = ApplicationStatus.Applied;
+        Check(JobTracker.CanApply(job), "Applied still offers Apply");
+        Check(JobTracker.ApplyUrlToOpen(job) is not null, "Open Application still has the address");
+        Equal(job.Link, ApplicationFields.JobUrl(job), "Open Job's field is the posting");
+        Check(ApplicationFields.JobUrl(job) != ApplicationFields.ApplyUrl(job), "Open Job and Apply use different fields");
+    }
+
+    static void ApplyEnabledForEveryStatus() {
+        const string posting = "https://jobright.ai/jobs/info/aaaaaaaaaaaaaaaaaaaaaaaa";
+        const string apply = "https://boards.greenhouse.io/acme/jobs/9";
+
+        void Expect(string status, string link, string applyUrl, bool enabled, string label) {
+            var job = new JobTask { ApplicationStatus = status, Link = link, ApplyUrl = applyUrl };
+            Equal(status, job.ApplicationStatus, label + " status");
+            Check(JobTracker.CanApply(job) == enabled, label);
+            Equal(status, job.ApplicationStatus, label + " status unchanged");
+            if (!enabled) return;
+            if (ApplyCapture.IsApplicationUrl(applyUrl))
+                Equal(ApplyRoute.OpenStored, JobTracker.RouteApply(job), label + " opens the application URL");
+            else if (JobrightPageExtractor.IsJobPage(link))
+                Equal(ApplyRoute.CaptureOnJobright, JobTracker.RouteApply(job), label + " captures from the posting");
+            Equal(status, job.ApplicationStatus, label + " routing leaves the status");
+        }
+
+        Expect(ApplicationStatus.Viewed, posting, "", true, "Viewed + JobUrl");
+        Expect(ApplicationStatus.Ready, posting, "", true, "Ready + JobUrl");
+        Expect(ApplicationStatus.Applied, "", apply, true, "Applied + ApplyUrl");
+        Expect(ApplicationStatus.Interview, posting, apply, true, "Interview + ApplyUrl");
+        Expect(ApplicationStatus.Failed, posting, "", true, "Failed + JobUrl");
+        Expect(ApplicationStatus.Done, "", apply, true, "Done + ApplyUrl");
+        Expect(ApplicationStatus.Ready, "", "", false, "no ApplyUrl + no JobUrl");
+        Expect(ApplicationStatus.Viewed, "not a url", "javascript:alert(1)", false, "unusable addresses stay disabled");
+    }
+
+    static void ApplyCaptureFlow() {
+        var page = "https://jobright.ai/jobs/info/" + JobrightExternalId;
+        var external = "https://boards.greenhouse.io/acme/jobs/9";
+        var job = StoreJob("RB-APPLY-FLOW", "Acme", "Engineer", JobImporter.BrowserSource, page);
+
+        Equal(ApplyRoute.CaptureOnJobright, JobTracker.RouteApply(job), "no application URL starts the Jobright capture");
+        Check(JobTracker.ApplyTarget(job) is null, "the posting is not opened as Apply");
+        Equal(ApplyCaptureResult.NotApplicationUrl, ApplyCapture.Record(new[] { job }, page, page, DateTime.Now),
+            "a Jobright URL is not an application address");
+        Equal("", job.ApplyUrl, "the posting was not stored as ApplyUrl");
+        Equal(ApplicationPlatform.Unknown, job.ApplicationPlatform, "platform stays Unknown without an external URL");
+
+        var recorded = ApplyCapture.Record(new[] { job }, page, external + "?gh_src=track", DateTime.Now);
+        Equal(ApplyCaptureResult.Recorded, recorded, "the external destination is stored");
+        Equal(JobUrls.Normalize(external + "?gh_src=track"), job.ApplyUrl, "the external ATS URL is what gets stored");
+        Check(job.ApplyUrl.Contains("boards.greenhouse.io", StringComparison.Ordinal), "it is the Greenhouse address");
+        Check(!job.ApplyUrl.Contains("jobright.ai", StringComparison.Ordinal), "it is not the Jobright posting");
+        Equal(ApplicationPlatform.Greenhouse, job.ApplicationPlatform, "the platform comes from that URL");
+        Equal(ApplyRoute.OpenStored, JobTracker.RouteApply(job), "the next Apply opens the stored URL");
+        Equal(job.ApplyUrl, JobTracker.ApplyTarget(job), "Apply opens the external URL");
+
+        var again = ApplyCapture.Record(new[] { job }, page, "https://jobright.ai/jobs/info/" + JobrightExternalId, DateTime.Now);
+        Equal(ApplyCaptureResult.NotApplicationUrl, again, "a later Jobright navigation does not replace it");
+        Check(job.ApplyUrl.Contains("boards.greenhouse.io", StringComparison.Ordinal), "the exact URL stays");
+
+        var kept = new DateTime(2026, 9, 18, 14, 0, 0);
+        job.ApplyUrlCapturedAt = kept;
+        Check(!ApplyCapture.FillIfEmpty(job, null, DateTime.Now), "a blank import does not write");
+        Check(!ApplyCapture.FillIfEmpty(job, "https://jobs.lever.co/acme/2", DateTime.Now), "a second link does not replace a stored one");
+        Check(job.ApplyUrl.Contains("boards.greenhouse.io", StringComparison.Ordinal), "duplicate import keeps the exact URL");
+        Equal(kept, job.ApplyUrlCapturedAt, "the capture time stays");
+
+        UsingProfileRoot(() => {
+            JobStore.DatabasePathOverride = null;
+            var billy = ProfileRegistry.Create("Billy", null);
+            var luis = ProfileRegistry.Create("Luis", null);
+            Check(ProfileContext.TryOpen(billy.ProfileId), "Billy opens");
+            var billyJob = StoreJob("RB-BILLY-APPLY", "Acme", "Engineer", JobImporter.BrowserSource, page);
+            var capture = ApplyCapture.Record(new[] { billyJob }, page, "https://jobs.lever.co/acme/9", DateTime.Now);
+            Equal(ApplyCaptureResult.Recorded, capture, "Billy's external URL is recorded");
+            Equal(ApplicationPlatform.Lever, billyJob.ApplicationPlatform, "Billy's platform is Lever");
+            JobStore.SyncJob(billyJob);
+            ProfileContext.Close();
+
+            Check(ProfileContext.TryOpen(luis.ProfileId), "Luis opens");
+            Equal(0, JobStore.GetJobs().Count, "Luis does not see Billy's application URL");
+            ProfileContext.Close();
+
+            Check(ProfileContext.TryOpen(billy.ProfileId), "Billy opens again");
+            var stored = JobStore.GetJobs().Single();
+            Equal("https://jobs.lever.co/acme/9", stored.ApplyUrl, "Billy's URL is still in his database");
+            Equal(ApplicationPlatform.Lever, stored.ApplicationPlatform, "Billy's platform is still Lever");
+        });
+    }
+
+    static void SqliteRepairFillsEmptyApplyUrlAndResumePath() {
+        UsingStore(() => {
+            var job = StoreJob("RB-REPAIR", "Acme", "Engineer", JobImporter.BrowserSource,
+                "https://jobright.ai/jobs/info/" + JobrightExternalId);
+            job.ApplyUrl = job.Link;
+            JobStore.SyncJob(job);
+            Check(string.IsNullOrEmpty(JobStore.LoadApplications().Single().ApplyUrl),
+                "a Jobright address is not stored as the application URL");
+
+            job.ApplyUrl = "https://boards.greenhouse.io/acme/jobs/9";
+            JobStore.SyncJob(job);
+            job.ApplyUrl = "";
+            job.ApplicationPlatform = ApplicationPlatform.Unknown;
+            JobStore.SyncJob(job);
+            Equal("https://boards.greenhouse.io/acme/jobs/9", JobStore.LoadApplications().Single().ApplyUrl,
+                "saving a blank application URL keeps the one already stored");
+
+            JobStore.ResetDirectoryEnumerations();
+            JobStore.ApplyResumeLinks(new[] { job });
+            Equal("https://boards.greenhouse.io/acme/jobs/9", job.ApplyUrl, "SQLite fills the empty application URL");
+            Equal(ApplicationPlatform.Greenhouse, job.ApplicationPlatform, "the ATS comes from that URL");
+            Equal(1, JobStore.LastApplyUrlsFilled, "one application URL was backfilled");
+
+            job.ApplyUrl = "https://jobs.lever.co/acme/1";
+            job.ApplicationPlatform = ApplicationPlatform.Lever;
+            JobStore.ApplyResumeLinks(new[] { job });
+            Equal("https://jobs.lever.co/acme/1", job.ApplyUrl, "a recorded application URL is not replaced");
+            Equal(0, JobStore.LastApplyUrlsFilled, "nothing was backfilled");
+
+            var path = Path.Combine(NewDir("repair-resume"), "Resume.docx");
+            job.ResumePath = path;
+            Equal(1, JobStore.RepairResumeOutputs(new[] { job }), "the known DOCX path is stored");
+            Equal(path, JobStore.LoadApplications().Single().DocxPath, "the stored path is that DOCX");
+            Equal(0, JobStore.RepairResumeOutputs(new[] { job }), "the same path is not stored again");
+            Equal(1, JobStore.Counts().Outputs, "still one output");
+            Equal(0, JobStore.DirectoryEnumerations, "repair and backfill list no resume folders");
+
+            var other = StoreJob("RB-BARE", "Other", "Analyst", JobImporter.IncomingSource, "https://example.com/jobs/2");
+            JobStore.SyncJob(other);
+            var integrity = JobStore.Inspect(new[] { job, other });
+            Equal(2, integrity.Jobs, "both jobs");
+            Equal(0, integrity.DuplicateInternalJobIds, "no duplicate internal ids");
+            Equal(0, integrity.DuplicateSourceExternal, "no duplicate source and external id");
+            Equal(0, integrity.MissingJobUrl, "both postings are present");
+            Equal(1, integrity.MissingApplyUrl, "only the job without an application URL is counted");
+            Equal(0, integrity.InvalidUrls, "no invalid URL");
+            Equal(0, integrity.MissingApplications, "every job has an application row");
+            Equal(0, integrity.OrphanApplications, "no orphan application");
+            Equal(1, integrity.MissingResumeOutputs, "a job with no resume path has no output row");
+            Equal(0, integrity.OrphanResumeOutputs, "no orphan output");
+            Equal(0, integrity.StatusMismatches, "application status matches");
+            Equal(0, integrity.JobSiteStoredAsAts, "Jobright is not stored as the ATS");
+            Check(integrity.Describe().Contains("ats=Lever:1", StringComparison.Ordinal), "ATS distribution is the application platform");
+            Check(integrity.AtsDistribution.Contains("Jobright", StringComparison.Ordinal) == false, "the job site is not in the ATS distribution");
+        });
+    }
+
+    static void SqliteUpsertKeepsNonEmptyFields() {
+        UsingStore(() => {
+            var seen = new DateTime(2026, 9, 1, 12, 0, 0, DateTimeKind.Local);
+            var job = StoreJob("RB-KEEP", "Acme", "Engineer", JobImporter.BrowserSource,
+                "https://jobright.ai/jobs/info/bbbbbbbbbbbbbbbbbbbbbbbb");
+            job.Jd = "Build the service.";
+            job.Location = "Austin";
+            job.CompanyUrl = "https://acme.example";
+            job.ApplyUrl = "https://boards.greenhouse.io/acme/jobs/1";
+            job.ApplyUrlCapturedAt = seen;
+            job.ApplicationPlatform = ApplicationPlatform.Greenhouse;
+            job.ApplicationStatus = ApplicationStatus.Applied;
+            job.AppliedAt = seen;
+            job.Status = "Completed";
+            JobStore.SyncJob(job);
+
+            job.Company = "";
+            job.Title = " ";
+            job.Jd = "";
+            job.Location = "";
+            job.CompanyUrl = "";
+            job.Link = "";
+            job.ApplyUrl = "";
+            job.ApplyUrlCapturedAt = null;
+            job.ApplicationPlatform = ApplicationPlatform.Unknown;
+            job.AppliedAt = null;
+            job.Status = "";
+            JobStore.SyncJob(job);
+
+            var stored = JobStore.GetJobs().Single();
+            Equal("Acme", stored.Company, "company kept");
+            Equal("Engineer", stored.Title, "title kept");
+            Equal("Build the service.", stored.Jd, "description kept");
+            Equal("Austin", stored.Location, "location kept");
+            Equal("https://acme.example", stored.CompanyUrl, "company URL kept");
+            Equal("https://jobright.ai/jobs/info/bbbbbbbbbbbbbbbbbbbbbbbb", stored.Link, "job URL kept");
+            Equal("https://boards.greenhouse.io/acme/jobs/1", stored.ApplyUrl, "apply URL kept");
+            Equal(seen, stored.ApplyUrlCapturedAt, "apply time kept");
+            Equal(ApplicationPlatform.Greenhouse, stored.ApplicationPlatform, "platform kept");
+            Equal(ApplicationStatus.Applied, stored.ApplicationStatus, "application status kept");
+            Equal(seen, stored.AppliedAt, "applied time kept");
+            Equal("Completed", stored.Status, "queue status kept");
+
+            job.Title = "Senior Engineer";
+            job.Company = stored.Company;
+            job.Jd = stored.Jd;
+            job.Location = stored.Location;
+            job.CompanyUrl = "https://new.example";
+            job.Link = stored.Link;
+            job.ApplyUrl = "https://jobs.lever.co/acme/2";
+            job.ApplyUrlCapturedAt = seen.AddDays(1);
+            job.ApplicationPlatform = ApplicationPlatform.Lever;
+            job.ApplicationStatus = stored.ApplicationStatus;
+            job.AppliedAt = stored.AppliedAt;
+            job.Status = stored.Status;
+            JobStore.SyncJob(job);
+
+            stored = JobStore.GetJobs().Single();
+            Equal("Senior Engineer", stored.Title, "a new title replaces the old one");
+            Equal("https://new.example", stored.CompanyUrl, "a new company URL replaces the old one");
+            Equal("https://jobs.lever.co/acme/2", stored.ApplyUrl, "a new apply URL replaces the old one");
+            Equal(ApplicationPlatform.Lever, stored.ApplicationPlatform, "the platform follows the new apply URL");
+            Equal(seen.AddDays(1), stored.ApplyUrlCapturedAt, "the apply time follows the new URL");
+        });
+    }
+
+    static void UsingProfileRoot(Action body) {
+        var root = ProfilePaths.RootOverride;
+        var db = JobStore.DatabasePathOverride;
+        ProfilePaths.RootOverride = NewDir("profiles-" + Guid.NewGuid().ToString("N"));
+        try { body(); }
+        finally {
+            ProfileContext.Close();
+            ProfilePaths.RootOverride = root;
+            JobStore.DatabasePathOverride = db;
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        }
+    }
+
+    static void ProfileCreateIsUnique() => UsingProfileRoot(() => {
+        var billy = ProfileRegistry.Create("Billy", null);
+        var luis = ProfileRegistry.Create("Luis", null);
+        Check(ProfileIds.IsValid(billy.ProfileId) && ProfileIds.IsValid(luis.ProfileId), "both ids are generated");
+        Check(billy.ProfileId != luis.ProfileId, "the ids differ");
+        Check(!billy.ProfileId.Contains("Billy", StringComparison.OrdinalIgnoreCase), "the name is not the id");
+        Check(Directory.Exists(ProfilePaths.ProfileRoot(billy.ProfileId)), "Billy's folder exists");
+        var db = ProfilePaths.DatabasePath(billy.ProfileId);
+        Check(File.Exists(db), "a new database is created");
+        Check(db.Contains(billy.ProfileId, StringComparison.Ordinal), "the database is inside that profile");
+        Equal(db, Path.Combine(ProfilePaths.ProfileRoot(billy.ProfileId), "resumebuilder.db"), "database file name");
+    });
+
+    static void ProfileDatabasesAreIsolated() => UsingProfileRoot(() => {
+        var billy = ProfileRegistry.Create("Billy", null);
+        var luis = ProfileRegistry.Create("Luis", null);
+        JobStore.DatabasePathOverride = null;
+
+        Check(ProfileContext.TryOpen(billy.ProfileId), "Billy opens");
+        Equal(ProfilePaths.DatabasePath(billy.ProfileId), ProfileContext.DatabasePath, "Billy's database path");
+        Equal(ProfileContext.HtmlTailoringPath, HtmlTailor.RootDirectory, "HTML tailoring uses the profile folder");
+        Equal(ProfileContext.EmailTasksPath, Storage.EmailTasksPath, "email tasks use the profile folder");
+        Equal(ProfileContext.CandidateProfilePath, CandidateProfileStore.CandidateProfilePath, "the candidate profile uses the profile folder");
+        Equal(Path.Combine(ProfileContext.ProfileRoot, "PromptAdaptation"), PromptConversion.Root, "prompt adaptation uses the profile folder");
+        Equal(Path.Combine(ProfileContext.ProfileRoot, "WebView2"), Storage.WebViewUserDataFolder, "ChatGPT browser data uses the profile folder");
+        Equal(Path.Combine(ProfileContext.ProfileRoot, "JobBrowserWebView2"), JobBrowser.UserDataFolder, "the job browser uses the profile folder");
+        var license = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ResumeBuilder", "license.lic");
+        Check(!license.StartsWith(ProfilePaths.UsersRoot, StringComparison.OrdinalIgnoreCase),
+            "the license stays outside every profile");
+        Check(!IconCache.Root.StartsWith(ProfilePaths.UsersRoot, StringComparison.OrdinalIgnoreCase),
+            "icons stay in the shared cache");
+        Check(ProfilePaths.RegistryPath.StartsWith(ProfilePaths.GlobalRoot, StringComparison.OrdinalIgnoreCase), "the profile list stays global");
+
+        File.WriteAllText(ProfileContext.SettingsPath, """{ "OriginalResume": "D:\\Billy\\Resume.docx" }""");
+        File.WriteAllText(ProfileContext.CandidateProfilePath, """{ "info": { "name": "Billy" } }""");
+        File.WriteAllText(ProfileContext.EmailTasksPath, """[{ "jobId": "ET-BILLY" }]""");
+        Directory.CreateDirectory(PromptConversion.Root);
+        File.WriteAllText(Path.Combine(PromptConversion.Root, "adapted-prompt.txt"), "billy-prompt");
+        Directory.CreateDirectory(HtmlTailor.RootDirectory);
+        File.WriteAllText(Path.Combine(HtmlTailor.RootDirectory, "billy.html"), "billy-html");
+        var job = StoreJob("RB-BILLY", "Acme", "Engineer", JobImporter.IncomingSource, "https://example.com/billy");
+        job.ApplicationStatus = ApplicationStatus.Applied;
+        JobStore.SyncJob(job);
+        JobStore.RecordResumeOutput(job.JobId, @"D:\Billy\Resume.docx", @"D:\Billy\Resume.pdf", @"D:\Billy");
+        var billyDb = ProfileContext.DatabasePath;
+        var billyChat = Storage.WebViewUserDataFolder;
+        var billyBrowser = JobBrowser.UserDataFolder;
+        Check(ProfileContext.ProfileLogLine().Contains("id=" + billy.ProfileId, StringComparison.Ordinal), "the profile log names Billy");
+        Check(ProfileContext.DatabaseLogLine().Contains(billyDb, StringComparison.Ordinal), "the database log names Billy's file");
+        ProfileContext.Close();
+
+        Check(ProfileContext.TryOpen(luis.ProfileId), "Luis opens");
+        Check(billyDb != ProfileContext.DatabasePath, "the databases are different files");
+        Check(billyChat != Storage.WebViewUserDataFolder, "ChatGPT browser folders differ");
+        Check(billyBrowser != JobBrowser.UserDataFolder, "job browser folders differ");
+        Equal(0, JobStore.GetJobs().Count, "Luis does not see Billy's queue or applications");
+        Equal(0, JobStore.Counts().Outputs, "Luis does not see Billy's resume outputs");
+        Check(!File.Exists(ProfileContext.SettingsPath), "Luis has no copy of Billy's settings");
+        Check(!File.Exists(ProfileContext.CandidateProfilePath), "Luis has no copy of Billy's candidate profile");
+        Check(!File.Exists(ProfileContext.EmailTasksPath), "Luis has no copy of Billy's email tasks");
+        Check(!File.Exists(Path.Combine(PromptConversion.Root, "adapted-prompt.txt")), "Luis has no copy of Billy's prompt");
+        Check(!File.Exists(Path.Combine(HtmlTailor.RootDirectory, "billy.html")), "Luis has no copy of Billy's HTML cache");
+        JobStore.SyncJob(StoreJob("RB-LUIS", "Other", "Analyst", JobImporter.IncomingSource, "https://example.com/luis"));
+        ProfileContext.Close();
+
+        ProfileContext.TryOpen(billy.ProfileId);
+        var jobs = JobStore.GetJobs();
+        Equal(1, jobs.Count, "Billy still has one job");
+        Equal("RB-BILLY", jobs[0].JobId, "it is Billy's job");
+        Equal("Acme", jobs[0].Company, "Billy's company");
+        Equal(ApplicationStatus.Applied, jobs[0].ApplicationStatus, "Billy's application status");
+        Equal(@"D:\Billy\Resume.docx", JobStore.LoadApplications().Single().DocxPath, "Billy's resume output");
+        Equal("billy-prompt", File.ReadAllText(Path.Combine(PromptConversion.Root, "adapted-prompt.txt")), "Billy's prompt is unchanged");
+    });
+
+    static void ProfileMigrationKeepsTheOriginal() => UsingProfileRoot(() => {
+        JobStore.DatabasePathOverride = ProfilePaths.LegacyDatabasePath;
+        JobStore.SyncJob(StoreJob("RB-OLD", "MigrateCo", "Engineer", JobImporter.IncomingSource, "https://example.com/migrate/1"));
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        var settings = Path.Combine(ProfilePaths.GlobalRoot, "settings.json");
+        var profileJson = Path.Combine(ProfilePaths.GlobalRoot, "candidate-profile.json");
+        File.WriteAllText(settings, """{ "ResumeRootFolder": "D:\\Kept" }""");
+        File.WriteAllText(profileJson, """{ "info": { "name": "Kept" } }""");
+        var prompts = Path.Combine(ProfilePaths.GlobalRoot, "PromptAdaptation");
+        Directory.CreateDirectory(prompts);
+        File.WriteAllText(Path.Combine(prompts, "note.txt"), "kept");
+        var beforeDb = File.ReadAllBytes(ProfilePaths.LegacyDatabasePath);
+        var beforeSettings = File.ReadAllBytes(settings);
+        JobStore.DatabasePathOverride = null;
+
+        var result = ProfileMigration.MigrateIfNeeded();
+        Equal(ProfileMigrationStatus.Migrated, result.Status, "the existing database becomes one profile");
+        Check(ProfileIds.IsValid(result.ProfileId), "the migrated profile has an id");
+        Check(File.ReadAllBytes(ProfilePaths.LegacyDatabasePath).AsSpan().SequenceEqual(beforeDb), "the original database is unchanged");
+        Check(File.ReadAllBytes(settings).AsSpan().SequenceEqual(beforeSettings), "the original settings are unchanged");
+        Equal(ProfileMigrationStatus.Already, ProfileMigration.MigrateIfNeeded().Status, "a second launch does not copy again");
+
+        Check(ProfileContext.TryOpen(result.ProfileId!), "the migrated profile opens");
+        Equal("MigrateCo", JobStore.GetJobs().Single().Company, "the jobs were copied");
+        Equal("""{ "ResumeRootFolder": "D:\\Kept" }""", File.ReadAllText(ProfileContext.SettingsPath), "settings were copied");
+        Equal("""{ "info": { "name": "Kept" } }""", File.ReadAllText(ProfileContext.CandidateProfilePath), "the candidate profile was copied");
+        Equal("kept", File.ReadAllText(Path.Combine(ProfileContext.ProfileRoot, "PromptAdaptation", "note.txt")), "prompt adaptation was copied");
+        var migratedId = result.ProfileId!;
+        ProfileContext.Close();
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        Check(ProfileRegistry.Delete(migratedId, out var deleteError), "the migrated profile can be removed: " + deleteError);
+        Equal(ProfileMigrationStatus.Already, ProfileMigration.MigrateIfNeeded().Status, "deleting the profile does not migrate again");
+        Check(File.ReadAllBytes(ProfilePaths.LegacyDatabasePath).AsSpan().SequenceEqual(beforeDb), "the backup is still untouched");
+    });
+
+    static void ProfileLockIsOneWorkspace() {
+        var id = "USR-" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
+        var first = ProfileLock.TryAcquire(id);
+        Check(first is not null, "the first workspace locks the profile");
+        Check(ProfileLock.TryAcquire(id) is null, "a second workspace is refused");
+        Check(ProfileLock.IsInUse(id), "the profile is reported as open");
+        first!.Dispose();
+        var again = ProfileLock.TryAcquire(id);
+        Check(again is not null, "the profile can open after the first workspace exits");
+        again!.Dispose();
+        Check(!ProfileWindow.Activate(id), "a profile with no workspace window is not treated as open");
+    }
+
+    static void ProfileLocksAreIndependent() {
+        var billy = "USR-" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
+        var luis = "USR-" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
+        var first = ProfileLock.TryAcquire(billy);
+        var second = ProfileLock.TryAcquire(luis);
+        Check(first is not null && second is not null, "Billy and Luis can both be open");
+        first!.Dispose();
+        second!.Dispose();
+    }
+
+    static void ProfileRenameKeepsData() => UsingProfileRoot(() => {
+        var created = ProfileRegistry.Create("Billy", null);
+        var marker = Path.Combine(ProfilePaths.ProfileRoot(created.ProfileId), "marker.txt");
+        File.WriteAllText(marker, "keep");
+        var db = ProfilePaths.DatabasePath(created.ProfileId);
+        Check(ProfileRegistry.Rename(created.ProfileId, "William"), "rename saves");
+        var loaded = ProfileRegistry.Load().Single();
+        Equal("William", loaded.DisplayName, "the display name changed");
+        Equal(created.ProfileId, loaded.ProfileId, "the id did not change");
+        Check(File.Exists(db), "the database is still in the same folder");
+        Equal("keep", File.ReadAllText(marker), "files in the folder stay");
+        var outside = Path.Combine(NewDir("documents"), "Resume.docx");
+        File.WriteAllText(outside, "resume");
+        Check(ProfileRegistry.Delete(created.ProfileId, out var error), "delete removes the profile: " + error);
+        Check(!Directory.Exists(ProfilePaths.ProfileRoot(created.ProfileId)), "the profile folder is gone");
+        Check(File.Exists(outside), "a resume outside the profile folder is kept");
+    });
+
+    static void ProfileChooserReloads() => UsingProfileRoot(() => {
+        Check(ProfileLaunch.ProfileId(Array.Empty<string>()) is null, "no argument shows the chooser");
+        Check(ProfileLaunch.ProfileId(new[] { "--profile", "../USR-ABCDEF12" }) is null, "a path is not a profile id");
+        var billy = ProfileRegistry.Create("Billy", null);
+        var luis = ProfileRegistry.Create("Luis", null);
+        var loaded = ProfileRegistry.Load();
+        Equal(2, loaded.Count, "both profiles are stored");
+        var cards = ProfileCatalog.Cards();
+        Equal(2, cards.Count, "the chooser lists both");
+        Check(cards.Any(c => c.ProfileId == billy.ProfileId && c.DisplayName == "Billy"), "Billy is listed");
+        Check(cards.Any(c => c.ProfileId == luis.ProfileId && c.DisplayName == "Luis"), "Luis is listed");
+        Equal(billy.ProfileId, ProfileLaunch.ProfileId(new[] { "ResumeBuilder.exe", "--profile", billy.ProfileId.ToLowerInvariant() }),
+            "a profile argument selects that id");
+    });
+
+    static readonly byte[] TinyPng = Convert.FromBase64String(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+
+    static void ProfileAvatarIsPerProfile() => UsingProfileRoot(() => {
+        var billy = ProfileRegistry.Create("Billy", null);
+        var luis = ProfileRegistry.Create("Luis", null);
+        var source = Path.Combine(NewDir("pictures"), "face.png");
+        File.WriteAllBytes(source, TinyPng);
+        Check(ProfileRegistry.TrySetAvatar(billy.ProfileId, source, out var error), "Billy's picture is stored: " + error);
+        var stored = Path.Combine(ProfilePaths.ProfileRoot(billy.ProfileId), "avatar.png");
+        Check(File.Exists(stored), "the copy is in Billy's profile folder");
+        Check(File.ReadAllBytes(stored).AsSpan().SequenceEqual(TinyPng), "the copy matches the chosen picture");
+        File.Delete(source);
+        Check(File.Exists(stored), "the copy does not depend on the original file");
+        Equal("avatar.png", ProfileRegistry.Find(billy.ProfileId)!.Avatar, "profiles.json stores the file name");
+        Check(ProfileRegistry.Find(luis.ProfileId)!.Avatar is null, "Luis has no avatar reference");
+        Check(!File.Exists(Path.Combine(ProfilePaths.ProfileRoot(luis.ProfileId), "avatar.png")), "Luis's folder has no avatar");
+        Equal(stored, ProfileCatalog.Cards().Single(c => c.ProfileId == billy.ProfileId).AvatarFile, "the chooser shows Billy's file");
+        Check(ProfileCatalog.Cards().Single(c => c.ProfileId == luis.ProfileId).AvatarFile is null, "the chooser shows Luis's initial");
+
+        var jpeg = Path.Combine(NewDir("pictures-jpg"), "face.jpg");
+        File.WriteAllBytes(jpeg, new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 });
+        Check(ProfileRegistry.TrySetAvatar(billy.ProfileId, jpeg, out error), "a JPEG replaces the PNG: " + error);
+        Check(!File.Exists(stored), "the previous PNG is removed");
+        Check(File.Exists(Path.Combine(ProfilePaths.ProfileRoot(billy.ProfileId), "avatar.jpg")), "the JPEG is the only avatar");
+        Check(ProfileRegistry.Find(luis.ProfileId)!.Avatar is null, "replacing Billy's avatar leaves Luis alone");
+
+        Check(ProfileRegistry.Rename(billy.ProfileId, "William"), "rename saves");
+        var renamed = ProfileRegistry.Find(billy.ProfileId)!;
+        Equal("William", renamed.DisplayName, "the display name changed");
+        Equal("avatar.jpg", renamed.Avatar, "the avatar still belongs to the profile id");
+        Check(File.Exists(Path.Combine(ProfilePaths.ProfileRoot(billy.ProfileId), "avatar.jpg")), "rename does not move the file");
+
+        var marker = Path.Combine(ProfilePaths.ProfileRoot(billy.ProfileId), "marker.txt");
+        File.WriteAllText(marker, "keep");
+        Check(ProfileRegistry.ClearAvatar(billy.ProfileId), "the avatar is removed");
+        Check(ProfileRegistry.Find(billy.ProfileId)!.Avatar is null, "the registry reference is cleared");
+        Check(!File.Exists(Path.Combine(ProfilePaths.ProfileRoot(billy.ProfileId), "avatar.jpg")), "the avatar file is gone");
+        Check(File.Exists(marker), "another file in the profile folder stays");
+        Check(ProfileCatalog.Cards().Single(c => c.ProfileId == billy.ProfileId).AvatarFile is null, "the chooser returns to the initial");
+
+        Check(ProfileRegistry.TrySetAvatar(billy.ProfileId, jpeg, out _), "the picture is stored again");
+        File.WriteAllText(Path.Combine(ProfilePaths.ProfileRoot(billy.ProfileId), "avatar.jpg"), "not a picture");
+        Check(ProfileRegistry.LoadableAvatar(ProfileRegistry.Find(billy.ProfileId)!.AvatarFile) is null, "a corrupt avatar is not shown");
+        Check(ProfileCatalog.Cards().Single(c => c.ProfileId == billy.ProfileId).AvatarFile is null, "a corrupt avatar falls back to the initial");
+
+        var missing = Path.Combine(NewDir("missing"), "gone.png");
+        Check(!ProfileRegistry.TrySetAvatar(billy.ProfileId, missing, out error), "a missing file is refused");
+        Equal("Unable to use this image.", error, "the message is short");
+        var huge = Path.Combine(NewDir("huge"), "big.png");
+        var bytes = new byte[2 * 1024 * 1024 + 1];
+        TinyPng.CopyTo(bytes, 0);
+        File.WriteAllBytes(huge, bytes);
+        Check(!ProfileRegistry.TrySetAvatar(luis.ProfileId, huge, out error), "an oversized image is refused");
+        Equal("Unable to use this image.", error, "oversized uses the same message");
+        Check(ProfileRegistry.Find(luis.ProfileId)!.Avatar is null, "Luis still has no avatar");
+    });
+
+    static void SqliteMissingDocxDoesNotScan() {
+        UsingStore(() => {
+            var job = StoreJob("RB-MISS", "Acme", "Engineer", JobImporter.IncomingSource, "https://example.com/miss");
+            JobStore.SyncJob(job);
+            var missing = Path.Combine(NewDir("absent"), "Resume.docx");
+            Check(!File.Exists(missing), "the DOCX is not on disk");
+            JobStore.RecordResumeOutput(job.JobId, missing, null, Path.GetDirectoryName(missing));
+            job.ResumePath = "";
+            JobStore.ResetDirectoryEnumerations();
+            JobStore.ApplyResumeLinks(new[] { job });
+            Equal(missing, job.ResumePath, "the stored path is kept");
+            Equal(0, JobStore.DirectoryEnumerations, "a missing file does not search the resume tree");
+        });
+    }
+
+    // ---------- HTML round trip (parallel prototype; production generation does not call it) ----------
+
+    static void HtmlRoundTripKeepsConstructedText() {
+        var source = Path.Combine(NewDir("html-source"), "synthetic.docx");
+        WriteSyntheticResume(source);
+        var before = File.ReadAllBytes(source);
+        var directory = NewDir("html-out");
+        var result = HtmlRoundTrip.ConvertFile(source, directory);
+        Check(File.ReadAllBytes(source).AsSpan().SequenceEqual(before), "the source DOCX is left untouched");
+        Check(result.DocxPath != source, "the round trip writes a new file");
+        SameVisibleText(source, result.DocxPath);
+        var html = File.ReadAllText(result.HtmlPath);
+        Check(!html.Contains("<w:", StringComparison.Ordinal), "the HTML is not Word markup");
+        Check(!html.Contains("flex", StringComparison.Ordinal) && !html.Contains("grid", StringComparison.OrdinalIgnoreCase)
+              && !html.Contains("position:", StringComparison.Ordinal) && !html.Contains("<script", StringComparison.Ordinal),
+              "the HTML stays inside the supported subset");
+        using var word = WordprocessingDocument.Open(result.DocxPath, false);
+        var errors = new OpenXmlValidator(FileFormatVersions.Office2019).Validate(word)
+            .Select(error => error.Description).ToList();
+        Check(errors.Count == 0, "round-trip DOCX should be schema-valid: " + string.Join(" | ", errors.Take(6)));
+        var body = word.MainDocumentPart!.Document!.Body!;
+        Check(body.Descendants<W.Justification>().Any(j => j.Val?.Value == W.JustificationValues.Center), "the name stays centered");
+        Check(body.Descendants<W.BottomBorder>().Any(), "the section rule is a real border");
+        Check(body.Descendants<W.Shading>().Any(s => string.Equals(s.Fill?.Value, "F5F6FA", StringComparison.OrdinalIgnoreCase)), "the shaded block is kept");
+        Check(word.MainDocumentPart.HyperlinkRelationships.Any(rel => rel.Uri.ToString().Contains("example.com", StringComparison.Ordinal)), "the hyperlink is a Word link");
+        Check(word.MainDocumentPart.FooterParts.Any(part => part.Footer?.InnerText.Contains("Luis O Torres") == true), "the footer is a footer");
+        Check(body.Descendants<W.Table>().Any(), "the skills layout stays a table");
+        Check(body.Descendants<W.NumberingProperties>().Any(), "numbering stays numbering");
+        Check(body.Descendants<W.Spacing>().Any(s => s.Val?.Value == 60), "letter spacing is kept");
+        Check(!body.InnerText.Contains("SOURCE-ONLY-FOOTNOTE"), "a source footnote is not copied into the body");
+    }
+
+    static void HtmlRoundTripIsDeterministic() {
+        var source = Path.Combine(NewDir("html-stable"), "synthetic.docx");
+        WriteSyntheticResume(source);
+        var first = HtmlRoundTrip.ConvertFile(source, NewDir("html-stable-a"));
+        var second = HtmlRoundTrip.ConvertFile(source, NewDir("html-stable-b"));
+        Equal(File.ReadAllText(first.HtmlPath), File.ReadAllText(second.HtmlPath), "normalized HTML");
+    }
+
+    static void HtmlRoundTripSamples() {
+        var documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        var samples = new[] {
+            Path.Combine(documents, "BillyLin.docx"),
+            Path.Combine(documents, "Luis_Torres.docx"),
+            Path.Combine(documents, "Jeff_Fermon.docx"),
+            Path.Combine(documents, "Clifton Isiah Collins.docx"),
+            Path.Combine(documents, "Brandon Liu.docx")
+        };
+        var present = samples.Where(File.Exists).ToList();
+        if (present.Count == 0) return;
+        var directory = HtmlRoundTrip.PrototypeDirectory;
+        foreach (var sample in present) {
+            var before = File.ReadAllBytes(sample);
+            var result = HtmlRoundTrip.ConvertFile(sample, directory);
+            Check(File.ReadAllBytes(sample).AsSpan().SequenceEqual(before), Path.GetFileName(sample) + " was modified");
+            SameVisibleText(sample, result.DocxPath);
+            var unsupported = result.Unsupported.Distinct(StringComparer.Ordinal).ToList();
+            Console.WriteLine($"        {Path.GetFileName(sample)} docx-to-html {result.DocxToHtmlMs} ms, html-to-docx {result.HtmlToDocxMs} ms, {result.HtmlBytes} bytes, unsupported {result.Unsupported.Count}{(unsupported.Count == 0 ? "" : " " + string.Join(",", unsupported))}");
+            Console.WriteLine("        " + result.DocxPath);
+            using var output = WordprocessingDocument.Open(result.DocxPath, false);
+            var errors = new OpenXmlValidator(FileFormatVersions.Office2019).Validate(output).Take(4).Select(error => error.Description);
+            Check(!errors.Any(), Path.GetFileName(sample) + " round trip is not schema-valid: " + string.Join(" | ", errors));
+        }
+    }
+
+    static void EmailHtmlTailoring() {
+        var reply = """
+        {"sender":"Ada Lovelace","company":"Analytical Engines","jobTitle":"Engineer","jobDescription":"Build the engine.","emailUrl":"https://boards.greenhouse.io/example/jobs/1"}
+        """;
+        var draft = EmailExtractor.ParseReply(reply, "original email body", "", out var error);
+        Check(draft is not null, error);
+        Equal("Ada Lovelace", draft!.Sender, "sender");
+        Equal("Analytical Engines", draft.Company, "company");
+        Equal("Engineer", draft.JobTitle, "job title");
+        Equal("Build the engine.", draft.JobDescription, "job description");
+        Equal("https://boards.greenhouse.io/example/jobs/1", draft.EmailUrl, "email url");
+        Check(draft.Id.StartsWith("ET-", StringComparison.Ordinal), "extraction id");
+
+        var email = new EmailTask {
+            Id = draft.Id,
+            CreatedAt = new DateTimeOffset(2026, 9, 28, 12, 0, 0, TimeSpan.Zero),
+            Sender = draft.Sender,
+            Company = draft.Company,
+            JobTitle = draft.JobTitle,
+            JobDescription = draft.JobDescription,
+            EmailUrl = draft.EmailUrl,
+            OriginalText = "original email body",
+            Status = EmailTaskStatus.Pending
+        };
+        var job = EmailOutput.Bind(email);
+        Equal(email.Id, job.JobId, "one internal id");
+        Equal(EmailOutput.SourceName, job.Source, "source");
+        Equal("Email", job.JobSite, "job site");
+        Equal("Queued", job.Status, "queue status");
+        Equal(ApplicationStatus.Viewed, job.ApplicationStatus, "application starts at Viewed");
+        Equal(email.EmailUrl, job.Link, "job url");
+        var stamp = job.CreatedAt;
+        job.ApplicationStatus = ApplicationStatus.Ready;
+        var again = EmailOutput.Bind(email, job);
+        Equal(email.Id, again.JobId, "the same id is reused");
+        Equal(stamp, again.CreatedAt, "import time is not rewritten");
+        Equal(ApplicationStatus.Ready, again.ApplicationStatus, "a stored application status stays");
+        Equal("Queued", again.Status, "another tailor starts queued");
+        Equal("", EmailOutput.Bind(new EmailTask { Id = "ET-blank", JobTitle = "Role", EmailUrl = "not a url" }).Link,
+            "a non-web email url is not stored");
+
+        UsingStore(() => {
+            JobStore.EnsureReady();
+            var created = EmailOutput.Bind(email);
+            JobStore.UpsertTracked(created, "email");
+            JobStore.UpsertTracked(EmailOutput.Bind(email, created), "email");
+            Equal(1, Storage.LoadTasks().Count(item => item.JobId == email.Id), "tailoring again does not add a job");
+            Equal(ApplicationStatus.Viewed, Storage.LoadTasks().Single(item => item.JobId == email.Id).ApplicationStatus, "the first record is Viewed");
+
+            created.Status = "Failed";
+            created.FailureReason = "GptInvalidOutput";
+            JobStore.UpsertTracked(created, "email-failed");
+            var failed = Storage.LoadTasks().Single(item => item.JobId == email.Id);
+            Equal("Failed", failed.Status, "queue failure is stored");
+            Equal(ApplicationStatus.Viewed, failed.ApplicationStatus, "queue failure does not fail the application");
+
+            var resumes = Path.Combine(NewDir("email-resumes"), "Resumes");
+            Directory.CreateDirectory(resumes);
+            var settings = new AppSettings { ResumeRootFolder = resumes, Docx = true, Pdf = true };
+            failed.Status = "Queued";
+            var generation = EmailOutput.WriteResume(email, failed, settings, HtmlTailorSample());
+            Check(generation.DocxGenerated, generation.DocxError ?? "docx was not written");
+            Check(generation.PdfGenerated, generation.PdfError ?? "pdf was not written");
+            Check(File.Exists(generation.DocxPath), "docx file");
+            Check(File.Exists(generation.PdfPath), "pdf file");
+            Check((generation.OutputFolder ?? "").Contains("Manual", StringComparison.OrdinalIgnoreCase), "email resumes stay in the Manual folder");
+            JobTracker.MarkResumeReady(failed, generation.DocxPath);
+            JobStore.CommitResume(failed, generation.DocxPath, generation.PdfPath, generation.OutputFolder);
+            var ready = Storage.LoadTasks().Single(item => item.JobId == email.Id);
+            Equal(ApplicationStatus.Ready, ready.ApplicationStatus, "success moves Viewed to Ready");
+            Check(ready.ReadyAt is not null, "ReadyAt is set");
+            Equal(1, Storage.LoadTasks().Count(item => item.JobId == email.Id), "resume save does not add a job");
+            email.ApplyOutput(null, null, null);
+            Check(EmailOutput.ApplyStoredResume(email), "stored paths are found");
+            Equal(generation.DocxPath, email.DocxPath, "resume action path");
+            Equal(generation.PdfPath, email.PdfPath, "pdf action path");
+            Equal(generation.OutputFolder, email.OutputFolder, "folder action path");
+            Check(email.CanOpenResume && email.CanOpenPdf && email.CanOpenFolder, "email actions can open the stored files");
+
+            var retry = EmailOutput.Bind(email, ready);
+            Equal(email.Id, retry.JobId, "retry keeps the id");
+            Equal(ApplicationStatus.Ready, retry.ApplicationStatus, "retry does not reset Ready");
+            JobStore.UpsertTracked(retry, "email");
+            Equal(1, Storage.LoadTasks().Count(item => item.JobId == email.Id), "retry does not add a job");
+        });
+
+        WithPreparedFiles(() => {
+            var previous = HtmlTailor.OriginalCacheRoot;
+            HtmlTailor.OriginalCacheRoot = NewDir("email-html-cache");
+            try {
+                var docx = Path.Combine(NewDir("email-original"), "original.docx");
+                WriteSyntheticResume(docx);
+                var prompt = Path.Combine(NewDir("email-prompt"), "prompt.txt");
+                File.WriteAllText(prompt, "Tailor the resume to the job.");
+                var profile = Path.Combine(NewDir("email-profile"), "profile.json");
+                File.WriteAllText(profile, """{"info":{"name":"Ada Lovelace"},"summary":"","skills":[],"experience":[],"education":[],"certifications":[]}""");
+                var settings = new AppSettings {
+                    PromptMode = PromptModes.Resume,
+                    MasterPrompt = prompt,
+                    OriginalResume = docx,
+                    StyleReferenceResume = Path.Combine(NewDir("email-style"), "style.docx"),
+                    CandidateProfile = profile,
+                    ResumeRootFolder = Path.Combine(NewDir("email-root2"), "Resumes"),
+                    Docx = true,
+                    Pdf = true
+                };
+                File.WriteAllBytes(settings.StyleReferenceResume, new byte[] { 1, 2, 3 });
+                var prepared = EmailOutput.PrepareRun(EmailOutput.Bind(email), settings);
+                Check(prepared.HtmlTailoring, "email tailoring uses HTML");
+                Check(prepared.Text.Contains("===== RESUME HTML =====", StringComparison.Ordinal), "the HTML resume is sent");
+                Check(prepared.Text.Contains("Do not return JSON.", StringComparison.Ordinal), "the shared HTML contract is sent");
+                Check(!prepared.Text.Contains("===== COMPLETE JOB PAYLOAD =====", StringComparison.Ordinal), "the JSON resume payload is not sent");
+                Equal(Path.GetFullPath(docx), HtmlTailor.OriginalResumeFile(settings), "Original Resume is the source");
+                var second = EmailOutput.PrepareRun(EmailOutput.Bind(email), settings);
+                Check(second.HtmlTailoring, "retry uses the HTML path");
+                Equal(email.Id, second.JobId, "retry keeps the same job");
+                var ordinary = new JobTask { JobId = "RB-ORDINARY", Company = "Acme", Title = "Engineer", Jd = "Build things.", Link = "https://example.com/job" };
+                var jobPrepared = EmailOutput.PrepareRun(ordinary, settings);
+                Check(jobPrepared.HtmlTailoring, "a job task uses HTML");
+                Check(jobPrepared.Text.Contains("===== RESUME HTML =====", StringComparison.Ordinal), "a job task sends the resume HTML");
+                Check(!jobPrepared.Text.Contains("===== COMPLETE JOB PAYLOAD =====", StringComparison.Ordinal), "a job task does not request resume JSON");
+                var manual = EmailOutput.PrepareRun(new JobTask { JobId = "RB-MANUAL", Company = "Acme", Title = "Engineer", Jd = "Build things.", Link = "https://example.com/manual" }, settings);
+                Check(manual.HtmlTailoring, "a selected job uses HTML");
+                Check(!manual.Text.Contains("===== COMPLETE JOB PAYLOAD =====", StringComparison.Ordinal), "a selected job does not request resume JSON");
+            } finally {
+                HtmlTailor.OriginalCacheRoot = previous;
+                foreach (var id in new[] { email.Id, "RB-ORDINARY", "RB-MANUAL" }) {
+                    var dir = HtmlTailor.JobDirectory(id);
+                    if (Directory.Exists(dir)) Directory.Delete(dir, true);
+                }
+            }
+        });
+    }
+
+    static void HtmlTailorBilly() {
+        Check(!new PreparedRequest().HtmlTailoring, "only HtmlTailor marks a request as HTML");
+        Check(ChatResponseReader.ScriptIsReadOnly(ChatResponseReader.ReadLastAssistantHtmlScript), "HTML reader is read-only");
+        Check(ChatResponseReader.ReadLastAssistantHtmlScript.Contains("<html", StringComparison.Ordinal), "HTML reader looks for html");
+        Check(ChatResponseReader.ReadLastAssistantScript.Contains("no-profile-json", StringComparison.Ordinal), "JSON reader is unchanged");
+
+        var source = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "BillyLin.docx");
+        Check(File.Exists(source), "BillyLin.docx was not found");
+        var before = File.ReadAllBytes(source);
+        var html = HtmlResumeHtml.Normalize(HtmlResumeHtml.Emit(DocxHtmlReader.Read(source)));
+        Check(File.ReadAllBytes(source).AsSpan().SequenceEqual(before), "reading the source DOCX modified it");
+
+        const string jobId = "BillyLin";
+        HtmlTailor.WriteSource(jobId, html);
+        var folder = HtmlTailor.JobDirectory(jobId);
+        var sourceHtml = Path.Combine(folder, "source.html");
+        var sourceHtmlBytes = File.ReadAllBytes(sourceHtml);
+
+        var tailored = html
+            .Replace("Senior Full-Stack &amp; AI/ML Software Engineer", "TAILORED_HEADLINE")
+            .Replace("Senior AI/ML and software engineering leader", "TAILORED_SUMMARY")
+            .Replace("Prompt Engineering", "TAILORED_SKILL")
+            .Replace("Caterpillar Inc. | Senior AI Software Engineer | Sep 2025 - Apr 2026",
+                "Changed Employer Inc. | TAILORED_TITLE | Jan 1999 - Apr 2026")
+            .Replace("California, United States | Contract | Remote", "California, United States | Contract | ONSITE")
+            .Replace("University of California, Berkeley", "Changed School")
+            .Replace(">BILLY LIN<", ">CHANGED NAME<")
+            .Replace("reducing experiment turnaround time by 40%", "TAILORED_BULLET reducing experiment turnaround time by 40%");
+        Check(tailored.Contains("TAILORED_HEADLINE") && tailored.Contains("TAILORED_BULLET"), "the sample text was not found to tailor");
+
+        var accepted = HtmlTailor.Accept(tailored, jobId);
+        Check(accepted.Ok, accepted.Error);
+        var result = accepted.Html;
+        Check(result.Contains("TAILORED_HEADLINE"), "headline was not tailored");
+        Check(result.Contains("TAILORED_SUMMARY"), "summary was not tailored");
+        Check(result.Contains("TAILORED_SKILL"), "skills were not tailored");
+        Check(result.Contains("TAILORED_TITLE"), "job title was not tailored");
+        Check(result.Contains("TAILORED_BULLET"), "bullet was not tailored");
+        Check(result.Contains("BILLY LIN"), "name was not restored");
+        Check(!result.Contains("CHANGED NAME"), "changed name remained");
+        Check(result.Contains("Caterpillar Inc."), "company was not restored");
+        Check(!result.Contains("Changed Employer Inc."), "changed company remained");
+        Check(result.Contains("Sep 2025"), "start date was not restored");
+        Check(!result.Contains("Jan 1999"), "changed date remained");
+        Check(result.Contains("California, United States | Contract | Remote"), "work arrangement was not restored");
+        Check(!result.Contains("ONSITE"), "changed work arrangement remained");
+        Check(result.Contains("University of California, Berkeley"), "education was not restored");
+        Check(!result.Contains("Changed School"), "changed school remained");
+        Check(result.Contains("border-bottom: 1pt solid #2F5597"), "heading border CSS was lost");
+        Check(result.Contains("font-family: Arial"), "Arial was lost");
+        Check(result.Contains("size: 612pt 792pt"), "page size was lost");
+        Check(File.ReadAllBytes(sourceHtml).AsSpan().SequenceEqual(sourceHtmlBytes), "source.html was overwritten");
+
+        var goodTailored = File.ReadAllBytes(accepted.SavedHtmlPath);
+        var sentinel = Path.Combine(folder, "already-good.docx");
+        File.WriteAllBytes(sentinel, new byte[] { 1, 2, 3, 4 });
+        var rejected = html.Replace("</body>", "<script>bad()</script></body>");
+        var refused = HtmlTailor.Accept(rejected, jobId);
+        Check(!refused.Ok, "a script was accepted");
+        Check(File.ReadAllBytes(accepted.SavedHtmlPath).AsSpan().SequenceEqual(goodTailored), "a failed answer overwrote tailored.html");
+        Check(File.ReadAllBytes(sourceHtml).AsSpan().SequenceEqual(sourceHtmlBytes), "a failed answer overwrote source.html");
+        Check(File.ReadAllBytes(sentinel).AsSpan().SequenceEqual(new byte[] { 1, 2, 3, 4 }), "a failed answer overwrote an existing resume");
+        File.Delete(sentinel);
+
+        var styled = html.Replace("body { font-family: Arial; font-size: 12pt; }",
+            "body { font-family: Arial; font-size: 12pt; position: absolute; }");
+        var styledRefusal = HtmlTailor.Accept(styled, jobId);
+        Check(!styledRefusal.Ok, "unsupported CSS was accepted");
+        Check(File.ReadAllBytes(accepted.SavedHtmlPath).AsSpan().SequenceEqual(goodTailored), "unsupported CSS overwrote tailored.html");
+
+        Check(HtmlTailor.TryExtract("```html\n" + result + "\n```", out var fenced, out var fenceError), fenceError);
+        Check(fenced.Contains("<html", StringComparison.OrdinalIgnoreCase), "fenced HTML was not extracted");
+        Check(!HtmlTailor.TryExtract("```html\n<html></html>\n```\n```html\n<html></html>\n```", out _, out _), "two HTML blocks were accepted");
+        Check(!HtmlTailor.TryValidate("<html><p></body>", out _), "malformed HTML was accepted");
+
+        var docx = Path.Combine(folder, "BILLY LIN.docx");
+        var pdf = Path.Combine(folder, "BILLY LIN.pdf");
+        if (File.Exists(docx)) File.Delete(docx);
+        if (File.Exists(pdf)) File.Delete(pdf);
+        HtmlTailor.WriteDocx(result, docx);
+        using (var output = WordprocessingDocument.Open(docx, false)) {
+            var errors = new OpenXmlValidator(FileFormatVersions.Office2019).Validate(output).Take(4).Select(error => error.Description);
+            Check(!errors.Any(), "tailored DOCX is not schema-valid: " + string.Join(" | ", errors));
+        }
+        var visible = HtmlRoundTrip.VisibleText(docx);
+        Check(visible.Contains("TAILORED_SUMMARY"), "DOCX is missing the tailored summary");
+        Check(visible.Contains("TAILORED_TITLE"), "DOCX is missing the tailored job title");
+        Check(visible.Contains("BILLY LIN"), "DOCX is missing the name");
+        Check(visible.Contains("Caterpillar Inc."), "DOCX is missing the company");
+        Check(!visible.Contains("Changed Employer"), "DOCX kept the changed company");
+        Check(File.ReadAllBytes(source).AsSpan().SequenceEqual(before), "the original DOCX was modified");
+        PdfWriter.ConvertDocx(docx, pdf);
+        Check(new FileInfo(pdf).Length > 0, "PDF was empty");
+        var rejectedFile = Path.Combine(folder, "tailored.rejected.html");
+        if (File.Exists(rejectedFile)) File.Delete(rejectedFile);
+        Console.WriteLine("        " + sourceHtml);
+        Console.WriteLine("        " + accepted.SavedHtmlPath);
+        Console.WriteLine("        " + docx);
+        Console.WriteLine("        " + pdf);
+    }
+
+    static void WordPdfConversionClosesWord() {
+        var before = WinwordPids();
+        var dir = NewDir("word-pdf");
+        var docx = Path.Combine(dir, "resume.docx");
+        WriteSyntheticResume(docx);
+        for (var i = 1; i <= 3; i++) {
+            var pdf = Path.Combine(dir, "resume-" + i + ".pdf");
+            PdfWriter.ConvertDocx(docx, pdf);
+            Check(new FileInfo(pdf).Length > 0, "PDF " + i + " was empty");
+        }
+        var orphan = WinwordPids().Where(id => !before.Contains(id)).ToList();
+        Check(orphan.Count == 0, "Word stayed open after PDF conversion: " + string.Join(",", orphan));
+    }
+
+    static HashSet<int> WinwordPids() {
+        var ids = new HashSet<int>();
+        foreach (var process in System.Diagnostics.Process.GetProcessesByName("WINWORD")) {
+            try { ids.Add(process.Id); }
+            finally { process.Dispose(); }
+        }
+        return ids;
+    }
+
+    static void HtmlOriginalResumeIsTheOnlySource() {
+        var style = Path.Combine(NewDir("style-ref"), "style.docx");
+        File.WriteAllBytes(style, new byte[] { 1, 2, 3, 4 });
+        var original = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "BillyLin.docx");
+        Check(File.Exists(original), "BillyLin.docx was not found");
+        var settings = new AppSettings { OriginalResume = original, StyleReferenceResume = style };
+        Equal(Path.GetFullPath(original), HtmlTailor.OriginalResumeFile(settings), "the Original Resume is the HTML source");
+        Check(settings.StyleReferenceResume == style, "a stored style reference is not the HTML source");
+        try {
+            HtmlTailor.OriginalResumeFile(new AppSettings { OriginalResume = "", StyleReferenceResume = style });
+            Check(false, "a style reference must not supply the HTML resume");
+        } catch (InvalidOperationException ex) {
+            Check(ex.Message.Contains("Original Resume", StringComparison.Ordinal), ex.Message);
+        }
+    }
+
+    static void HtmlOriginalResumeRegenerates() {
+        var previous = HtmlTailor.OriginalCacheRoot;
+        HtmlTailor.OriginalCacheRoot = NewDir("html-original");
+        try {
+            var docx = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "BillyLin.docx");
+            Check(File.Exists(docx), "BillyLin.docx was not found");
+            var first = HtmlTailor.NormalizedOriginal(docx);
+            var htmlPath = Path.Combine(HtmlTailor.OriginalCacheRoot, "original-resume.html");
+            var metaPath = Path.Combine(HtmlTailor.OriginalCacheRoot, "original-resume.json");
+            Check(File.Exists(htmlPath) && File.Exists(metaPath), "normalized HTML was stored");
+            Equal(first, File.ReadAllText(htmlPath), "the stored HTML is the normalized resume");
+            File.SetLastWriteTimeUtc(htmlPath, DateTime.UtcNow.AddDays(-2));
+            var stamp = File.GetLastWriteTimeUtc(htmlPath);
+            Equal(first, HtmlTailor.NormalizedOriginal(docx), "an unchanged resume reuses its HTML");
+            Equal(stamp.Ticks.ToString(), File.GetLastWriteTimeUtc(htmlPath).Ticks.ToString(), "an unchanged resume does not rewrite its HTML");
+            var hash = PromptConversion.HashFile(docx);
+            File.WriteAllText(metaPath, File.ReadAllText(metaPath).Replace(hash, "0000", StringComparison.Ordinal));
+            Equal(first, HtmlTailor.NormalizedOriginal(docx), "a changed resume regenerates the same document");
+            Check(File.ReadAllText(metaPath).Contains(hash, StringComparison.Ordinal), "the regenerated HTML records the new file hash");
+        } finally {
+            HtmlTailor.OriginalCacheRoot = previous;
+        }
+    }
+
+    static void HtmlTailorLocksStyleAndSectionOrder() {
+        var source = HtmlTailorSample();
+        Check(HtmlTailor.TryValidate(source, out var valid), valid);
+        var facts = new HtmlLockedFacts();
+        var fewerBullets = source.Replace("<p class=\"a\">• Second bullet.</p>", "", StringComparison.Ordinal);
+        var restored = HtmlTailor.Restore(source, fewerBullets, facts);
+        Check(!restored.Contains("• Second bullet.", StringComparison.Ordinal), "a removed bullet was put back");
+        Check(restored.Contains("• First bullet.", StringComparison.Ordinal), "the remaining bullet was kept");
+        Check(restored.Contains("font-size: 11pt", StringComparison.Ordinal), "the style block stayed");
+
+        var recolored = source.Replace("font-size: 11pt", "font-size: 14pt", StringComparison.Ordinal);
+        var styled = HtmlTailor.Restore(source, recolored, facts);
+        Check(styled.Contains("font-size: 11pt", StringComparison.Ordinal), "a changed style block was restored");
+        Check(!styled.Contains("font-size: 14pt", StringComparison.Ordinal), "the changed style remained");
+
+        var extraSkill = source.Replace("<p class=\"a\">Prompt Engineering</p>",
+            "<p class=\"a\">Prompt Engineering</p><p class=\"a\">Added skill</p>", StringComparison.Ordinal);
+        var skills = HtmlTailor.Restore(source, extraSkill, facts);
+        Check(skills.Contains("Added skill", StringComparison.Ordinal), "a new skill item was rejected");
+
+        try {
+            HtmlTailor.Restore(source, source.Replace("class=\"a\">Added", "class=\"zz\">Added", StringComparison.Ordinal)
+                .Replace("<p class=\"a\">Prompt Engineering</p>", "<p class=\"a\">Prompt Engineering</p><p class=\"zz\">Added skill</p>", StringComparison.Ordinal), facts);
+            Check(false, "a new CSS class was accepted");
+        } catch (InvalidDataException ex) {
+            Equal("new-class", ex.Message, "a new class is rejected");
+        }
+
+        var swapped = source.Replace("<h1 class=\"a\">PROFESSIONAL EXPERIENCE</h1>", "<h1 class=\"a\">MARKER</h1>", StringComparison.Ordinal)
+            .Replace("<h1 class=\"a\">EDUCATION</h1>", "<h1 class=\"a\">PROFESSIONAL EXPERIENCE</h1>", StringComparison.Ordinal)
+            .Replace("<h1 class=\"a\">MARKER</h1>", "<h1 class=\"a\">EDUCATION</h1>", StringComparison.Ordinal);
+        var reordered = HtmlTailor.Restore(source, swapped, facts);
+        Check(reordered.Contains("EDUCATION", StringComparison.Ordinal) && reordered.Contains("PROFESSIONAL EXPERIENCE", StringComparison.Ordinal),
+            "a section edit was rejected");
+        Check(reordered.Contains("font-size: 11pt", StringComparison.Ordinal), "style was not restored after a section edit");
+    }
+
+    static void HtmlLineHeightUsesMultipleSpacing() {
+        var folder = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ResumeBuilder", "HtmlTailoring", "RB-20260927-010753-7ee075d6");
+        var sourceHtml = Path.Combine(folder, "source.html");
+        Check(File.Exists(sourceHtml), "the overlapping resume HTML is missing");
+        var docx = Path.Combine(folder, "line-spacing.docx");
+        if (File.Exists(docx)) File.Delete(docx);
+        HtmlTailor.WriteDocx(File.ReadAllText(sourceHtml), docx);
+        string xml;
+        using (var output = WordprocessingDocument.Open(docx, false)) {
+            var document = output.MainDocumentPart?.Document;
+            Check(document is not null, "the DOCX has no document");
+            xml = document?.OuterXml ?? "";
+        }
+        Check(!xml.Contains("lineRule=\"exact\"", StringComparison.Ordinal), "unitless line-height was written as exact spacing");
+        Check(!xml.Contains("w:line=\"20\"", StringComparison.Ordinal), "line-height 1 became 1pt");
+        Check(xml.Contains("w:line=\"240\"", StringComparison.Ordinal), "line-height 1 is single spacing");
+        Check(xml.Contains("w:line=\"247\"", StringComparison.Ordinal), "line-height 1.029 is a multiplier");
+        Check(xml.Contains("w:before=", StringComparison.Ordinal) && xml.Contains("w:after=", StringComparison.Ordinal),
+            "paragraph spacing was dropped");
+        Check(!xml.Contains("trHeight", StringComparison.Ordinal), "a table row height was written");
+        Console.WriteLine("        " + docx);
+    }
+
+    static string HtmlTailorSample() =>
+        "<html><head><style>\n"
+        + "body { font-family: Arial; font-size: 12pt; }\n"
+        + ".a { font-size: 11pt; }\n"
+        + "@page { size: 612pt 792pt; margin: 36pt; }\n"
+        + "</style></head><body>\n"
+        + "<p class=\"a\">BILLY LIN</p>\n"
+        + "<h1 class=\"a\">PROFESSIONAL SUMMARY</h1>\n"
+        + "<p class=\"a\">Summary text here.</p>\n"
+        + "<h1 class=\"a\">TECHNICAL SKILLS</h1>\n"
+        + "<p class=\"a\">Prompt Engineering</p>\n"
+        + "<h1 class=\"a\">PROFESSIONAL EXPERIENCE</h1>\n"
+        + "<p class=\"a\">Caterpillar Inc. | Engineer | Sep 2025 - Apr 2026</p>\n"
+        + "<p class=\"a\">• First bullet.</p>\n"
+        + "<p class=\"a\">• Second bullet.</p>\n"
+        + "<p class=\"a\">California, United States | Contract | Remote</p>\n"
+        + "<h1 class=\"a\">EDUCATION</h1>\n"
+        + "<p class=\"a\">University of California, Berkeley</p>\n"
+        + "<h1 class=\"a\">CERTIFICATIONS</h1>\n"
+        + "<p class=\"a\">• Sample certification</p>\n"
+        + "</body></html>";
+
+    static void HtmlTailorRejectedResume() {
+        var folder = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ResumeBuilder", "HtmlTailoring", "RB-20260927-010753-7ee075d6");
+        var sourceHtml = Path.Combine(folder, "source.html");
+        var rejectedHtml = Path.Combine(folder, "tailored.rejected.html");
+        Check(File.Exists(sourceHtml) && File.Exists(rejectedHtml), "the rejected HTML sample is missing");
+        var sourceBytes = File.ReadAllBytes(sourceHtml);
+        var accepted = HtmlTailor.Accept(File.ReadAllText(rejectedHtml), "RB-20260927-010753-7ee075d6");
+        Check(accepted.Ok, accepted.Error);
+        Check(File.ReadAllBytes(sourceHtml).AsSpan().SequenceEqual(sourceBytes), "source.html was overwritten");
+        Check(accepted.Html.Contains("Senior Backend Engineer"), "the tailored headline was removed");
+        Check(accepted.Html.Contains("Brandon Liu"), "the name was lost");
+        Check(accepted.Html.Contains("ServiceNow"), "the employer was lost");
+        Check(accepted.Html.Contains("July 2026"), "the employment date was lost");
+        Check(accepted.Html.Contains("San Diego, CA"), "the location was lost");
+        Check(accepted.Html.Contains("University of California, San Diego"), "education was lost");
+        Check(accepted.Html.Contains("Google Cloud Professional Machine Learning Engineer"), "a certification was lost");
+        var docx = Path.Combine(folder, "tailored.docx");
+        if (File.Exists(docx)) File.Delete(docx);
+        HtmlTailor.WriteDocx(accepted.Html, docx);
+        using (var output = WordprocessingDocument.Open(docx, false)) {
+            var errors = new OpenXmlValidator(FileFormatVersions.Office2019).Validate(output).Take(4).Select(error => error.Description);
+            Check(!errors.Any(), "tailored DOCX is not schema-valid: " + string.Join(" | ", errors));
+        }
+        var visible = HtmlRoundTrip.VisibleText(docx);
+        Check(visible.Contains("Senior Backend Engineer"), "DOCX is missing the tailored headline");
+        Check(visible.Contains("Brandon Liu"), "DOCX is missing the name");
+        Check(visible.Contains("ServiceNow"), "DOCX is missing the employer");
+        Check(visible.Contains("July 2026"), "DOCX is missing the date");
+        Console.WriteLine("        source-elements=" + CountTags(sourceHtml) + " returned-elements=" + CountTags(rejectedHtml));
+        Console.WriteLine("        " + accepted.SavedHtmlPath);
+        Console.WriteLine("        " + docx);
+    }
+
+    static int CountTags(string path) {
+        var html = File.ReadAllText(path);
+        var body = html.IndexOf("<body", StringComparison.OrdinalIgnoreCase);
+        if (body < 0) return 0;
+        return System.Text.RegularExpressions.Regex.Matches(html[body..], @"<[A-Za-z][\w:-]*").Count;
+    }
+
+    static void SameVisibleText(string source, string output) {
+        var left = HtmlRoundTrip.VisibleText(source);
+        var right = HtmlRoundTrip.VisibleText(output);
+        if (left == right) return;
+        var index = 0;
+        while (index < left.Length && index < right.Length && left[index] == right[index]) index++;
+        string Snip(string text) {
+            var start = Math.Max(0, index - 24);
+            var length = Math.Min(48, text.Length - start);
+            return length <= 0 ? "" : text.Substring(start, length).Replace("\n", "\\n").Replace("\t", "\\t");
+        }
+        throw new Exception($"text differs at {index} (source {left.Length}, output {right.Length}): [{Snip(left)}] vs [{Snip(right)}]");
+    }
+
+    static void WriteSyntheticResume(string path) {
+        using var word = WordprocessingDocument.Create(path, WordprocessingDocumentType.Document);
+        var main = word.AddMainDocumentPart();
+        var numbering = main.AddNewPart<NumberingDefinitionsPart>();
+        numbering.Numbering = new W.Numbering(
+            new W.AbstractNum(
+                new W.Nsid { Val = "00ABCDEF" },
+                new W.MultiLevelType { Val = W.MultiLevelValues.HybridMultilevel },
+                new W.Level(
+                    new W.StartNumberingValue { Val = 1 },
+                    new W.NumberingFormat { Val = W.NumberFormatValues.Bullet },
+                    new W.LevelText { Val = "•" },
+                    new W.LevelJustification { Val = W.LevelJustificationValues.Left }
+                ) { LevelIndex = 0 }
+            ) { AbstractNumberId = 1 },
+            new W.NumberingInstance(new W.AbstractNumId { Val = 1 }) { NumberID = 1 });
+        var styles = main.AddNewPart<StyleDefinitionsPart>();
+        styles.Styles = new W.Styles(
+            new W.DocDefaults(new W.RunPropertiesDefault(new W.RunPropertiesBaseStyle(
+                new W.RunFonts { Ascii = "Arial", HighAnsi = "Arial" },
+                new W.FontSize { Val = "22" }))),
+            new W.Style(
+                new W.StyleName { Val = "Normal" },
+                new W.StyleRunProperties(new W.RunFonts { Ascii = "Arial", HighAnsi = "Arial" }, new W.FontSize { Val = "22" })
+            ) { Type = W.StyleValues.Paragraph, StyleId = "Normal", Default = true },
+            new W.Style(
+                new W.StyleName { Val = "heading 1" },
+                new W.BasedOn { Val = "Normal" },
+                new W.StyleParagraphProperties(new W.OutlineLevel { Val = 0 }),
+                new W.StyleRunProperties(new W.Bold(), new W.Color { Val = "2F5597" }, new W.FontSize { Val = "24" })
+            ) { Type = W.StyleValues.Paragraph, StyleId = "Heading1" });
+        var footer = main.AddNewPart<FooterPart>();
+        footer.Footer = new W.Footer(new W.Paragraph(
+            new W.Run(new W.Text("Luis O Torres | Page ") { Space = SpaceProcessingModeValues.Preserve }),
+            new W.Run(new W.FieldChar { FieldCharType = W.FieldCharValues.Begin }),
+            new W.Run(new W.FieldCode(" PAGE ") { Space = SpaceProcessingModeValues.Preserve }),
+            new W.Run(new W.FieldChar { FieldCharType = W.FieldCharValues.Separate }),
+            new W.Run(new W.Text("1")),
+            new W.Run(new W.FieldChar { FieldCharType = W.FieldCharValues.End })));
+        var footnote = main.AddNewPart<FootnotesPart>();
+        footnote.Footnotes = new W.Footnotes(new W.Footnote(
+            new W.Paragraph(new W.Run(new W.Text("SOURCE-ONLY-FOOTNOTE")))
+        ) { Id = 1 });
+        var body = new W.Body();
+        body.Append(new W.Paragraph(
+            new W.ParagraphProperties(new W.Justification { Val = W.JustificationValues.Center },
+                new W.SpacingBetweenLines { Before = "0", After = "0", Line = "240", LineRule = W.LineSpacingRuleValues.Auto }),
+            new W.Run(new W.RunProperties(new W.Bold(), new W.FontSize { Val = "32" }, new W.RunFonts { Ascii = "Arial", HighAnsi = "Arial" }),
+                new W.Text("BILLY LIN"))));
+        body.Append(new W.Paragraph(new W.ParagraphProperties(
+            new W.SpacingBetweenLines { Before = "0", After = "0", Line = "240", LineRule = W.LineSpacingRuleValues.Auto })));
+        body.Append(new W.Paragraph(
+            new W.ParagraphProperties(
+                new W.ParagraphStyleId { Val = "Heading1" },
+                new W.ParagraphBorders(new W.BottomBorder { Val = W.BorderValues.Single, Size = 8, Space = 1, Color = "2F5597" })),
+            new W.Run(new W.RunProperties(new W.RunFonts { Ascii = "Arial", HighAnsi = "Arial" }, new W.FontSize { Val = "24" }),
+                new W.Text("PROFESSIONAL SUMMARY"))));
+        body.Append(new W.Paragraph(
+            new W.ParagraphProperties(new W.Shading { Val = W.ShadingPatternValues.Clear, Fill = "F5F6FA" }),
+            new W.Run(new W.RunProperties(new W.Italic(), new W.FontSize { Val = "18" }, new W.RunFonts { Ascii = "Roboto", HighAnsi = "Roboto" }),
+                new W.Text("Staff-level ") { Space = SpaceProcessingModeValues.Preserve }),
+            new W.Run(new W.RunProperties(new W.Bold(), new W.Italic(), new W.FontSize { Val = "18" }, new W.RunFonts { Ascii = "Roboto", HighAnsi = "Roboto" }),
+                new W.Text("AI/ML Engineer")),
+            new W.Run(new W.RunProperties(new W.Italic(), new W.FontSize { Val = "18" }, new W.RunFonts { Ascii = "Roboto", HighAnsi = "Roboto" }),
+                new W.Text(" who builds systems."))));
+        body.Append(new W.Paragraph(new W.Run(
+            new W.RunProperties(new W.Spacing { Val = 60 }, new W.Bold(), new W.FontSize { Val = "28" }, new W.RunFonts { Ascii = "Roboto", HighAnsi = "Roboto" }),
+            new W.Text("CLIFTON"))));
+        body.Append(new W.Paragraph(
+            new W.ParagraphProperties(new W.NumberingProperties(new W.NumberingLevelReference { Val = 0 }, new W.NumberingId { Val = 1 })),
+            new W.Run(new W.Text("Shipped the platform"))));
+        body.Append(new W.Paragraph(new W.Run(new W.Text("• React, TypeScript"))));
+        var link = main.AddHyperlinkRelationship(new Uri("https://example.com/portfolio"), true);
+        body.Append(new W.Paragraph(new W.Hyperlink(
+            new W.Run(new W.RunProperties(new W.Underline { Val = W.UnderlineValues.Single }, new W.Color { Val = "0563C1" }),
+                new W.Text("portfolio"))
+        ) { Id = link.Id, History = true }));
+        body.Append(new W.Paragraph(
+            new W.ParagraphProperties(new W.Tabs(new W.TabStop { Val = W.TabStopValues.Right, Position = 9360 })),
+            new W.Run(new W.Text("Role")),
+            new W.Run(new W.TabChar()),
+            new W.Run(new W.Text("2024"))));
+        body.Append(new W.Table(
+            new W.TableProperties(new W.TableWidth { Width = "9000", Type = W.TableWidthUnitValues.Dxa }),
+            new W.TableGrid(new W.GridColumn { Width = "2400" }, new W.GridColumn { Width = "6600" }),
+            new W.TableRow(
+                new W.TableCell(new W.TableCellProperties(new W.TableCellWidth { Width = "2400", Type = W.TableWidthUnitValues.Dxa }),
+                    new W.Paragraph(new W.Run(new W.RunProperties(new W.Bold()), new W.Text("Languages:")))),
+                new W.TableCell(new W.TableCellProperties(new W.TableCellWidth { Width = "6600", Type = W.TableWidthUnitValues.Dxa }),
+                    new W.Paragraph(new W.Run(new W.Text("C#, Python")))))));
+        body.Append(new W.SectionProperties(
+            new W.FooterReference { Type = W.HeaderFooterValues.Default, Id = main.GetIdOfPart(footer) },
+            new W.PageSize { Width = 12240, Height = 15840 },
+            new W.PageMargin { Top = 720, Bottom = 720, Left = 720, Right = 720, Header = 360, Footer = 360, Gutter = 0 }));
+        main.Document = new W.Document(body);
+        main.Document.Save();
+    }
+
     static string Fixture(string name) => Path.Combine(Root(), "tests", "fixtures", name);
 
     static string NewDir(string name) {
@@ -4232,6 +8218,7 @@ static class Program {
     static string Join(IEnumerable<string> values) => string.Join(" | ", values);
 
     static void Test(string name, Action body) {
+        if (OnlyTest is not null && name.IndexOf(OnlyTest, StringComparison.OrdinalIgnoreCase) < 0) return;
         try {
             body();
             Passed++;
@@ -4242,6 +8229,12 @@ static class Program {
             Console.WriteLine("        " + ex.Message.Replace("\n", "\n        "));
         }
     }
+
+    /// <summary>
+    /// Every filter off. The import tests that predate the import filter say so explicitly rather
+    /// than relying on a default, so a future default change cannot silently alter what they prove.
+    /// </summary>
+    static AppSettings NoFilters => JobImportFilter.NoFilters();
 
     static void Check(bool condition, string message) {
         if (!condition) throw new Exception(message);

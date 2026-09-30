@@ -200,6 +200,24 @@ public sealed class QueueRunner {
         return skipped;
     }
 
+    /// <summary>
+    /// Replaces the jobs not yet started with <paramref name="queuedInOrder"/>.
+    /// The job already running stays the active job.
+    /// </summary>
+    public void ReorderRemaining(IEnumerable<JobTask> queuedInOrder) {
+        if (State is not (QueueState.Running or QueueState.Paused)) return;
+        var passed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i <= _index && i < _snapshot.Count; i++)
+            passed.Add(_snapshot[i].JobId);
+        if (_index + 1 < _snapshot.Count)
+            _snapshot.RemoveRange(_index + 1, _snapshot.Count - _index - 1);
+        foreach (var job in queuedInOrder) {
+            if (job is null || job.Status != "Queued" || string.IsNullOrWhiteSpace(job.JobId)) continue;
+            if (!passed.Add(job.JobId)) continue;
+            _snapshot.Add(job);
+        }
+    }
+
     /// <summary>Called when a job could not even be prepared; nothing is active afterwards.</summary>
     public void AbandonActive() {
         ActiveJobId = null;
@@ -223,5 +241,46 @@ public sealed class QueueRunner {
             recovered++;
         }
         return recovered;
+    }
+}
+
+/// <summary>Job Tasks waiting order. Unknown values stay Queue so a bad setting cannot fail the load.</summary>
+public static class QueueModes {
+    public const string Queue = "Queue";
+    public const string Stack = "Stack";
+
+    public static string Normalize(string? value) =>
+        string.Equals((value ?? "").Trim(), Stack, StringComparison.OrdinalIgnoreCase) ? Stack : Queue;
+
+    public static bool IsStack(string? value) => Normalize(value) == Stack;
+}
+
+/// <summary>
+/// Orders waiting jobs without changing their status, id or timestamps.
+/// Queue is oldest first. Stack is newest first. Equal timestamps use the internal job id.
+/// </summary>
+public static class JobQueueOrder {
+    public static List<JobTask> Arrange(IReadOnlyList<JobTask> tasks, string? mode) {
+        var processing = new List<JobTask>();
+        var queued = new List<JobTask>();
+        var rest = new List<JobTask>();
+        foreach (var job in tasks) {
+            if (job.Status == "Processing") processing.Add(job);
+            else if (job.Status == "Queued") queued.Add(job);
+            else rest.Add(job);
+        }
+        queued.Sort((a, b) => Compare(a, b, mode));
+        var arranged = new List<JobTask>(processing.Count + queued.Count + rest.Count);
+        arranged.AddRange(processing);
+        arranged.AddRange(queued);
+        arranged.AddRange(rest);
+        return arranged;
+    }
+
+    public static int Compare(JobTask a, JobTask b, string? mode) {
+        var byTime = a.CreatedAt.CompareTo(b.CreatedAt);
+        if (QueueModes.IsStack(mode)) byTime = -byTime;
+        if (byTime != 0) return byTime;
+        return string.Compare(a.JobId, b.JobId, StringComparison.Ordinal);
     }
 }

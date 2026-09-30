@@ -115,9 +115,20 @@ Rules:
 
 ## 3. The style object
 
-`style` is **optional**. A profile without it renders with the `promV4.12` preset, which is exactly
-how every older profile rendered. GPT only sends the values it wants to change; everything else is
-inherited from the preset.
+`style` is a **nested** object — the same `ResumeStyle` schema the renderers consume. There are no
+flat style fields: `bodyFontSize`, `nameFontSize`, `metadataFontSize`, `fontFamily` or margins at the
+style root do not exist and are ignored (or rejected by the strict check). A size is always set on
+its own section, e.g. `style.body.fontSize`, `style.metadata.fontSize`.
+
+- **Resume prompt mode:** `style` is **optional**. A profile without it renders with the `promV4.12`
+  preset, which is exactly how every older profile rendered.
+- **Normal prompt mode:** `style` is **required**. An answer without a top-level `style` object is
+  invalid output: nothing is saved, no DOCX/PDF is generated, and the job goes down the ordinary
+  ChatGPT retry path. The execution instruction Normal mode sends ends with a STYLE CONTRACT,
+  generated from the same tables this page describes, that asks for the 9 pt body standard
+  (`body`, `bullet`, `skillValues`, `education` all `fontSize: 9`).
+
+GPT only sends the values it wants to change; everything else is inherited from the preset.
 
 ```json
 "style": {
@@ -166,18 +177,20 @@ setting `uppercase: false` keeps the title case.
 | Value | Allowed |
 | --- | --- |
 | Any `fontSize` | 8–24 pt |
-| `body`, `bullet`, `education` `fontSize` | **≥ 11 pt** |
-| `skillValues.fontSize` | **≥ 10.5 pt** |
+| `body`, `bullet`, `education`, `skillValues` `fontSize` | **≥ 9 pt** (the presets still use 11 / 10.5) |
 | `lineSpacing` | **≥ 1.0** (max 3.0) |
 | `spaceBefore`, `spaceAfter` | 0–48 pt |
 | `leftIndent`, `hangingIndent` | 0–1.5 in |
 | Page margins | 0.3–1.25 in |
 | Colours | `#RRGGBB` |
 
+Font sizes are best given in multiples of 0.5 pt. The DOCX stores a size in whole half points, so
+8.7 pt is written as 8.5 pt in the DOCX while the PDF keeps 8.7 pt.
+
 These always hold, whatever the style asks for:
 
-- The professional summary is regular black text with no inline bold.
-- Skill categories may be coloured and bold; the skill values themselves never are.
+- The professional summary is regular weight (`body` style) with no inline bold.
+- Skill categories may be bold; the skill values themselves are always regular weight.
 - Experience bullets may carry sparse inline bold; a fully bold bullet is demoted to regular.
 - Education is ordinary body text with no keyword emphasis.
 - Single column only.
@@ -197,7 +210,7 @@ Two different paths, deliberately:
 | Path | Behaviour |
 | --- | --- |
 | A captured AI answer (the normal flow) | Values are **clamped** to the nearest allowed value and every correction is reported. A styling mistake never fails a job whose content is good. The corrections are written to `results\<jobId>.docgen.txt` |
-| `CandidateProfileStore.ValidateResumeJson(json)` (the contract check, used by the tests) | The same values are **errors**, reported one per line: `style.body.fontSize must be >= 11 pt`, `style.colors.primary is not a valid hex color (#RRGGBB)`, `experience[0].endDate is missing` |
+| `CandidateProfileStore.ValidateResumeJson(json)` (the contract check, used by the tests) | The same values are **errors**, reported one per line: `style.body.fontSize must be >= 9 pt`, `style.colors.primary is not a valid hex color (#RRGGBB)`, `experience[0].endDate is missing` |
 
 Either way nothing silently produces a corrupted resume.
 
@@ -211,12 +224,14 @@ Resume Builder has two prompt modes, chosen in Settings → General:
 - **Normal** sends your own prompt file, so it can contain any resume-writing instructions you like.
 
 Either way Resume Builder appends the same COMPLETE JOB PAYLOAD (the job plus the full candidate
-profile) and the same execution instructions, so **this contract applies unchanged in both modes**.
-Only one sentence differs: Resume mode names the Master Prompt, Normal mode says "the resume
-instructions above". A Normal prompt therefore does not need to describe the JSON shape itself.
+profile) and the same execution instructions, so **this contract applies in both modes**. Normal
+mode's instructions differ in three places: the opening sentence ("the resume instructions above"
+instead of the Master Prompt), the verification rule (which also requires `style`), and a STYLE
+CONTRACT appended at the end. A Normal prompt therefore does not need to describe the JSON shape
+itself. Resume mode's text is unchanged, byte for byte.
 
-Style stays optional in both modes: return a `style` object to control it, or leave it out and the
-`promV4.12` preset is used.
+Style is optional in Resume mode (leave it out and the `promV4.12` preset is used) and **required in
+Normal mode** (see section 3).
 
 ## 5. Output
 

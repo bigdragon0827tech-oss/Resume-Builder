@@ -4,6 +4,16 @@ using System.IO;
 
 namespace ResumeBuilder;
 
+/// <summary>What the Applications Apply button does for one job.</summary>
+public enum ApplyRoute {
+    /// <summary>Not Ready, or Ready with no application address and no Jobright posting to capture from.</summary>
+    Unavailable,
+    /// <summary>A verified external ApplyUrl is already stored. Open that address.</summary>
+    OpenStored,
+    /// <summary>Open the Jobright posting in the Job Browser and record the external destination.</summary>
+    CaptureOnJobright
+}
+
 // ---------------------------------------------------------------------------
 // Job application tracking.
 //
@@ -19,14 +29,19 @@ public static class ApplicationStatus {
     public const string Ready = "Ready";
     public const string Applied = "Applied";
     public const string Interview = "Interview";
+    public const string Failed = "Failed";
     public const string Done = "Done";
 
     /// <summary>The filter's "no filter" entry. Never stored on a task.</summary>
     public const string All = "All";
 
+    /// <summary>The linear flow. Failed is a branch, not a later stage, so it is not in this list.</summary>
     public static readonly string[] Ordered = { Viewed, Ready, Applied, Interview, Done };
 
-    public static readonly string[] Filters = { All, Viewed, Ready, Applied, Interview, Done };
+    /// <summary>Every stored status, including the Failed branch. Used for recognition, not for backfill.</summary>
+    public static readonly string[] Known = { Viewed, Ready, Applied, Interview, Failed, Done };
+
+    public static readonly string[] Filters = { All, Viewed, Ready, Applied, Interview, Failed, Done };
 
     /// <summary>
     /// Values the STATUS FILTER may take that are not statuses. They are never stored on a task and are
@@ -41,7 +56,7 @@ public static class ApplicationStatus {
         public static readonly string[] NotAppliedYetStatuses = { Viewed, Ready };
 
         /// <summary>The status dropdown's choices: All, the group, then the five real statuses.</summary>
-        public static readonly string[] Options = { All, NotAppliedYet, Viewed, Ready, Applied, Interview, Done };
+        public static readonly string[] Options = { All, NotAppliedYet, Viewed, Ready, Applied, Interview, Failed, Done };
 
         public static bool IsGroup(string? value) =>
             NotAppliedYet.Equals((value ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
@@ -52,16 +67,20 @@ public static class ApplicationStatus {
     }
 
     public static bool IsKnown(string? value) =>
-        value is not null && Ordered.Any(s => s.Equals(value, StringComparison.OrdinalIgnoreCase));
+        value is not null && Known.Any(s => s.Equals(value, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Anything unrecognised — missing, empty, or written by an older version — is Viewed. That is
     /// what keeps a tasks.json from before tracking existed loading without a migration step.
+    /// Failed is recognised, so a saved Failed job is not read back as Viewed.
     /// </summary>
     public static string Normalize(string? value) =>
-        Ordered.FirstOrDefault(s => s.Equals((value ?? "").Trim(), StringComparison.OrdinalIgnoreCase)) ?? Viewed;
+        Known.FirstOrDefault(s => s.Equals((value ?? "").Trim(), StringComparison.OrdinalIgnoreCase)) ?? Viewed;
 
-    /// <summary>0-based position in the flow, used to keep the stage timestamps consistent.</summary>
+    /// <summary>
+    /// 0-based position in the linear flow. Failed is not on that line, so it returns -1 and must
+    /// not be used to backfill later stages.
+    /// </summary>
     public static int Index(string? value) => Array.IndexOf(Ordered, Normalize(value));
 }
 
@@ -122,6 +141,13 @@ public sealed class DailyApplicationCount {
     public string Label => Date.ToString("MMM d");
 }
 
+/// <summary>The three labelled arrows on the Applications pipeline.</summary>
+public sealed class ApplicationTransitions {
+    public int AppliedToInterview { get; init; }
+    public int AppliedToFailed { get; init; }
+    public int InterviewToFailed { get; init; }
+}
+
 /// <summary>One stage of the pipeline.</summary>
 public sealed class PipelineStage {
     public string Status { get; init; } = "";
@@ -160,7 +186,8 @@ public enum ApplicationReadiness { NeedsResume, NeedsApplyLink, ReadyToApply }
 public static class JobTracker {
     /// <summary>
     /// No resume -> NeedsResume; resume but no usable (http/https) ApplyUrl -> NeedsApplyLink;
-    /// both -> ReadyToApply. "Usable" is <see cref="IsOpenableUrl"/>, the Apply button's own test.
+    /// both -> ReadyToApply. "Usable" is an http/https ApplyUrl. The Apply button also requires
+    /// that this is a real application address and the job is still Viewed or Ready.
     /// </summary>
     public static ApplicationReadiness GetReadiness(JobTask job) =>
         !job.ResumeGenerated ? ApplicationReadiness.NeedsResume
@@ -215,9 +242,18 @@ public static class JobTracker {
         var now = at ?? DateTime.Now;
         job.ApplicationStatus = target;
         job.UpdatedAt = now;
-        StampStage(job, target, now);
+        if (target == ApplicationStatus.Failed) {
+            job.FailedAt ??= now;
+            // Only a move from Applied or Interview is a real branch. Anything else is a status
+            // correction and must not invent an Applied → Failed or Interview → Failed count.
+            if (string.IsNullOrEmpty(job.FailedFrom) &&
+                (previous == ApplicationStatus.Applied || previous == ApplicationStatus.Interview))
+                job.FailedFrom = previous;
+        } else {
+            StampStage(job, target, now);
+        }
 
-        PerfLog.Line($"TRACKING status {job.JobId} {previous} -> {target}");
+        PerfLog.Line("APPLICATION STATUS id=" + job.JobId + " old=" + previous + " new=" + target);
         job.NotifyTrackingChanged();
         return true;
     }
@@ -230,6 +266,32 @@ public static class JobTracker {
         ApplicationStatus.Index(ApplicationStatus.Normalize(applicationStatus)) < ApplicationStatus.Index(ApplicationStatus.Applied);
 
     public static bool CanMarkApplied(JobTask job) => CanMarkApplied(job.ApplicationStatus);
+
+    /// <summary>
+    /// Apply is enabled when a real application address is stored, or otherwise when the job
+    /// posting itself can be opened so that address can be captured. Application status is not consulted.
+    /// </summary>
+    public static bool CanApply(JobTask? job) =>
+        job is not null && (ApplyCapture.IsApplicationUrl(job.ApplyUrl) || IsOpenableUrl(job.Link));
+
+    /// <summary>
+    /// Apply with a real external application address opens that address. A Jobright job
+    /// that does not have one yet is sent through the Job Browser capture. The posting URL is
+    /// never used as the application address.
+    /// </summary>
+    public static ApplyRoute RouteApply(JobTask? job) {
+        if (!CanApply(job)) return ApplyRoute.Unavailable;
+        if (ApplyCapture.IsApplicationUrl(job!.ApplyUrl)) return ApplyRoute.OpenStored;
+        if (JobrightPageExtractor.IsJobPage(job.Link)) return ApplyRoute.CaptureOnJobright;
+        return ApplyRoute.Unavailable;
+    }
+
+    /// <summary>
+    /// The external application address Apply opens directly. Null when there is no verified
+    /// ApplyUrl — the Jobright posting is not a substitute.
+    /// </summary>
+    public static string? ApplyTarget(JobTask? job) =>
+        RouteApply(job) == ApplyRoute.OpenStored ? job!.ApplyUrl.Trim() : null;
 
     /// <summary>
     /// The user's own "I applied" — never inferred. Goes through <see cref="UpdateStatus"/>, so AppliedAt
@@ -251,6 +313,7 @@ public static class JobTracker {
         Add(ApplicationStatus.Ready, job.ReadyAt);
         Add(ApplicationStatus.Applied, job.AppliedAt);
         Add(ApplicationStatus.Interview, job.InterviewAt);
+        Add(ApplicationStatus.Failed, job.FailedAt);
         Add(ApplicationStatus.Done, job.DoneAt);
         if (lines.Count == 0 && job.CreatedAt != default) lines.Add($"Added {When(job.CreatedAt)}");
         return string.Join(Environment.NewLine, lines);
@@ -294,7 +357,7 @@ public static class JobTracker {
         if (job.ApplicationStatus == ApplicationStatus.Viewed) {
             job.ApplicationStatus = ApplicationStatus.Ready;
             job.ReadyAt ??= now;
-            PerfLog.Line($"TRACKING status {job.JobId} {ApplicationStatus.Viewed} -> {ApplicationStatus.Ready}");
+            PerfLog.Line("APPLICATION STATUS id=" + job.JobId + " old=" + ApplicationStatus.Viewed + " new=" + ApplicationStatus.Ready);
             changed = true;
         }
 
@@ -389,6 +452,24 @@ public static class JobTracker {
     }
 
     /// <summary>
+    /// The three pipeline arrows. Applied → Interview is every job that already has an Interview
+    /// date. The Failed arrows count only a recorded move from that exact status.
+    /// </summary>
+    public static ApplicationTransitions GetTransitions(IEnumerable<JobTask> tasks) {
+        var all = (tasks ?? Enumerable.Empty<JobTask>()).ToList();
+        return new ApplicationTransitions {
+            AppliedToInterview = all.Count(t => t.InterviewAt.HasValue),
+            AppliedToFailed = all.Count(t => t.FailedFrom == ApplicationStatus.Applied),
+            InterviewToFailed = all.Count(t => t.FailedFrom == ApplicationStatus.Interview)
+        };
+    }
+
+    public static int CountStatus(IEnumerable<JobTask> tasks, string status) {
+        var wanted = ApplicationStatus.Normalize(status);
+        return (tasks ?? Enumerable.Empty<JobTask>()).Count(t => ApplicationStatus.Normalize(t.ApplicationStatus) == wanted);
+    }
+
+    /// <summary>
     /// The list and board share one filter path: the status filter, free text, platforms, readiness,
     /// then either one exact date or a quick range over each job's tracking date. Order is never
     /// changed. <paramref name="platforms"/> and <paramref name="readiness"/> are optional: null or
@@ -431,17 +512,71 @@ public static class JobTracker {
     // ---------- platform filter ----------
 
     /// <summary>
+    /// ATS platforms that appear on at least one job, in <see cref="PlatformFilterOrder"/>.
+    /// Job boards, Unknown and Other are omitted. The same platform is listed once.
+    /// </summary>
+    public static List<ApplicationPlatform> PlatformsPresent(IEnumerable<JobTask> tasks) {
+        var present = new HashSet<ApplicationPlatform>(
+            (tasks ?? Enumerable.Empty<JobTask>())
+                .Select(task => task.ApplicationPlatform)
+                .Where(ApplicationPlatformDetector.IsAts));
+        return PlatformFilterOrder.Where(present.Contains).ToList();
+    }
+
+    /// <summary>
     /// The order the platform filter lists its choices in — explicit, never the enum's declaration
     /// order, so reordering the enum cannot reshuffle the UI or the label.
     /// </summary>
+
     public static readonly IReadOnlyList<ApplicationPlatform> PlatformFilterOrder = new[] {
         ApplicationPlatform.Greenhouse, ApplicationPlatform.Workday, ApplicationPlatform.Lever,
-        ApplicationPlatform.LinkedIn, ApplicationPlatform.Ashby, ApplicationPlatform.SmartRecruiters,
-        ApplicationPlatform.ICims, ApplicationPlatform.Other, ApplicationPlatform.Unknown
+        ApplicationPlatform.Ashby, ApplicationPlatform.SmartRecruiters, ApplicationPlatform.ICims,
+        ApplicationPlatform.Taleo, ApplicationPlatform.BambooHr, ApplicationPlatform.Jobvite,
+        ApplicationPlatform.SuccessFactors, ApplicationPlatform.AdpRecruiting,
+        ApplicationPlatform.OracleRecruitingCloud, ApplicationPlatform.UkgPro, ApplicationPlatform.JazzHr,
+        ApplicationPlatform.Recruitee, ApplicationPlatform.BreezyHr, ApplicationPlatform.Pinpoint,
+        ApplicationPlatform.Teamtailor, ApplicationPlatform.Workable, ApplicationPlatform.RipplingRecruiting,
+        ApplicationPlatform.DayforceRecruiting, ApplicationPlatform.CornerstoneRecruiting,
+        ApplicationPlatform.Avature, ApplicationPlatform.Phenom, ApplicationPlatform.Eightfold,
+        ApplicationPlatform.Beamery, ApplicationPlatform.Bullhorn, ApplicationPlatform.JobAdder,
+        ApplicationPlatform.ZohoRecruit, ApplicationPlatform.Cats, ApplicationPlatform.ApplicantStack,
+        ApplicationPlatform.ClearCompany, ApplicationPlatform.PaylocityRecruiting,
+        ApplicationPlatform.PaycomRecruiting, ApplicationPlatform.PaycorRecruiting,
+        ApplicationPlatform.IsolvedTalent, ApplicationPlatform.Fountain, ApplicationPlatform.Paradox,
+        ApplicationPlatform.Comeet, ApplicationPlatform.Manatal, ApplicationPlatform.RecruitCrm,
+        ApplicationPlatform.Recruiterflow, ApplicationPlatform.JobScore, ApplicationPlatform.Homerun,
+        ApplicationPlatform.PersonioRecruiting, ApplicationPlatform.TeamEngine,
+        ApplicationPlatform.TrakstarHire, ApplicationPlatform.Neogov, ApplicationPlatform.GovernmentJobs,
+        ApplicationPlatform.SymplrRecruiting
     };
 
-    public static string PlatformDisplayName(ApplicationPlatform platform) =>
-        platform == ApplicationPlatform.ICims ? "iCIMS" : platform.ToString();
+    public static string PlatformDisplayName(ApplicationPlatform platform) => platform switch {
+        ApplicationPlatform.ICims => "iCIMS",
+        ApplicationPlatform.BambooHr => "BambooHR",
+        ApplicationPlatform.AdpRecruiting => "ADP Recruiting",
+        ApplicationPlatform.OracleRecruitingCloud => "Oracle Recruiting Cloud",
+        ApplicationPlatform.UkgPro => "UKG Pro Recruiting",
+        ApplicationPlatform.JazzHr => "JazzHR",
+        ApplicationPlatform.BreezyHr => "Breezy HR",
+        ApplicationPlatform.RipplingRecruiting => "Rippling Recruiting",
+        ApplicationPlatform.SuccessFactors => "SAP SuccessFactors",
+        ApplicationPlatform.DayforceRecruiting => "Dayforce Recruiting",
+        ApplicationPlatform.CornerstoneRecruiting => "Cornerstone Recruiting",
+        ApplicationPlatform.Eightfold => "Eightfold AI",
+        ApplicationPlatform.ZohoRecruit => "Zoho Recruit",
+        ApplicationPlatform.Cats => "CATS",
+        ApplicationPlatform.PaylocityRecruiting => "Paylocity Recruiting",
+        ApplicationPlatform.PaycomRecruiting => "Paycom Recruiting",
+        ApplicationPlatform.PaycorRecruiting => "Paycor Recruiting",
+        ApplicationPlatform.IsolvedTalent => "isolved Talent Acquisition",
+        ApplicationPlatform.RecruitCrm => "Recruit CRM",
+        ApplicationPlatform.PersonioRecruiting => "Personio Recruiting",
+        ApplicationPlatform.TeamEngine => "Team Engine",
+        ApplicationPlatform.TrakstarHire => "Trakstar Hire",
+        ApplicationPlatform.Neogov => "NEOGOV",
+        ApplicationPlatform.SymplrRecruiting => "Symplr Recruiting",
+        _ => platform.ToString()
+    };
 
     /// <summary>OR matching: a job passes when its platform is any selected one. Null or empty selects all.</summary>
     public static List<JobTask> FilterByPlatforms(IEnumerable<JobTask> tasks, IReadOnlyCollection<ApplicationPlatform>? platforms) {
@@ -502,7 +637,11 @@ public static class JobTracker {
     /// </summary>
     static int CountAppliedOrLater(IEnumerable<JobTask> tasks) =>
         (tasks ?? Enumerable.Empty<JobTask>())
-            .Count(t => ApplicationStatus.Index(t.ApplicationStatus) >= ApplicationStatus.Index(ApplicationStatus.Applied));
+            .Count(t => {
+                var status = ApplicationStatus.Normalize(t.ApplicationStatus);
+                return ApplicationStatus.Index(status) >= ApplicationStatus.Index(ApplicationStatus.Applied)
+                    || (status == ApplicationStatus.Failed && t.AppliedAt.HasValue);
+            });
 
     /// <summary>
     /// Only ordinary web links are ever handed to Windows. A job payload is third-party data, so a
@@ -588,28 +727,55 @@ public static class JobTracker {
     }
 
     /// <summary>
-    /// Reconnects a job to a resume that is already on disk but whose path was never stored — every
-    /// document generated before tracking existed is in that state, which is why its Resume actions
-    /// did nothing. The folder name comes from <see cref="ResumeOutputManager"/>, so no path rule is
-    /// duplicated here, and the newest dated folder wins. Returns the path found, or null.
+    /// Reconnects a job to a resume already on disk. The link is the internal job id recorded in
+    /// resume-info*.json, never the company, the title, or the folder name. The newest dated folder
+    /// that names this job wins, and inside it the newest DOCX. Returns null when the id is missing
+    /// or no metadata names it.
     /// </summary>
     public static string? FindExistingResume(JobTask job, string? resumeRoot) {
-        if (string.IsNullOrWhiteSpace(resumeRoot) || !Directory.Exists(resumeRoot)) return null;
+        var id = (job.JobId ?? "").Trim();
+        if (id.Length == 0 || string.IsNullOrWhiteSpace(resumeRoot) || !Directory.Exists(resumeRoot)) return null;
 
-        var folderName = ResumeOutputManager.JobFolderName(job.Company, job.Title);
+        PerfLog.Line("IDENTITY lookup source=internal id=" + id);
+        var unsafeName = ResumeOutputManager.JobFolderName(job.Company ?? "", job.Title ?? "");
+        var loggedUnsafe = false;
 
         try {
-            foreach (var dated in Directory.GetDirectories(resumeRoot).OrderByDescending(d => d)) {
-                var jobFolder = Path.Combine(dated, folderName);
-                if (!Directory.Exists(jobFolder)) continue;
+            var datesStarted = Stopwatch.GetTimestamp();
+            var datedFolders = Directory.GetDirectories(resumeRoot);
+            _relink?.AddScan(datesStarted);
+            _relink?.AddDir();
+            foreach (var dated in datedFolders.OrderByDescending(d => d, StringComparer.OrdinalIgnoreCase)) {
+                string? best = null;
+                var bestTime = DateTime.MinValue;
+                var jobsStarted = Stopwatch.GetTimestamp();
+                var jobFolders = Directory.GetDirectories(dated);
+                _relink?.AddScan(jobsStarted);
+                _relink?.AddDir();
+                foreach (var jobFolder in jobFolders) {
+                    var docs = DocxForJob(jobFolder, id);
+                    if (docs.Count == 0) {
+                        if (!loggedUnsafe
+                            && ((job.Company ?? "").Trim().Length > 0 || (job.Title ?? "").Trim().Length > 0)
+                            && string.Equals(Path.GetFileName(jobFolder), unsafeName, StringComparison.OrdinalIgnoreCase)) {
+                            PerfLog.Line("IDENTITY unsafe-match-removed context=resume-relink");
+                            loggedUnsafe = true;
+                        }
+                        continue;
+                    }
 
-                // Most recently written wins, so "Resume (3).docx" beats "Resume.docx". Sorting by
-                // name would not: '.' sorts after ' ', so "Resume.docx" would come first.
-                var document = Directory.GetFiles(jobFolder, ResumeOutputManager.BaseName + "*.docx")
-                                        .OrderByDescending(File.GetLastWriteTimeUtc)
-                                        .ThenByDescending(f => f)
-                                        .FirstOrDefault();
-                if (document is not null) return document;
+                    foreach (var doc in docs) {
+                        DateTime written;
+                        try { written = File.GetLastWriteTimeUtc(doc); }
+                        catch { continue; }
+                        if (best is null || written > bestTime
+                            || (written == bestTime && string.Compare(doc, best, StringComparison.OrdinalIgnoreCase) > 0)) {
+                            best = doc;
+                            bestTime = written;
+                        }
+                    }
+                }
+                if (best is not null) return best;
             }
         } catch (Exception ex) {
             PerfLog.Line("TRACKING could not search for an existing resume: " + ex.Message);
@@ -618,24 +784,111 @@ public static class JobTracker {
     }
 
     /// <summary>
+    /// DOCX files that resume-info*.json attributes to this internal job id. A folder whose metadata
+    /// all names this job contributes every DOCX in it (revisions). A folder shared with another job
+    /// contributes only the file that this job's metadata names.
+    /// </summary>
+    static List<string> DocxForJob(string jobFolder, string jobId) {
+        var infos = new List<(string Id, string? Docx)>();
+        string[] files;
+        try {
+            var listed = Stopwatch.GetTimestamp();
+            files = Directory.GetFiles(jobFolder, ResumeOutputManager.MetadataBaseName + "*.json");
+            _relink?.AddScan(listed);
+        }
+        catch { return new List<string>(); }
+
+        foreach (var info in files) {
+            try {
+                var read = Stopwatch.GetTimestamp();
+                using var json = System.Text.Json.JsonDocument.Parse(File.ReadAllText(info));
+                _relink?.AddJson(read);
+                var recorded = json.RootElement.TryGetProperty("jobId", out var idEl)
+                               && idEl.ValueKind == System.Text.Json.JsonValueKind.String
+                    ? (idEl.GetString() ?? "").Trim() : "";
+                string? docx = null;
+                if (json.RootElement.TryGetProperty("docxFile", out var name)
+                    && name.ValueKind == System.Text.Json.JsonValueKind.String)
+                    docx = Path.GetFileName(name.GetString());
+                if (recorded.Length > 0) infos.Add((recorded, docx));
+            } catch {
+                // An unreadable metadata file just contributes nothing.
+            }
+        }
+
+        var mine = infos.Where(i => string.Equals(i.Id, jobId, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (mine.Count == 0) return new List<string>();
+
+        var mixed = infos.Any(i => !string.Equals(i.Id, jobId, StringComparison.OrdinalIgnoreCase));
+        if (mixed) {
+            var named = new List<string>();
+            foreach (var item in mine) {
+                if (string.IsNullOrEmpty(item.Docx)) continue;
+                var path = Path.Combine(jobFolder, item.Docx);
+                if (File.Exists(path)) named.Add(path);
+            }
+            return named;
+        }
+
+        try {
+            return Directory.GetFiles(jobFolder, "*.docx")
+                .Where(f => !Path.GetFileName(f).StartsWith("~$", StringComparison.Ordinal))
+                .ToList();
+        } catch { return new List<string>(); }
+    }
+
+    /// <summary>
     /// One-time repair across a task list: fills in a missing or stale ResumePath from what is on
     /// disk. Returns the number of tasks changed, so the caller can save only when something moved.
+    /// Applications navigation does not call this. After the SQLite migration, resume links are read
+    /// from <see cref="JobStore"/> instead of walking the resume folders once per job.
     /// </summary>
     public static int RelinkResumes(IEnumerable<JobTask> tasks, string? resumeRoot) {
         var repaired = 0;
-        foreach (var job in tasks ?? Enumerable.Empty<JobTask>()) {
-            if (job.ResumeGenerated && File.Exists(job.ResumePath)) continue;
+        var clock = Stopwatch.StartNew();
+        var previous = _relink;
+        _relink = new RelinkClock();
+        try {
+            foreach (var job in tasks ?? Enumerable.Empty<JobTask>()) {
+                var existsStarted = Stopwatch.GetTimestamp();
+                var present = job.ResumeGenerated && File.Exists(job.ResumePath);
+                _relink.AddExists(existsStarted);
+                if (present) continue;
 
-            var found = FindExistingResume(job, resumeRoot);
-            if (found is null || found == job.ResumePath) continue;
+                _relink.Finds++;
+                var found = FindExistingResume(job, resumeRoot);
+                if (found is null) { _relink.Misses++; continue; }
+                if (found == job.ResumePath) continue;
 
-            job.ResumePath = found;
-            job.NotifyTrackingChanged();
-            PerfLog.Line("TRACKING relinked resume " + job.JobId + " " + found);
-            repaired++;
+                job.ResumePath = found;
+                job.NotifyTrackingChanged();
+                PerfLog.Line("TRACKING relinked resume " + job.JobId + " " + found);
+                repaired++;
+            }
+        } finally {
+            var done = _relink;
+            _relink = previous;
+            PerfLog.Line(
+                "APPLICATIONS PERF relink ms=" + clock.ElapsedMilliseconds +
+                " exists=" + done.ExistsChecks + "/" + RelinkClock.Ms(done.ExistsTicks) + "ms" +
+                " scans=" + done.Finds + " misses=" + done.Misses +
+                " dirs=" + done.Dirs + "/" + RelinkClock.Ms(done.ScanTicks) + "ms" +
+                " resume-info=" + done.JsonFiles + "/" + RelinkClock.Ms(done.JsonTicks) + "ms");
         }
         return repaired;
     }
+
+    sealed class RelinkClock {
+        public int ExistsChecks, Finds, Misses, Dirs, JsonFiles;
+        public long ExistsTicks, ScanTicks, JsonTicks;
+        public void AddDir() => Dirs++;
+        public void AddExists(long started) { ExistsChecks++; ExistsTicks += Stopwatch.GetTimestamp() - started; }
+        public void AddScan(long started) { ScanTicks += Stopwatch.GetTimestamp() - started; }
+        public void AddJson(long started) { JsonFiles++; JsonTicks += Stopwatch.GetTimestamp() - started; }
+        public static long Ms(long ticks) => ticks * 1000 / Stopwatch.Frequency;
+    }
+
+    [ThreadStatic] static RelinkClock? _relink;
 
     static bool Launch(string target) {
         try {

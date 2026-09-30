@@ -11,11 +11,17 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
     <RootNamespace>ResumeBuilder</RootNamespace>
     <AssemblyName>ResumeStyleTests</AssemblyName>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Using Include="System.IO" />
+    <Using Include="System.Net.Http" />
+  </ItemGroup>
 
   <ItemGroup>
     <Compile Include="Program.cs" />
@@ -25,8 +31,14 @@
     <Compile Include="..\..\JobBrowser.cs" Link="JobBrowser.cs" />
     <Compile Include="..\..\JobrightPageExtractor.cs" Link="JobrightPageExtractor.cs" />
     <Compile Include="..\..\ApplyCapture.cs" Link="ApplyCapture.cs" />
+    <Compile Include="..\..\JobImportFilter.cs" Link="JobImportFilter.cs" />
+    <Compile Include="..\..\ResumeUpload.cs" Link="ResumeUpload.cs" />
+    <Compile Include="..\..\AppRuntime.cs" Link="AppRuntime.cs" />
+    <Compile Include="..\..\RateLimit.cs" Link="RateLimit.cs" />
     <Compile Include="..\..\PromptContract.cs" Link="PromptContract.cs" />
     <Compile Include="..\..\JobHistoryReset.cs" Link="JobHistoryReset.cs" />
+    <Compile Include="..\..\JobStore.cs" Link="JobStore.cs" />
+    <Compile Include="..\..\ProfileContext.cs" Link="ProfileContext.cs" />
     <Compile Include="..\..\GptAttempts.cs" Link="GptAttempts.cs" />
     <Compile Include="..\..\ChatAutomation.cs" Link="ChatAutomation.cs" />
     <Compile Include="..\..\ChatResponseReader.cs" Link="ChatResponseReader.cs" />
@@ -34,20 +46,29 @@
     <Compile Include="..\..\SampleJobs.cs" Link="SampleJobs.cs" />
     <Compile Include="..\..\ResumeOutputManager.cs" Link="ResumeOutputManager.cs" />
     <Compile Include="..\..\Services.cs" Link="Services.cs" />
+    <Compile Include="..\..\EmailTask.cs" Link="EmailTask.cs" />
+    <Compile Include="..\..\EmailExtractor.cs" Link="EmailExtractor.cs" />
+    <Compile Include="..\..\IconCache.cs" Link="IconCache.cs" />
     <Compile Include="..\..\Normalization.cs" Link="Normalization.cs" />
     <Compile Include="..\..\ResultCapture.cs" Link="ResultCapture.cs" />
     <Compile Include="..\..\ResumeStyle.cs" Link="ResumeStyle.cs" />
     <Compile Include="..\..\ResumeStyleNormalizer.cs" Link="ResumeStyleNormalizer.cs" />
     <Compile Include="..\..\DocumentGeneration.cs" Link="DocumentGeneration.cs" />
+    <Compile Include="..\..\PromptConversion.cs" Link="PromptConversion.cs" />
     <Compile Include="..\..\PdfGeneration.cs" Link="PdfGeneration.cs" />
     <Compile Include="..\..\ChatHost.cs" Link="ChatHost.cs" />
     <Compile Include="..\..\QueueRunner.cs" Link="QueueRunner.cs" />
     <Compile Include="..\..\KeyboardSimulator.cs" Link="KeyboardSimulator.cs" />
+    <Compile Include="..\..\HtmlResume.cs" Link="HtmlResume.cs" />
+    <Compile Include="..\..\DocxHtmlReader.cs" Link="DocxHtmlReader.cs" />
+    <Compile Include="..\..\HtmlDocxWriter.cs" Link="HtmlDocxWriter.cs" />
+    <Compile Include="..\..\HtmlTailor.cs" Link="HtmlTailor.cs" />
     <Compile Include="..\..\BrowserGeneration.cs" Link="BrowserGeneration.cs" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="DocumentFormat.OpenXml" Version="3.5.1" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
     <!-- ChatAutomation.cs is compiled here for the completion-watcher tests; its WebView2 probe needs this. -->
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3537.50" />
     <PackageReference Include="PDFsharp-MigraDoc" Version="6.2.4" />

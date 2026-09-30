@@ -15,23 +15,30 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3537.50" />
   </ItemGroup>
 
   <ItemGroup>
     <Compile Include="..\..\ChatHost.cs" Link="ChatHost.cs" />
     <Compile Include="..\..\Services.cs" Link="Services.cs" />
+    <Compile Include="..\..\EmailTask.cs" Link="EmailTask.cs" />
+    <Compile Include="..\..\IconCache.cs" Link="IconCache.cs" />
     <Compile Include="..\..\Models.cs" Link="Models.cs" />
     <Compile Include="..\..\Diagnostics.cs" Link="Diagnostics.cs" />
+    <Compile Include="..\..\AppRuntime.cs" Link="AppRuntime.cs" />
     <Compile Include="..\..\Normalization.cs" Link="Normalization.cs" />
     <Compile Include="..\..\ResultCapture.cs" Link="ResultCapture.cs" />
     <Compile Include="..\..\Clipboard.cs" Link="Clipboard.cs" />
     <!-- Dependencies pulled in by Models/Services/JobTracker as the app grew. -->
     <Compile Include="..\..\JobBrowser.cs" Link="JobBrowser.cs" />
+    <Compile Include="..\..\JobStore.cs" Link="JobStore.cs" />
     <Compile Include="..\..\JobTracker.cs" Link="JobTracker.cs" />
     <Compile Include="..\..\ApplyCapture.cs" Link="ApplyCapture.cs" />
+    <Compile Include="..\..\JobImportFilter.cs" Link="JobImportFilter.cs" />
     <Compile Include="..\..\ApplicationPlatformDetector.cs" Link="ApplicationPlatformDetector.cs" />
     <Compile Include="..\..\PromptContract.cs" Link="PromptContract.cs" />
+    <Compile Include="..\..\PromptConversion.cs" Link="PromptConversion.cs" />
     <Compile Include="..\..\JobrightPageExtractor.cs" Link="JobrightPageExtractor.cs" />
     <Compile Include="..\..\ResumeOutputManager.cs" Link="ResumeOutputManager.cs" />
     <Compile Include="..\..\ResumeStyle.cs" Link="ResumeStyle.cs" />

@@ -13,12 +13,10 @@ public sealed class CapturedResult {
 }
 
 /// <summary>
-/// Turns a copied AI answer into a saved profile, without depending on any page structure.
-///
-/// The gate is deliberate: the clipboard watcher sees everything the user copies while a request is
-/// pending, so text that is not recognisably a candidate profile is ignored and never stored.
-/// Anything that passes the gate goes through the unchanged A6.6.6 pipeline —
-/// normalize -> strict validate -> save.
+/// Turns an AI answer into a saved profile. The text may come from an automatic
+/// <see cref="ChatResponseReader"/> capture or from the manual clipboard fallback.
+/// Text that is not recognisably a candidate profile is ignored and never stored.
+/// Anything that passes the gate is normalized and strictly validated before it is saved.
 /// </summary>
 public static class ResultCapture {
     public const string BaselineJobId = "BASELINE";
@@ -35,7 +33,7 @@ public static class ResultCapture {
     /// working, and a false positive is still rejected by strict validation before anything is saved.
     /// </summary>
     /// <summary>
-    /// True when the copied text is worth running through the pipeline at all — either a profile that
+    /// True when the captured text is worth running through the pipeline at all — either a profile that
     /// parses, or a recognisable attempt at one that failed (a truncated answer, for instance).
     /// The second case matters: silently ignoring a cut-off answer would leave the user watching a
     /// "waiting" message with no idea why nothing happened.
@@ -93,11 +91,23 @@ public static class ResultCapture {
     /// Runs the captured text through normalize -> strict validate -> save. Never throws.
     /// On failure nothing is written to the profile and the raw answer is kept so it is not lost.
     /// </summary>
-    public static CapturedResult Accept(string text, string? jobId) {
+    /// <summary>
+    /// One safe diagnostics line describing the style a saved profile will render with — sizes and
+    /// font only, never resume content: "STYLE accepted preset=promV4.12 body=9 bullet=9 …".
+    /// </summary>
+    public static string StyleLogLine(System.Text.Json.Nodes.JsonObject? profile) {
+        var style = StyleNormalizer.Normalize(profile?["style"]).Style;
+        string F(double v) => StyleNormalizer.Fmt(v);
+        return $"STYLE accepted preset={style.Preset} body={F(style.Body.FontSize)} bullet={F(style.Bullet.FontSize)} " +
+               $"skills={F(style.SkillValues.FontSize)} education={F(style.Education.FontSize)} font={style.Fonts.Family}";
+    }
+
+    public static CapturedResult Accept(string text, string? jobId, bool requireStyle = false) {
         var target = TargetPathFor(jobId);
         var baseline = IsBaseline(jobId);
         try {
-            var report = CandidateProfileStore.NormalizeAndSaveTo(text, target);
+            var report = CandidateProfileStore.NormalizeAndSaveTo(text, target, requireStyle, ExperienceSource.Load());
+            if (baseline) CandidateProfileStore.RecordSourceFromBaseline();
             return new CapturedResult {
                 Saved = true,
                 TargetPath = target,
@@ -122,7 +132,7 @@ public static class ResultCapture {
 
 /// <summary>Per-job tailored results. The baseline profile keeps its own path and is never touched here.</summary>
 public static class ProfileResultStore {
-    public static string ResultsDir => Path.Combine(Storage.DataDir, "results");
+    public static string ResultsDir => Path.Combine(ProfileContext.ProfileRoot, "results");
 
     public static string ResultPath(string jobId) => Path.Combine(ResultsDir, Safe(jobId) + ".json");
     public static string RawPath(string jobId) => Path.Combine(ResultsDir, Safe(jobId) + ".raw.txt");

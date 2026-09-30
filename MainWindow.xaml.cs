@@ -23,16 +23,26 @@ public partial class MainWindow : Window {
     /// </summary>
     public IReadOnlyList<JobTask> Tasks => _tasks;
 
-    /// <summary>What TaskList shows: an Active or History filter over <see cref="_tasks"/> (TaskViews).</summary>
+    /// <summary>What TaskList shows: the active queue over <see cref="_tasks"/> (TaskViews).</summary>
     readonly System.Windows.Data.ListCollectionView _taskView;
-    bool _showHistory;
 
     readonly ClipboardWatcher _watcher = new();
     readonly QueueRunner _queue = new();
+    /// <summary>The only AI Workspace owner. Job Tasks and Email Tasks both start through this.</summary>
+    readonly TailorController _tailor = new();
+    bool _emailLoopActive;
+    bool _emailInsideLoop;
+    bool _emailStop;
+    bool _emailBatch;
+    string? _emailOnlyId;
+    JobTask? _emailJob;
+    TaskCompletionSource<bool>? _emailDone;
     readonly GlobalHotkey _hotkey = new();
     readonly CaptureWatchdog _captureWatchdog = new();
     /// <summary>The job whose answer ChatGPT confirmably finished and whose Copy is still awaited.</summary>
     string? _readyJobId;
+    /// <summary>HTML answers are read only after ChatGPT has finished, never while a reply is still streaming.</summary>
+    bool _htmlAnswerFinished;
     JobTask? _activeJob;
     CoreWebView2Environment? _webEnvironment;
     Microsoft.Web.WebView2.Wpf.WebView2? _chatView;
@@ -56,6 +66,7 @@ public partial class MainWindow : Window {
 
     /// <summary>Prevents overlapping AdvanceQueueAsync loops (nested fail→advance + outer advance).</summary>
     int _advanceDepth;
+    int _extraBusy;
 
     /// <summary>Live ChatGPT WebView2 generation — bumped on create and on dispose.</summary>
     readonly BrowserGeneration _browserGen = new();
@@ -147,6 +158,13 @@ public partial class MainWindow : Window {
 
     public MainWindow() {
         InitializeComponent();
+        if (!string.IsNullOrWhiteSpace(ProfileContext.DisplayName)) {
+            Title = ProfileWindow.Title(ProfileContext.DisplayName);
+            ShowProfileChip();
+        }
+        Activated += (_, _) => ShowProfileChip();
+        Opacity = 0;
+        SourceInitialized += (_, _) => RestoreShellWindow();
         _chat = new ChatHost(CreateChatViewAsync, DisposeChatViewAsync);
 
         // A job left Processing by a crash or a close would never be re-run; put it back in the queue.
@@ -155,8 +173,9 @@ public partial class MainWindow : Window {
         var redetected = ApplicationPlatformDetector.Refresh(_tasks);
         if (recovered > 0 || redetected > 0) Storage.SaveTasks(_tasks);
 
-        _taskView = TaskViews.CreateView(_tasks, () => _showHistory);
+        _taskView = TaskViews.CreateView(_tasks, () => false);
         TaskList.ItemsSource = _taskView;
+        InitQueueOrder();
         foreach (var t in _tasks) WatchTask(t);
         _tasks.CollectionChanged += (_, e) => {
             if (e.NewItems is not null) foreach (JobTask t in e.NewItems) WatchTask(t);
@@ -164,6 +183,9 @@ public partial class MainWindow : Window {
         };
         Loaded += MainWindow_Loaded;
         Closed += (_, _) => {
+            SaveShellWindow();
+            _cooldownCancellation?.Cancel();
+            _interJobCancellation?.Cancel();
             DismissAnswerReady("app closed");
             _hotkey.Dispose();
             _watcher.Dispose();
@@ -179,26 +201,61 @@ public partial class MainWindow : Window {
 
     void WireShell() {
         JobBrowserView.ImportJob = ImportFromBrowser;
-        JobBrowserView.JobExists = url => _tasks.Any(t =>
-            JobUrls.Normalize(t.Link) == JobUrls.Normalize(url));
+        JobBrowserView.JobExists = url => _tasks.Any(t => JobUrls.SamePosting(t.Link, url));
         JobBrowserView.RecordApplyUrl = RecordApplyUrlFromBrowser;
+        JobBrowserView.NotePlatform = NotePlatformFromPage;
+        JobBrowserView.AutoImportEnded += OnAutoImportEnded;
+        EmailTasksView.StartEmailTasks = BeginEmailBatchAsync;
+        EmailTasksView.TailorOne = BeginEmailSelectedAsync;
+        EmailTasksView.StopEmailTasks = StopEmailTasks;
+        EmailTasksView.ExtractWithGpt = ExtractEmailWithGptAsync;
+    }
 
-        DashboardView.RefreshInputRequested += () => RefreshInput();
-        DashboardView.OpenJobBrowserRequested += () => NavigateTo("JobBrowser");
-        DashboardView.StartQueueRequested += () => StartQueue_Click(this, new RoutedEventArgs());
-        DashboardView.OpenReadyToApplyRequested += () => {
-            NavigateTo("Applications");
-            SettingsHost.ShowReadyToApplyQueue();
-        };
+    string _shellPage = "TaskQueue";
+
+    void OnAutoImportEnded()
+    {
+        if (_shellPage == "JobBrowser")
+            return;
+        JobBrowserView.RestoreFromBackground();
+        JobBrowserView.Visibility = Visibility.Collapsed;
     }
 
     async void MainWindow_Loaded(object sender, RoutedEventArgs e) {
-        PerfLog.Clear();
+        BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(1, TimeSpan.FromMilliseconds(160)));
+        // diagnostics.log is rotated (kept) by App.OnStartup, no longer cleared here.
         PerfLog.Snapshot("startup");
         _watcher.Attach(this);
         RegisterFocusHotkey();
         await EnsureChatAsync();          // show ChatGPT so the user can sign in
         RefreshInput();
+        ShowStartupNotices();
+    }
+
+    /// <summary>
+    /// Once per launch: a settings/tasks file that could not be read (its data was kept, and saving
+    /// it is refused — see Storage), then what a fresh install still needs before a job can run.
+    /// Nothing is changed or copied here; the user is told and, if they want, taken to Settings.
+    /// </summary>
+    void ShowStartupNotices() {
+        if (Storage.Problems.Count > 0)
+            System.Windows.MessageBox.Show(string.Join("\n\n", Storage.Problems) +
+                            "\n\nThe files are in " + Storage.DataDir + ".",
+                            "Resume Builder", MessageBoxButton.OK, MessageBoxImage.Warning);
+
+        var settings = Storage.LoadSettings();
+        var profileExists =
+            (!string.IsNullOrWhiteSpace(settings.CandidateProfile) && File.Exists(settings.CandidateProfile)) ||
+            File.Exists(CandidateProfileStore.CandidateProfilePath);
+        var missing = SetupCheck.Missing(settings, profileExists);
+        if (SetupCheck.Describe(missing, settings.ResumeRootFolder) is not string notice) return;
+
+        QueueStatus.Text = "Setup needed before jobs can run: " + string.Join(", ", missing.Select(m => m.What)) + ".";
+        PerfLog.Line("STARTUP setup incomplete: " + string.Join(", ", missing.Select(m => m.Section)));
+        if (System.Windows.MessageBox.Show(notice, "Resume Builder", MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes) {
+            NavigateTo("Settings");
+            SettingsHost.ShowSection(missing[0].Section);
+        }
     }
 
     // ---------- A6.6.12 ChatGPT WebView2 lifetime ----------
@@ -228,20 +285,20 @@ public partial class MainWindow : Window {
         catch (Exception ex) {
             PerfLog.Line("BROWSER ensure FAILED: " + ex.GetType().Name + ": " + ex.Message);
             System.Windows.MessageBox.Show(
-                "ChatGPT browser could not be initialized.\n\n" + ex.Message,
-                "Resume Builder v1.0", MessageBoxButton.OK, MessageBoxImage.Error);
+                "Unable to load browser.",
+                "Resume Builder v3.0", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
     // ---------- job browser (embedded in shell) ----------
 
     void NavigateTo(string destination) {
+        if (destination is "Dashboard" or "Documents") destination = "TaskQueue";
         RadioButton? match = destination switch {
-            "Dashboard" => NavDashboard,
             "JobBrowser" => NavJobBrowser,
             "TaskQueue" => NavTaskQueue,
+            "EmailTasks" => NavEmailTasks,
             "AiWorkspace" => NavAiWorkspace,
-            "Documents" => NavDocuments,
             "Applications" => NavApplications,
             "Settings" => NavSettings,
             _ => null
@@ -256,23 +313,37 @@ public partial class MainWindow : Window {
     }
 
     void ShowDestination(string destination) {
-        DashboardView.Visibility = Visibility.Collapsed;
-        JobBrowserView.Visibility = Visibility.Collapsed;
+        _shellPage = destination;
         TaskQueueView.Visibility = Visibility.Collapsed;
         AiWorkspaceView.Visibility = Visibility.Collapsed;
-        DocumentsView.Visibility = Visibility.Collapsed;
+        EmailTasksView.Visibility = Visibility.Collapsed;
         SettingsView.Visibility = Visibility.Collapsed;
         QueueCommandBar.Visibility = Visibility.Collapsed;
+        var sharedStatus = destination == "EmailTasks" ? Visibility.Collapsed : Visibility.Visible;
+        ImportMessage.Visibility = sharedStatus;
+        CaptureStatus.Visibility = sharedStatus;
+        DocumentStatus.Visibility = sharedStatus;
+
+        if (destination == "JobBrowser")
+        {
+            JobBrowserView.RestoreFromBackground();
+            JobBrowserView.Visibility = Visibility.Visible;
+        }
+        else if (JobBrowserView.IsAutoImportRunning)
+        {
+            JobBrowserView.Visibility = Visibility.Visible;
+            JobBrowserView.ParkForBackground();
+        }
+        else
+        {
+            JobBrowserView.RestoreFromBackground();
+            JobBrowserView.Visibility = Visibility.Collapsed;
+        }
 
         switch (destination) {
-            case "Dashboard":
-                DashboardView.Visibility = Visibility.Visible;
-                PageTitleText.Text = "Dashboard";
-                RefreshDashboardPage();
-                break;
             case "JobBrowser":
-                JobBrowserView.Visibility = Visibility.Visible;
                 PageTitleText.Text = "Job Browser";
+                JobBrowserView.SyncDisplayedAutomation();
                 _ = JobBrowserView.EnsureReadyAsync();
                 break;
             case "TaskQueue":
@@ -281,25 +352,39 @@ public partial class MainWindow : Window {
                 PageTitleText.Text = "Task Queue";
                 UpdateJobDetailPanels();
                 break;
+            case "EmailTasks":
+                EmailTasksView.Visibility = Visibility.Visible;
+                PageTitleText.Text = "Email Tasks";
+                ContextChip.Text = "";
+                break;
             case "AiWorkspace":
                 AiWorkspaceView.Visibility = Visibility.Visible;
                 QueueCommandBar.Visibility = Visibility.Visible;
                 PageTitleText.Text = "AI Workspace";
                 UpdateJobDetailPanels();
                 break;
-            case "Documents":
-                DocumentsView.Visibility = Visibility.Visible;
-                PageTitleText.Text = "Resume Documents";
-                DocumentsView.Refresh(_tasks);
-                break;
             case "Applications":
+                var nav = System.Diagnostics.Stopwatch.StartNew();
+                PerfLog.Line("APPLICATIONS PERF navigation-start");
+                IconCache.BeginMeasure();
                 SettingsView.Visibility = Visibility.Visible;
                 PageTitleText.Text = "Applications";
                 SettingsHost.SetShellMode(applicationsFocus: true);
+                IconCache.CollectUncached(_tasks);
+                PerfLog.Line("APPLICATIONS PERF navigation-end ms=" + nav.ElapsedMilliseconds);
+                PerfLog.Line("APPLICATIONS PERF navigation-total ms=" + nav.ElapsedMilliseconds);
+                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ContextIdle, () => {
+                    IconCache.EndMeasure(out var loads, out var iconMs);
+                    PerfLog.Line("APPLICATIONS PERF bind-icons ms=" + iconMs + " loads=" + loads);
+                    PerfLog.Line("APPLICATIONS PERF navigation-idle ms=" + nav.ElapsedMilliseconds);
+                });
                 break;
             case "Settings":
                 SettingsView.Visibility = Visibility.Visible;
                 PageTitleText.Text = "Settings";
+                // Re-read settings.json first: a filter toggled on the Job Browser toolbar must show
+                // here, and must not be written back out of a stale copy by the next Save.
+                SettingsHost.ReloadSettings();
                 SettingsHost.SetShellMode(applicationsFocus: false);
                 SettingsHost.ShowSection("Candidate Profile");
                 break;
@@ -330,17 +415,17 @@ public partial class MainWindow : Window {
         }
     }
 
-    void RefreshDashboardPage() {
-        string? active = _activeJob is null ? null : $"{_activeJob.Company} — {_activeJob.Title}";
-        DashboardView.Refresh(_tasks, _queue.State, active, _attempt);
-    }
-
     void UpdateJobDetailPanels() {
         var job = TaskList.SelectedItem as JobTask ?? _activeJob;
+        if (_shellPage == "EmailTasks") ContextChip.Text = "";
         if (job is null) {
+            DetailCompanyBadge.Visibility = Visibility.Collapsed;
+            DetailCompanyIcon.Source = null;
             DetailCompany.Text = "No job selected";
             DetailTitle.Text = "Select a job in the queue to see details.";
             DetailMeta.Text = "";
+            WorkspaceCompanyBadge.Visibility = Visibility.Collapsed;
+            WorkspaceCompanyIcon.Source = null;
             WorkspaceCompany.Text = "No job selected";
             WorkspaceTitle.Text = "Prepare & Send uses the selected queue job.";
             WorkspaceMeta.Text = "";
@@ -348,16 +433,23 @@ public partial class MainWindow : Window {
         }
         var meta =
             $"Queue: {job.StatusDisplay}\nApplication: {job.ApplicationStatus}\n" +
-            $"Readiness: {job.ReadinessDisplay}\nPlatform: {JobTracker.PlatformDisplayName(job.ApplicationPlatform)}\n" +
+            $"Platform: {JobTracker.PlatformDisplayName(job.ApplicationPlatform)}\n" +
             $"Job id: {job.JobId}" +
             (string.IsNullOrWhiteSpace(job.FailureReason) ? "" : $"\nFailure: {job.FailureReason}");
+        DetailCompanyBadge.Visibility = Visibility.Visible;
+        DetailCompanyIcon.Source = job.CompanyIcon;
+        DetailCompanyFallback.Visibility = job.CompanyIcon is null ? Visibility.Visible : Visibility.Collapsed;
         DetailCompany.Text = job.Company;
         DetailTitle.Text = job.Title;
         DetailMeta.Text = meta;
+        WorkspaceCompanyBadge.Visibility = Visibility.Visible;
+        WorkspaceCompanyIcon.Source = job.CompanyIcon;
+        WorkspaceCompanyFallback.Visibility = job.CompanyIcon is null ? Visibility.Visible : Visibility.Collapsed;
         WorkspaceCompany.Text = job.Company;
         WorkspaceTitle.Text = job.Title;
         WorkspaceMeta.Text = meta + (_attempt > 0 ? $"\nGPT attempt {_attempt}/{GptAttempts.MaxAttempts}" : "");
-        ContextChip.Text = $"{job.Company} — {job.Title}";
+        if (_shellPage != "EmailTasks")
+            ContextChip.Text = $"{job.Company} — {job.Title}";
     }
 
     void OpenAiWorkspace_Click(object sender, RoutedEventArgs e) => NavigateTo("AiWorkspace");
@@ -387,8 +479,6 @@ public partial class MainWindow : Window {
 
     void RefreshDashboardIfOpen() {
         SettingsHost.RefreshTracking();
-        if (DashboardView.Visibility == Visibility.Visible) RefreshDashboardPage();
-        if (DocumentsView.Visibility == Visibility.Visible) DocumentsView.Refresh(_tasks);
     }
 
     /// <summary>
@@ -398,10 +488,12 @@ public partial class MainWindow : Window {
     /// </summary>
     JobImportOutcome ImportFromBrowser(JobImportData data) {
         var list=_tasks.ToList();
-        var outcome=JobImporter.ImportOne(data,JobImporter.BrowserSource,list);
+        // Settings are read per import, so toggling a filter mid-scan applies to the very next job.
+        var outcome=JobImporter.ImportOne(data,JobImporter.BrowserSource,list,Storage.LoadSettings());
 
         if(outcome.Kind==JobImportKind.Imported) {
             foreach(var added in list.Where(t => !_tasks.Contains(t))) _tasks.Add(added);
+            ApplyQueueOrder();
             UpdateSummary();
             RefreshButtons();
             ImportMessage.Text=$"Imported from the job browser: {outcome.Company} — {outcome.Title}";
@@ -416,6 +508,145 @@ public partial class MainWindow : Window {
 
     /// <summary>Settings asks before offering a reset; a running queue refuses it.</summary>
     public bool IsQueueRunning => _queue.IsRunning;
+
+    bool _promptConversionActive;
+
+    /// <summary>
+    /// Sends the user's tailoring prompt through the AI Workspace and stores the adapted copy.
+    /// Does not change the file the user selected. Refuses while Job Tasks or Email Tasks own the workspace.
+    /// </summary>
+    public async Task<(bool Ok, string Detail)> AdaptTailoringPromptAsync(string originalPath, bool resumeMode) {
+        const string kept = "The previous prepared prompt was kept.";
+        if (_promptConversionActive)
+            return (false, "in-progress");
+        if (_tailor.Mode != TailorMode.Idle || _tailor.Pending is not null
+            || _baselineProfileActive || _queue.IsRunning || JobWorkspaceBusy
+            || _emailBusy || _emailInsideLoop || _extractHolding) {
+            PerfLog.Line("PROMPT adapt refused reason=busy");
+            return (false, "Job Tasks or Email Tasks are using ChatGPT. Wait until they finish, then choose the Tailoring Prompt again. " + kept);
+        }
+        if (!File.Exists(originalPath))
+            return (false, "The Tailoring Prompt file could not be read. " + kept);
+        if (PromptConversion.Matches(originalPath))
+            return (true, "");
+
+        var decision = _tailor.Request(TailorMode.PromptConversion, requestedModeBusy: false);
+        if (decision != TailorDecision.StartNow) {
+            PerfLog.Line("PROMPT adapt refused reason=" + decision);
+            return (false, "Job Tasks or Email Tasks are using ChatGPT. Wait until they finish, then choose the Tailoring Prompt again. " + kept);
+        }
+
+        _promptConversionActive = true;
+        _watcher.Disarm();
+        NavigateTo("AiWorkspace");
+        var detail = "ChatGPT did not finish preparing the prompt. " + kept;
+        try {
+            await EnsureChatAsync();
+            if (Chat is null || !await NavigateFreshChatAsync()) {
+                PerfLog.Line("PROMPT adapt failed reason=browser");
+                return (false, detail);
+            }
+            var instruction = PromptConversion.BuildInstruction(File.ReadAllText(originalPath), resumeMode);
+            var fill = await ChatComposer.FillAsync(Chat, instruction);
+            if (!fill.Success) {
+                PerfLog.Line("PROMPT adapt failed reason=fill");
+                return (false, detail);
+            }
+            _sendCancellation?.Cancel();
+            _sendCancellation = new System.Threading.CancellationTokenSource();
+            var send = await ChatSender.SendAsync(new WebViewChatProbe(Chat), _sendCancellation.Token);
+            if (!send.Success) {
+                PerfLog.Line("PROMPT adapt failed reason=send");
+                return (false, detail);
+            }
+            using var wait = new System.Threading.CancellationTokenSource();
+            var outcome = await ChatCompletionWatcher.WaitForAnswerAsync(
+                new WebViewCompletionProbe(Chat), wait.Token, null, null,
+                () => RateLimit.IsShownAsync(Chat));
+            if (outcome != CompletionOutcome.Ready) {
+                PerfLog.Line("PROMPT adapt failed reason=" + outcome);
+                return (false, detail);
+            }
+            var read = await ChatResponseReader.ReadStableAsync(async ct => {
+                if (Chat is null) return new ChatReadResult { Status = ChatReadStatus.Error, Detail = "browser" };
+                var raw = await Chat.ExecuteScriptAsync(EmailExtractor.ReadScript);
+                return ChatResponseReader.ParseScriptPayload(raw);
+            }, budgetMs: EmailExtractor.CaptureBudgetMs, requireStable: true, cancellation: wait.Token);
+            var saveError = "";
+            if (!read.Success || !PromptConversion.TrySave(originalPath, read.Text, out saveError)) {
+                PerfLog.Line("PROMPT adapt failed reason=unusable");
+                return (false, saveError.Length > 0 ? saveError : detail);
+            }
+            PerfLog.Line("PROMPT adapt saved");
+            return (true, "");
+        } catch (Exception ex) {
+            PerfLog.Line("PROMPT adapt failed reason=" + ex.GetType().Name);
+            return (false, detail);
+        } finally {
+            _promptConversionActive = false;
+            if (_tailor.Mode == TailorMode.PromptConversion && _tailor.Pending is null)
+                _tailor.Release();
+            else             if (_tailor.Pending is not null)
+                await TryYieldTailorAsync();
+            NavigateTo("Settings");
+            SettingsHost.ShowSection("Candidate Profile");
+            RefreshButtons();
+        }
+    }
+
+    bool _baselineProfileActive;
+    /// <summary>True once a BASELINE answer is in hand, until the profile file and Settings are updated.</summary>
+    bool _baselineFinalizing;
+
+    /// <summary>True when no job is using ChatGPT, so a candidate-profile rebuild can send.</summary>
+    public bool CanStartBaselineProfile(out string reason) {
+        if (_promptConversionActive || _baselineProfileActive || _queue.IsRunning || _activeJob is not null || _tasks.Any(t => t.Status == "Processing")) {
+            reason = _promptConversionActive
+                ? "A tailoring prompt is being prepared. Wait until that finishes."
+                : "A job is already running. Wait until it finishes, then choose the resume again.";
+            return false;
+        }
+        reason = "";
+        return true;
+    }
+
+    /// <summary>
+    /// Sends an already prepared BASELINE profile request through the same ChatGPT fill, send, and
+    /// capture path as a job. Does not prepare a job payload and does not add a task.
+    /// </summary>
+    public async Task StartBaselineProfileAsync(PreparedRequest prepared) {
+        if (!CanStartBaselineProfile(out var reason)) throw new InvalidOperationException(reason);
+        var job = new JobTask {
+            JobId = ResultCapture.BaselineJobId,
+            Company = "Candidate profile",
+            Title = "Initial Candidate Profile",
+            Status = "Queued"
+        };
+        _baselineProfileActive = true;
+        _queue.BeginJob(job.JobId);
+        CancelCaptureWatchdog("baseline profile");
+        _readyJobId = null;
+        job.Status = "Processing";
+        _activeJob = job;
+        _activePreparedText = prepared.Text;
+        _activePrepared = prepared;
+        _attempt = 1;
+        RefreshButtons();
+        NavigateTo("AiWorkspace");
+        await SendAttemptAsync(job, prepared, Storage.LoadSettings());
+    }
+
+    void FinishBaselineProfile(bool saved, string message) {
+        // The flag stays set through this method so a queued job cannot start, and Stop cannot
+        // cancel, until the profile is on screen.
+        GlobalHotkey.BringToFront(this);
+        NavigateTo("Settings");
+        SettingsHost.ShowBaselineResult(saved, message);
+        SettingsHost.ShowSection("Candidate Profile");
+        _baselineFinalizing = false;
+        _baselineProfileActive = false;
+        RefreshButtons();
+    }
 
     /// <summary>
     /// Clears the job history in the ONE live collection, on the UI thread, then saves an empty
@@ -435,7 +666,7 @@ public partial class MainWindow : Window {
         Storage.SaveTasks(_tasks);          // []
 
         TaskList.SelectedItem=null;
-        ShowTaskView(history:false);
+        _taskView.Refresh();
         UpdateSummary();
         UpdateViewSwitch();
         RefreshButtons();
@@ -451,14 +682,37 @@ public partial class MainWindow : Window {
     /// The user clicked Apply on a job page in the job browser. ApplyCapture decides whether this is
     /// an application address for a task already in the queue; only then is the live list saved.
     /// </summary>
+    /// <summary>
+    /// Apply on a Ready job that has no external address yet. The Job Browser opens that Jobright
+    /// posting and the existing capture records wherever Apply goes.
+    /// </summary>
+    public void BeginApplyCapture(JobTask job) {
+        if (JobTracker.RouteApply(job) != ApplyRoute.CaptureOnJobright) return;
+        NavigateTo("JobBrowser");
+        _ = JobBrowserView.CaptureExternalApplyAsync(job.Link);
+    }
+
     ApplyCaptureResult RecordApplyUrlFromBrowser(string jobPageUrl,string applyUrl) {
         var result=ApplyCapture.Record(_tasks,jobPageUrl,applyUrl,DateTime.Now);
         if(result==ApplyCaptureResult.Recorded) {
             Storage.SaveTasks(_tasks);
+            var pageId=JobrightPageExtractor.JobIdFromUrl(jobPageUrl);
+            var recorded=pageId is null ? null : _tasks.FirstOrDefault(t =>
+                string.Equals(JobrightPageExtractor.JobIdFromUrl(t.Link), pageId, StringComparison.Ordinal));
+            if(recorded is not null) IconCache.Collect(recorded);
             // The job's platform badge and the platform filter show the new value straight away.
             RefreshDashboardIfOpen();
         }
         return result;
+    }
+
+    void NotePlatformFromPage(string pageUrl, PlatformDetectionResult result) {
+        var key = JobUrls.Normalize(pageUrl);
+        var match = _tasks.FirstOrDefault(task =>
+            !string.IsNullOrWhiteSpace(task.ApplyUrl) && JobUrls.Normalize(task.ApplyUrl) == key);
+        if (match is null || !ApplicationPlatformDetector.TryAssign(match, result)) return;
+        Storage.SaveTasks(_tasks);
+        RefreshDashboardIfOpen();
     }
 
     /// <summary>How long to wait for a browser process to actually exit before reporting a timeout.</summary>
@@ -605,6 +859,7 @@ public partial class MainWindow : Window {
         var r=JobImporter.Import(Storage.LoadSettings(),list);
         _tasks.Clear();
         foreach(var t in list) _tasks.Add(t);
+        ApplyQueueOrder();
         UpdateSummary();
         RefreshButtons();
         if(r.JobsQueued>0) RefreshDashboardIfOpen();
@@ -612,43 +867,75 @@ public partial class MainWindow : Window {
             ? string.Join(Environment.NewLine,r.Errors)
             : r.FilesImported==0
                 ? "No new input files."
-                : $"Imported: {r.FilesImported} file(s) • New: {r.JobsQueued} • Existing: {r.JobsExisting}";
+                : $"Imported: {r.FilesImported} file(s) • New: {r.JobsQueued} • Existing: {r.JobsExisting}" +
+                  (r.JobsSkipped>0 ? $" • Filtered out: {r.JobsSkipped}" : "");
     }
+
+    /// <summary>
+    /// Re-reads the import filters into the Job Browser toolbar after Settings saved them, so
+    /// "Filters (N)" and the popup show the one persisted value without reopening anything.
+    /// </summary>
+    public void RefreshJobImportFilters() => JobBrowserView.RefreshImportFilters();
 
     // ---------- Active / History view (display only; _tasks is never split) ----------
 
     /// <summary>Idempotent, because RefreshInput clears and re-adds the same task objects.</summary>
+    bool _queueOrderReady;
+
+    /// <summary>Restores Queue or Stack from settings and puts waiting jobs in that order.</summary>
+    void InitQueueOrder() {
+        _queueOrderReady = false;
+        QueueOrderBox.Items.Clear();
+        QueueOrderBox.Items.Add(QueueModes.Queue);
+        QueueOrderBox.Items.Add(QueueModes.Stack);
+        QueueOrderBox.SelectedItem = QueueModes.Normalize(Storage.LoadSettings().QueueOrder);
+        ApplyQueueOrder();
+        _queueOrderReady = true;
+    }
+
+    void QueueOrder_Changed(object sender, System.Windows.Controls.SelectionChangedEventArgs e) {
+        if (!_queueOrderReady) return;
+        var mode = QueueModes.Normalize(QueueOrderBox.SelectedItem as string);
+        var settings = Storage.LoadSettings();
+        if (!string.Equals(settings.QueueOrder, mode, StringComparison.Ordinal)) {
+            settings.QueueOrder = mode;
+            Storage.SaveSettings(settings);
+        }
+        ApplyQueueOrder();
+        if (_queue.IsRunning) _queue.ReorderRemaining(_tasks);
+    }
+
+    /// <summary>
+    /// Puts Processing jobs first, then waiting jobs in the selected order, then every other job.
+    /// Status, ids and timestamps stay as they are.
+    /// </summary>
+    void ApplyQueueOrder() {
+        var mode = QueueModes.Normalize(QueueOrderBox.SelectedItem as string);
+        var arranged = JobQueueOrder.Arrange(_tasks, mode);
+        var selected = TaskList.SelectedItem;
+        for (var i = 0; i < arranged.Count; i++) {
+            var current = _tasks.IndexOf(arranged[i]);
+            if (current >= 0 && current != i) _tasks.Move(current, i);
+        }
+        if (selected is not null) TaskList.SelectedItem = selected;
+    }
+
     void WatchTask(JobTask task) {
         task.PropertyChanged -= Task_PropertyChanged;
         task.PropertyChanged += Task_PropertyChanged;
     }
 
     void Task_PropertyChanged(object? sender,System.ComponentModel.PropertyChangedEventArgs e) {
-        if (e.PropertyName != nameof(JobTask.Status) || sender is not JobTask task) return;
-        // A task that starts running must never be hidden: leave History if that is where it was.
-        if (_showHistory && task.Status == "Processing") ShowTaskView(history:false);
+        if (e.PropertyName is nameof(JobTask.CompanyIcon) or nameof(JobTask.PlatformIcon)) {
+            if (ReferenceEquals(sender, TaskList.SelectedItem) || ReferenceEquals(sender, _activeJob))
+                UpdateJobDetailPanels();
+            return;
+        }
+        if (e.PropertyName != nameof(JobTask.Status)) return;
         UpdateViewSwitch();
-    }
-
-    void ActiveView_Click(object sender,RoutedEventArgs e)=>ShowTaskView(history:false);
-    void HistoryView_Click(object sender,RoutedEventArgs e)=>ShowTaskView(history:true);
-
-    void ShowTaskView(bool history) {
-        if (_showHistory == history) return;
-        var selected = TaskList.SelectedItem;
-        _showHistory = history;
-        _taskView.Refresh();
-        // Refresh drops the selection; keep it when the selected task is still on show.
-        if (selected is JobTask t && TaskViews.Belongs(t, history)) TaskList.SelectedItem = t;
-        UpdateViewSwitch();
-        RefreshButtons();
     }
 
     void UpdateViewSwitch() {
-        ActiveViewButton.Content = $"Active ({TaskViews.ActiveCount(_tasks)})";
-        HistoryViewButton.Content = $"History ({TaskViews.HistoryCount(_tasks)})";
-        ActiveViewButton.FontWeight = _showHistory ? FontWeights.Normal : FontWeights.SemiBold;
-        HistoryViewButton.FontWeight = _showHistory ? FontWeights.SemiBold : FontWeights.Normal;
         UpdateQueueEmptyState();
     }
 
@@ -659,10 +946,8 @@ public partial class MainWindow : Window {
 
     void UpdateQueueEmptyState() {
         if (QueueEmptyText is null) return;
-        var count = _showHistory ? TaskViews.HistoryCount(_tasks) : TaskViews.ActiveCount(_tasks);
-        QueueEmptyText.Text = _showHistory
-            ? "No completed jobs yet."
-            : "No active jobs. Import from the Job Browser or refresh Incoming.";
+        var count = TaskViews.ActiveCount(_tasks);
+        QueueEmptyText.Text = "No active jobs. Import from the Job Browser or refresh Incoming.";
         QueueEmptyText.Visibility = count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
@@ -681,21 +966,21 @@ public partial class MainWindow : Window {
     }
 
     void RefreshButtons() {
-        var running=_queue.IsRunning;
+        var running=_queue.IsRunning || _baselineProfileActive || _promptConversionActive;
         RetryFailedButton.IsEnabled=!running && _tasks.Any(t=>t.Status=="Failed");
         GenerateDocumentsButton.IsEnabled=!running && TaskList.SelectedItem is JobTask g && g.Status=="Completed";
         ProcessSelectedButton.IsEnabled=!running && TaskList.SelectedItem is JobTask j && j.Status!="Processing";
         StartQueueButton.IsEnabled=!running && _tasks.Any(t=>t.Status=="Queued");
         PauseQueueButton.IsEnabled=running;
         PauseQueueButton.Content=_queue.State==QueueState.Paused ? "▶ Resume Queue" : "⏸ Pause Queue";
-        StopQueueButton.IsEnabled=running;
+        StopQueueButton.IsEnabled=_queue.IsRunning;
         SkipJobButton.IsEnabled=running && _queue.ActiveJobId is not null;
         UpdateBusyIndicators();
     }
 
     /// <summary>Binds indeterminate progress bars to real queue / Processing state — never simulated.</summary>
     void UpdateBusyIndicators() {
-        var busy = _queue.IsRunning || _tasks.Any(t => t.Status == "Processing");
+        var busy = _extraBusy > 0 || _baselineProfileActive || _promptConversionActive || _queue.IsRunning || _tasks.Any(t => t.Status == "Processing");
         if (ShellBusyBar is not null)
             ShellBusyBar.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         if (ChatBusyBar is not null)
@@ -712,12 +997,14 @@ public partial class MainWindow : Window {
         var settings=Storage.LoadSettings();
 
         PerfLog.Snapshot("before job "+job.JobId);
+        _htmlAnswerFinished=false;
         PreparedRequest prepared;
         try {
             using(PerfLog.Measure("job preparation"))
-                prepared=RequestPreparation.Prepare(job,settings);
+                prepared=EmailOutput.PrepareRun(job, settings);
         } catch(Exception ex) {
-            ImportMessage.Text="Prepare failed: "+ex.Message;
+            PerfLog.Line("TAILOR prepare failed " + ex.GetType().Name);
+            ImportMessage.Text="Resume tailoring failed. Retry.";
             return false;
         }
 
@@ -731,13 +1018,15 @@ public partial class MainWindow : Window {
         _activePreparedText=prepared.Text;      // used to refuse copies of our own prompt
         _activePrepared=prepared;               // reused unchanged by every retry; Prepare runs once
         _attempt=1;
-        Storage.SaveTasks(_tasks);
+        if(_tasks.Contains(job)) {
+            Storage.SaveTasks(_tasks);
+            TaskList.SelectedItem=job;
+            TaskList.ScrollIntoView(job);
+            UpdateJobDetailPanels();
+        }
         UpdateSummary();
         RefreshButtons();
         SettingsHost.RefreshInspector();
-        TaskList.SelectedItem=job;
-        TaskList.ScrollIntoView(job);
-        UpdateJobDetailPanels();
         // ChatGPT lives only on the AI Workspace page. Always show it before a send — otherwise a
         // user who switched to Task Queue (or anywhere else) after job 1 never sees the recycled
         // browser for job 2, and EnsureCoreWebView2Async can also fail inside a Collapsed host.
@@ -754,6 +1043,19 @@ public partial class MainWindow : Window {
     /// left waiting on a job that cannot be sent. Nothing here re-prepares or rewrites a file.
     /// </summary>
     async Task SendAttemptAsync(JobTask job,PreparedRequest prepared,AppSettings settings) {
+        // A rate-limit cooldown blocks EVERY send path — retry, resumed job or next job — before any
+        // fresh chat, fill or Send happens.
+        if(_rateLimit.IsActive) {
+            _cooldownCancellation?.Cancel();
+            var cooldown=_cooldownCancellation=new System.Threading.CancellationTokenSource();
+            QueueStatus.Text=RateLimit.WaitingText(_rateLimit.Until!.Value);
+            if(!await _rateLimit.WaitAsync(cooldown.Token) || _activeJob!=job || job.Status!="Processing") {
+                PerfLog.Line("RATE LIMIT cooldown ended without resuming "+job.JobId);
+                return;
+            }
+            PerfLog.Line($"RATE LIMIT cooldown over — resuming {job.JobId} attempt {_attempt}/{GptAttempts.MaxAttempts}");
+        }
+
         _copyRequest.ResetForAttempt();          // this attempt gets its own single copy request
 
         // Clipboard: a clipboard problem never marks the preparation as failed.
@@ -768,8 +1070,8 @@ public partial class MainWindow : Window {
         } else {
             _watcher.Disarm();
             CaptureStatus.Text = settings.AutoCaptureResult
-                ? "Automatic capture is unavailable; paste the answer in Settings → Result."
-                : "Automatic capture is turned off; paste the answer in Settings → Result.";
+                ? "Automatic capture is unavailable. Use ChatGPT's Copy button, or Ctrl+Shift+;, on the answer."
+                : "Automatic capture is turned off. Use ChatGPT's Copy button, or Ctrl+Shift+;, on the answer.";
         }
 
         // Type it into ChatGPT. Convenience only: failure leaves the clipboard fallback.
@@ -851,6 +1153,9 @@ public partial class MainWindow : Window {
             return;
         }
 
+        // A failure caused by ChatGPT's rate limit is a cooldown, not a used attempt.
+        if(await RateLimit.IsShownAsync(Chat)) { await HandleRateLimitAsync(job); return; }
+
         PerfLog.Line(GptAttempts.AttemptLog(_attempt,failure,job.JobId));
 
         if(GptAttempts.CanRetry(_attempt) && _activePrepared is PreparedRequest prepared) {
@@ -870,6 +1175,7 @@ public partial class MainWindow : Window {
     /// a known state. The job, its prepared text and all its tracking data are left exactly as they are.
     /// </summary>
     async Task ResetForRetryAsync() {
+        _htmlAnswerFinished=false;
         _sendCancellation?.Cancel();
         _readyCancellation?.Cancel();
         CancelCaptureWatchdog("GPT retry");
@@ -884,6 +1190,7 @@ public partial class MainWindow : Window {
     /// about the application (status, timestamps, ApplyUrl, platform) is changed.
     /// </summary>
     async Task FailActiveJobAsync(JobTask job,string failureReason,string message) {
+        _htmlAnswerFinished=false;
         _sendCancellation?.Cancel();
         _readyCancellation?.Cancel();
         CancelCaptureWatchdog("job failed");
@@ -893,11 +1200,22 @@ public partial class MainWindow : Window {
 
         job.Status="Failed";
         job.FailureReason=failureReason;
+        var baseline=ResultCapture.IsBaseline(job.JobId);
         _queue.AbandonActive();
         _activeJob=null;
         _activePrepared=null;
         _activePreparedText=null;
         _attempt=0;
+        if(baseline) {
+            QueueStatus.Text=message;
+            await RecycleChatAsync();
+            FinishBaselineProfile(false, message);
+            return;
+        }
+        if(IsEmailRun(job) || EmailOutput.IsEmail(job)) {
+            await FinishEmailAsync(job, ready:false, profilePath:null, reason:failureReason, systemFailure:false);
+            return;
+        }
         Storage.SaveTasks(_tasks);
         UpdateSummary();
         RefreshButtons();
@@ -907,6 +1225,7 @@ public partial class MainWindow : Window {
 
         await RecycleChatAsync();
         if(_queue.IsRunning) await AdvanceQueueAsync();
+        else NoteTailorIdle("job-failed");
     }
 
     // ---------- A6.6.13 "answer ready" notification ----------
@@ -933,7 +1252,8 @@ public partial class MainWindow : Window {
             // a capture cancels this watch, and nothing at all becomes NoResponseStart.
             do outcome=await ChatCompletionWatcher.WaitForAnswerAsync(
                    new WebViewCompletionProbe(web),cancellation.Token,null,
-                   () => OnUnconfirmedReady(job,settings,afterRejection));
+                   () => OnUnconfirmedReady(job,settings,afterRejection),
+                   () => RateLimit.IsShownAsync(web));
             // After a rejected answer the user still has to ask for a correction: keep watching until it is generated.
             while(afterRejection && outcome==CompletionOutcome.ReadyUnconfirmed && !cancellation.IsCancellationRequested &&
                   _activeJob==job && waited.ElapsedMilliseconds<ChatCompletionWatcher.MaxWaitMs);
@@ -945,6 +1265,9 @@ public partial class MainWindow : Window {
         if(outcome == CompletionOutcome.Ready)
         {
             PerfLog.Line("READY " + job.JobId);
+            _htmlAnswerFinished=!ResultCapture.IsBaseline(job.JobId);
+            // From here the answer is being saved. Stop must not drop it.
+            if(ResultCapture.IsBaseline(job.JobId)) _baselineFinalizing = true;
 
             // Background capture: read the assistant response from WebView2. No focus steal, no
             // SendInput, no clipboard write. Manual Ctrl+Shift+; remains available if this fails.
@@ -954,6 +1277,10 @@ public partial class MainWindow : Window {
 
             // A confirmed Send produced no generation, and no answer was captured, within the budget.
             await HandleGptFailureAsync(job,GptFailure.ResponseStartTimeout);
+
+        } else if(outcome==CompletionOutcome.RateLimited) {
+
+            await HandleRateLimitAsync(job);
 
         } else if(outcome==CompletionOutcome.Stalled) {
 
@@ -1207,10 +1534,64 @@ public partial class MainWindow : Window {
         CaptureStatus.Text = $"{job.Company} — {job.Title}: reading the ChatGPT answer in the background…";
         PerfLog.Line($"CAPTURE background begin {job.JobId} gen={gen} attempt={_attempt}");
 
+        if (!ResultCapture.IsBaseline(job.JobId)) {
+            await TryJobBackgroundCaptureAsync(job, gen, ct);
+            return;
+        }
+
+        // The answer is already on this page. Re-read it for up to 10 seconds. Do not send again.
+        var started = Environment.TickCount64;
+        ChatReadResult read = new() { Status = ChatReadStatus.Missing, Detail = "not-read" };
+        while (true) {
+            if (!CopyFocusPolicy.MayTouchBrowser(gen, _browserGen.Current, ct.IsCancellationRequested, _chatView is not null)
+                || Chat is null || _activeJob != job || job.Status != "Processing") {
+                PerfLog.Line($"CAPTURE background discarded — stale during read {job.JobId}");
+                return;
+            }
+            try {
+                read = await ChatResponseReader.ReadStableAsync(
+                    async _ => {
+                        var raw = await Chat.ExecuteScriptAsync(ChatResponseReader.ReadLastAssistantScript);
+                        return ChatResponseReader.ParseScriptPayload(raw);
+                    },
+                    budgetMs: 0,
+                    pollMs: 750,
+                    cancellation: ct);
+            } catch (OperationCanceledException) {
+                PerfLog.Line($"CAPTURE background cancelled {job.JobId}");
+                return;
+            } catch (Exception ex) {
+                PerfLog.Line($"CAPTURE background error {job.JobId}: {ex.GetType().Name}");
+                read = new ChatReadResult { Status = ChatReadStatus.Error, Detail = ex.GetType().Name };
+            }
+
+            PerfLog.Line($"CAPTURE background status={read.Status} assistants={read.AssistantCount} " +
+                         $"chars={read.Text.Length} detail={read.Detail} {job.JobId}");
+
+            if (read.Success && ResultCapture.ShouldCapture(read.Text)) {
+                await AcceptCapturedTextAsync(read.Text, job, source: "background");
+                return;
+            }
+            if (Environment.TickCount64 - started >= 10_000) break;
+            try { await Task.Delay(750, ct); }
+            catch (OperationCanceledException) {
+                PerfLog.Line($"CAPTURE background cancelled {job.JobId}");
+                return;
+            }
+        }
+
+        ArmManualCaptureFallback(job,
+            read.Status == ChatReadStatus.Ambiguous
+                ? "More than one JSON block was found — refused to guess. Use manual Copy on the resume JSON."
+                : "Background capture could not find a finished resume JSON on the page.");
+    }
+
+    /// <summary>Unchanged job capture: one stable read, then the manual-copy fallback.</summary>
+    async Task TryJobBackgroundCaptureAsync(JobTask job, int gen, CancellationToken ct) {
         ChatReadResult read;
         try {
             using (PerfLog.Measure("background capture " + job.JobId))
-                read = await ChatResponseReader.ReadStableAsync(Chat, ct);
+                read = await ChatResponseReader.ReadStableHtmlAsync(Chat, ct);
         } catch (OperationCanceledException) {
             PerfLog.Line($"CAPTURE background cancelled {job.JobId}");
             return;
@@ -1229,11 +1610,11 @@ public partial class MainWindow : Window {
         PerfLog.Line($"CAPTURE background status={read.Status} assistants={read.AssistantCount} " +
                      $"chars={read.Text.Length} detail={read.Detail} {job.JobId}");
 
-        if (!read.Success || !ResultCapture.ShouldCapture(read.Text)) {
+        if (!read.Success) {
             ArmManualCaptureFallback(job,
                 read.Status == ChatReadStatus.Ambiguous
-                    ? "More than one JSON block was found — refused to guess. Use manual Copy on the resume JSON."
-                    : "Background capture could not find a finished resume JSON on the page.");
+                    ? "More than one HTML block was found — refused to guess. Use manual Copy on the HTML resume."
+                    : "Background capture could not find a finished HTML resume on the page.");
             return;
         }
 
@@ -1241,9 +1622,10 @@ public partial class MainWindow : Window {
     }
 
     void ArmManualCaptureFallback(JobTask job, string reason) {
+        var block = ResultCapture.IsBaseline(job.JobId) ? "json code block" : "HTML resume";
         CaptureStatus.Text =
             $"{job.Company} — {job.Title}: {reason} " +
-            $"Optional: press {GlobalHotkey.DisplayText}, then {ChatCompletionWatcher.ShortcutText}, or click Copy on the json code block.";
+            $"Optional: press {GlobalHotkey.DisplayText}, then {ChatCompletionWatcher.ShortcutText}, or click Copy on the {block}.";
         QueueStatus.Text =
             $"Background capture pending manual fallback — {job.Company} — {job.Title}.";
         PerfLog.Line($"CAPTURE manual fallback armed {job.JobId}");
@@ -1345,10 +1727,21 @@ public partial class MainWindow : Window {
 
         job.Status="Failed";
         job.FailureReason=CaptureWatchdog.FailureReason;
+        var baseline=ResultCapture.IsBaseline(job.JobId);
         _activeJob=null;
         _activePrepared=null;
         _activePreparedText=null;
         _attempt=0;
+        if(baseline) {
+            CaptureStatus.Text=CaptureWatchdog.TimeoutMessage;
+            await RecycleChatAsync();
+            FinishBaselineProfile(false, CaptureWatchdog.TimeoutMessage);
+            return;
+        }
+        if(IsEmailRun(job)) {
+            await FinishEmailAsync(job, ready:false, profilePath:null, reason:CaptureWatchdog.FailureReason, systemFailure:false);
+            return;
+        }
         Storage.SaveTasks(_tasks);
         UpdateSummary();
         RefreshButtons();
@@ -1360,6 +1753,7 @@ public partial class MainWindow : Window {
         // Recycle exactly as after a completed job, then move on. The job is not re-sent.
         await RecycleChatAsync();
         if(_queue.IsRunning) await AdvanceQueueAsync();
+        else NoteTailorIdle("capture-timeout");
     }
 
     /// <summary>
@@ -1419,6 +1813,11 @@ public partial class MainWindow : Window {
     }
 
     void ProcessSelected_Click(object sender,RoutedEventArgs e) {
+        if(_baselineProfileActive || _promptConversionActive) return;
+        if(_tailor.Mode==TailorMode.EmailTasks || _tailor.Pending==TailorMode.EmailTasks) {
+            QueueStatus.Text="Paused — Email Tasks active";
+            return;
+        }
         if(_queue.IsRunning) return;                       // the queue owns the active job while it runs
         if(TaskList.SelectedItem is not JobTask job) return;
         // Explicit single-job run: Failed is allowed (manual retry of one job). Completed is not.
@@ -1429,6 +1828,10 @@ public partial class MainWindow : Window {
             Storage.SaveTasks(_tasks);
             PerfLog.Line($"QUEUE manual retry selected {job.JobId}");
         }
+        if(_tailor.Mode==TailorMode.Idle) {
+            _tailor.Request(TailorMode.JobTasks, requestedModeBusy: false);
+            PerfLog.Line("TAILOR mode-switch Idle -> JobTasks");
+        }
         _queue.BeginJob(job.JobId);                        // strike counting applies to manual runs too
         _ = RunJobAsync(job);
     }
@@ -1436,9 +1839,172 @@ public partial class MainWindow : Window {
     // ---------- A6.6.12 sequential queue ----------
 
     async void StartQueue_Click(object sender,RoutedEventArgs e) {
+        if(_baselineProfileActive || _promptConversionActive) {
+            QueueStatus.Text=_promptConversionActive
+                ? "Wait until the tailoring prompt is ready, then start the queue."
+                : "Wait until the candidate profile finishes, then start the queue.";
+            return;
+        }
+        await RequestTailorModeAsync(TailorMode.JobTasks);
+    }
+
+    async void StartEmailTasks_Click(object sender,RoutedEventArgs e) => await BeginEmailBatchAsync();
+
+    public Task BeginEmailBatchAsync() => BeginEmailRunAsync(batch:true, onlyId:null);
+
+    public Task BeginEmailSelectedAsync(EmailTask task) => BeginEmailRunAsync(batch:false, onlyId:task.Id);
+
+    public void StopEmailTasks() {
+        if(!_emailLoopActive) return;
+        _emailStop=true;
+        QueueStatus.Text="Stopping Email Tasks after the current task.";
+    }
+
+    async Task BeginEmailRunAsync(bool batch, string? onlyId) {
+        if(_emailLoopActive) return;
+        if(_baselineProfileActive || _promptConversionActive) {
+            QueueStatus.Text=_promptConversionActive
+                ? "Wait until the tailoring prompt is ready, then start Email Tasks."
+                : "Wait until the candidate profile finishes, then start Email Tasks.";
+            return;
+        }
+        _emailLoopActive=true;
+        _emailStop=false;
+        _emailBatch=batch;
+        _emailOnlyId=onlyId;
+        EmailTasksView.SetRunning(true);
+        PerfLog.Line("EMAIL mode-start-request");
+        try {
+            await RequestTailorModeAsync(TailorMode.EmailTasks);
+        } finally {
+            if(!_emailInsideLoop && _tailor.Pending!=TailorMode.EmailTasks && _tailor.Mode!=TailorMode.EmailTasks) {
+                _emailLoopActive=false;
+                EmailTasksView.SetRunning(false);
+            }
+        }
+    }
+
+    bool JobWorkspaceBusy =>
+        _activeJob is not null
+        || _queue.ActiveJobId is not null
+        || _tasks.Any(t => t.Status=="Processing");
+
+    async Task RequestTailorModeAsync(TailorMode requested) {
+        PerfLog.Line("TAILOR mode-request "+requested);
+        var previous=_tailor.Mode;
+        var busy=requested==TailorMode.JobTasks
+            ? _queue.IsRunning || JobWorkspaceBusy
+            : _emailBusy || (_emailLoopActive && _emailInsideLoop);
+        switch(_tailor.Request(requested, busy)) {
+            case TailorDecision.AlreadyActive:
+                if(requested==TailorMode.JobTasks)
+                    QueueStatus.Text="Queue is already running.";
+                else if(requested==TailorMode.EmailTasks)
+                    QueueStatus.Text="Paused — Email Tasks active";
+                RefreshButtons();
+                return;
+            case TailorDecision.StartNow:
+                if(previous!=requested)
+                    PerfLog.Line($"TAILOR mode-switch {previous} -> {requested}");
+                await StartTailorProcessorAsync(requested);
+                return;
+            case TailorDecision.WaitForCurrent:
+                PerfLog.Line("TAILOR mode-wait current="+previous);
+                BeginGracefulStop(previous);
+                await TryYieldTailorAsync();
+                return;
+        }
+    }
+
+    void BeginGracefulStop(TailorMode active) {
+        if(active==TailorMode.EmailTasks) {
+            _emailStop=true;
+            return;
+        }
+        if(active!=TailorMode.JobTasks) return;
+        _interJobCancellation?.Cancel();
+        if(JobWorkspaceBusy) _queue.Pause();
+    }
+
+    /// <summary>
+    /// The current task has finished and the other mode was requested.
+    /// Remaining queued jobs stay queued. The stopped queue is not started again.
+    /// </summary>
+    async Task<bool> TryYieldTailorAsync() {
+        if(_extractReady is not null) {
+            if(JobWorkspaceBusy) return false;
+            return FinishExtractHandoff();
+        }
+        if(_promptConversionActive || _tailor.Pending is null || JobWorkspaceBusy || _emailBusy) return false;
+        var previous=_tailor.Mode;
+        var next=_tailor.Release();
+        LogJobQueueActive();
+        if(next is null) {
+            // Pending was set, then Release found nothing to start. An active job queue keeps JobTasks.
+            if(previous==TailorMode.JobTasks && _queue.IsRunning) {
+                _tailor.Request(TailorMode.JobTasks, requestedModeBusy: true);
+                PerfLog.Line("TAILOR mode-release reason=refused-yield");
+                return false;
+            }
+            PerfLog.Line("TAILOR mode-release reason=yield");
+            RefreshButtons();
+            return true;
+        }
+        PerfLog.Line("TAILOR mode-release reason=handoff");
+        if(previous==TailorMode.JobTasks) ReleaseJobRunner();
+        PerfLog.Line($"TAILOR mode-switch {previous} -> {next}");
+        if(next==TailorMode.EmailTasks)
+            QueueStatus.Text="Paused — Email Tasks active";
+        else if(previous==TailorMode.EmailTasks)
+            QueueStatus.Text="Paused — Job Tasks active";
+        await StartTailorProcessorAsync(next.Value);
+        return true;
+    }
+
+    void ReleaseJobRunner() {
+        var inFlight=_queue.Stop();
+        if(inFlight is null) return;
+        var job=_tasks.FirstOrDefault(t => t.JobId.Equals(inFlight,StringComparison.OrdinalIgnoreCase));
+        if(job is not null && job.Status=="Processing") job.Status="Queued";
+    }
+
+    /// <summary>
+    /// True while the job queue is running, paused, or inside the configured pause before the next job.
+    /// That pause is still the job queue: JobTasks stays, and Email Tasks cannot take the workspace.
+    /// </summary>
+    bool JobQueueActive => _queue.IsRunning || _interJobWaiting;
+
+    void LogJobQueueActive() =>
+        PerfLog.Line("TAILOR job-queue-active="+(JobQueueActive ? "true" : "false"));
+
+    /// <summary>
+    /// Drops JobTasks only after the queue has stopped or finished.
+    /// A running queue, or the wait before its next job, keeps the mode.
+    /// </summary>
+    bool ReleaseJobTasksToIdle(string reason) {
+        if(_tailor.Pending is not null || _tailor.Mode!=TailorMode.JobTasks) return false;
+        LogJobQueueActive();
+        if(JobQueueActive && reason is not "stop" and not "finished") {
+            PerfLog.Line("TAILOR mode-release reason=refused-"+reason);
+            return false;
+        }
+        _tailor.Release();
+        PerfLog.Line("TAILOR mode-release reason="+reason);
+        return true;
+    }
+
+    void NoteTailorIdle(string reason) => ReleaseJobTasksToIdle(reason);
+
+    async Task StartTailorProcessorAsync(TailorMode mode) {
+        if(mode==TailorMode.JobTasks) await StartJobQueueAsync();
+        else if(mode==TailorMode.EmailTasks) await StartEmailQueueAsync();
+    }
+
+    async Task StartJobQueueAsync() {
         var count=_queue.Start(_tasks);
         if(count==0) {
-            QueueStatus.Text = _queue.IsRunning
+            ReleaseJobTasksToIdle(JobQueueActive ? "start-while-running" : "nothing-to-run");
+            QueueStatus.Text=_queue.IsRunning
                 ? "Queue is already running."
                 : "Nothing to run — no queued jobs.";
             RefreshButtons();
@@ -1452,7 +2018,322 @@ public partial class MainWindow : Window {
         await AdvanceQueueAsync();
     }
 
+    bool _emailBusy;
+    bool _extractHolding;
+    bool _extractFailedStatus;
+    TaskCompletionSource<bool>? _extractReady;
+
+    public async Task<EmailExtractor.Draft?> ExtractEmailWithGptAsync(string pasted, string emailUrl) {
+        if(_extractHolding || _emailInsideLoop || _emailBusy || _baselineProfileActive || _promptConversionActive) {
+            PerfLog.Line("EMAIL extract-gpt-failed reason=busy");
+            return null;
+        }
+        _extractHolding=true;
+        _extractFailedStatus=false;
+        PerfLog.Line("EMAIL extract-gpt-start");
+        try {
+            if(!await HoldEmailModeForExtractAsync()) {
+                PerfLog.Line("EMAIL extract-gpt-failed reason=busy");
+                return null;
+            }
+            _watcher.Disarm();
+            NavigateTo("AiWorkspace");
+            await EnsureChatAsync();
+            if(Chat is null) {
+                PerfLog.Line("EMAIL extract-gpt-failed reason=browser");
+                return null;
+            }
+            var prompt=EmailExtractor.BuildPrompt(pasted, emailUrl);
+            if(!await NavigateFreshChatAsync()) {
+                PerfLog.Line("EMAIL extract-gpt-failed reason=navigation");
+                return null;
+            }
+            var fill=await ChatComposer.FillAsync(Chat, prompt);
+            if(!fill.Success) {
+                PerfLog.Line("EMAIL extract-gpt-failed reason=fill");
+                return null;
+            }
+            _sendCancellation?.Cancel();
+            _sendCancellation=new System.Threading.CancellationTokenSource();
+            var send=await ChatSender.SendAsync(new WebViewChatProbe(Chat), _sendCancellation.Token);
+            if(!send.Success) {
+                PerfLog.Line("EMAIL extract-gpt-failed reason=send");
+                return null;
+            }
+            using var wait=new System.Threading.CancellationTokenSource();
+            var outcome=await ChatCompletionWatcher.WaitForAnswerAsync(
+                new WebViewCompletionProbe(Chat), wait.Token, null, null,
+                () => RateLimit.IsShownAsync(Chat));
+            if(outcome!=CompletionOutcome.Ready) {
+                PerfLog.Line("EMAIL extract-gpt-failed reason="+outcome);
+                return null;
+            }
+            var read=await ChatResponseReader.ReadStableAsync(async ct => {
+                if(Chat is null) return new ChatReadResult { Status=ChatReadStatus.Error, Detail="browser" };
+                var raw=await Chat.ExecuteScriptAsync(EmailExtractor.ReadScript);
+                return ChatResponseReader.ParseScriptPayload(raw);
+            }, budgetMs: EmailExtractor.CaptureBudgetMs, requireStable: true, cancellation: wait.Token);
+            if(!read.Success) {
+                if(read.Detail=="unstable")
+                    PerfLog.Line($"EMAIL extract-capture-timeout chars={read.Text.Length} assistants={read.AssistantCount}");
+                else
+                    PerfLog.Line("EMAIL extract-gpt-failed reason="+(read.Detail.Length==0 ? read.Status.ToString() : read.Detail));
+                _extractFailedStatus=true;
+                QueueStatus.Text="Email extraction failed.";
+                EmailTasksView.ShowExtractFailure();
+                return null;
+            }
+            var draft=EmailExtractor.ParseReply(read.Text, pasted, emailUrl, out var parseError);
+            if(draft is null) {
+                _extractFailedStatus=true;
+                QueueStatus.Text="Email extraction failed.";
+                EmailTasksView.ShowExtractFailure();
+                PerfLog.Line("EMAIL extract-json-failed chars="+read.Text.Length
+                    +" openBrace="+(EmailExtractor.HasOpenBrace(read.Text) ? "true" : "false")
+                    +" closeBrace="+(EmailExtractor.HasCloseBrace(read.Text) ? "true" : "false")
+                    +" error="+parseError);
+                PerfLog.Line("EMAIL extract-json-preview "+EmailExtractor.SanitizedPreview(read.Text));
+                return null;
+            }
+            PerfLog.Line("EMAIL extract-gpt-success");
+            return draft;
+        } catch(Exception ex) {
+            PerfLog.Line("EMAIL extract-gpt-failed reason="+ex.GetType().Name);
+            return null;
+        } finally {
+            await ReleaseExtractModeAsync();
+            _extractHolding=false;
+            if(_shellPage=="AiWorkspace") NavigateTo("EmailTasks");
+        }
+    }
+
+    async Task<bool> HoldEmailModeForExtractAsync() {
+        PerfLog.Line("TAILOR mode-request EmailTasks");
+        var previous=_tailor.Mode;
+        switch(_tailor.Request(TailorMode.EmailTasks, _emailBusy || _emailInsideLoop)) {
+            case TailorDecision.AlreadyActive:
+                return false;
+            case TailorDecision.StartNow:
+                if(previous!=TailorMode.EmailTasks)
+                    PerfLog.Line($"TAILOR mode-switch {previous} -> EmailTasks");
+                _emailBusy=true;
+                QueueStatus.Text="Paused — Email Tasks active";
+                return true;
+            case TailorDecision.WaitForCurrent:
+                PerfLog.Line("TAILOR mode-wait current="+previous);
+                _extractReady=new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                BeginGracefulStop(previous);
+                if(!JobWorkspaceBusy)
+                    return FinishExtractHandoff();
+                return await _extractReady.Task;
+            default:
+                return false;
+        }
+    }
+
+    bool FinishExtractHandoff() {
+        if(_tailor.Pending==TailorMode.EmailTasks) {
+            var previous=_tailor.Mode;
+            LogJobQueueActive();
+            var next=_tailor.Release();
+            PerfLog.Line("TAILOR mode-release reason=extract-handoff");
+            if(previous==TailorMode.JobTasks) ReleaseJobRunner();
+            if(next is not null)
+                PerfLog.Line($"TAILOR mode-switch {previous} -> {next}");
+        }
+        var ok=_tailor.Mode==TailorMode.EmailTasks;
+        _emailBusy=ok;
+        if(ok) QueueStatus.Text="Paused — Email Tasks active";
+        var waiter=_extractReady;
+        _extractReady=null;
+        waiter?.TrySetResult(ok);
+        return ok;
+    }
+
+    async Task ReleaseExtractModeAsync() {
+        var failed=_extractFailedStatus;
+        _extractFailedStatus=false;
+        _emailBusy=false;
+        var waiter=_extractReady;
+        _extractReady=null;
+        waiter?.TrySetResult(false);
+        try {
+            if(_tailor.Mode!=TailorMode.EmailTasks) return;
+            if(_tailor.Pending is not null) {
+                PerfLog.Line("EMAIL mode-released");
+                await TryYieldTailorAsync();
+                return;
+            }
+            _tailor.Release();
+            PerfLog.Line("EMAIL mode-released");
+            if(!failed) QueueStatus.Text="Email extraction finished.";
+        } finally {
+            if(failed) QueueStatus.Text="Email extraction failed.";
+        }
+    }
+
+    bool IsEmailRun(JobTask job) =>
+        _emailJob is not null && job.JobId.Equals(_emailJob.JobId, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Email Tasks owns the workspace. One selected task, or every Pending task, goes through the
+    /// same prepare / ChatGPT / capture / document path as a job. The job queue is not resumed.
+    /// </summary>
+    async Task StartEmailQueueAsync() {
+        _emailInsideLoop=true;
+        QueueStatus.Text="Paused — Email Tasks active";
+        RefreshButtons();
+        var stopReason="complete";
+        try {
+            if(_emailStop) {
+                stopReason="user";
+                return;
+            }
+            List<EmailTask> items;
+            if(_emailBatch) {
+                items=EmailTasksView.PendingInOrder();
+                PerfLog.Line("EMAIL batch-start");
+            } else {
+                var one=_emailOnlyId is null ? null : EmailTasksView.Find(_emailOnlyId);
+                items=one is not null && one.CanTailor ? new List<EmailTask> { one } : new List<EmailTask>();
+            }
+            if(items.Count==0) {
+                stopReason=_emailBatch ? "no-pending" : "no-selection";
+                return;
+            }
+            foreach(var email in items) {
+                if(_emailStop) {
+                    stopReason=_tailor.Pending is null ? "user" : "switch";
+                    break;
+                }
+                if(_emailBatch) PerfLog.Line("EMAIL batch-next "+email.Id);
+                bool system;
+                try {
+                    system=await TailorOneEmailAsync(email);
+                } catch(Exception ex) {
+                    // One item must not freeze the batch or leave it Processing.
+                    system=false;
+                    if(email.Status==EmailTaskStatus.Processing) {
+                        email.Status=EmailTaskStatus.Failed;
+                        email.FailureReason=ex.GetType().Name;
+                        EmailTasksView.SaveTasks();
+                    }
+                    PerfLog.Line("EMAIL tailor-failed "+email.Id+" reason="+ex.GetType().Name);
+                }
+                if(system) {
+                    stopReason="prepare";
+                    break;
+                }
+            }
+        } finally {
+            if(_emailBatch) PerfLog.Line("EMAIL batch-stop reason="+stopReason);
+            _emailInsideLoop=false;
+            _emailBusy=false;
+            _emailLoopActive=false;
+            EmailTasksView.SetRunning(false);
+            if(_tailor.Mode==TailorMode.EmailTasks)
+                PerfLog.Line("EMAIL mode-released");
+            if(_tailor.Pending is not null)
+                await TryYieldTailorAsync();
+            else if(_tailor.Mode==TailorMode.EmailTasks) {
+                _tailor.Release();
+                QueueStatus.Text="Email Tasks finished.";
+                NavigateTo("EmailTasks");
+            }
+        }
+    }
+
+    async Task<bool> TailorOneEmailAsync(EmailTask email) {
+        var job=EnsureEmailJob(email);
+        _emailJob=job;
+        _emailBusy=true;
+        _emailDone=new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        email.FailureReason=null;
+        email.Status=EmailTaskStatus.Processing;
+        EmailTasksView.SaveTasks();
+        PerfLog.Line("EMAIL tailor-start "+email.Id);
+        QueueStatus.Text="Email task — "+(string.IsNullOrWhiteSpace(email.JobTitle) ? email.Id : email.JobTitle);
+        _queue.BeginJob(job.JobId);
+        var done=_emailDone;
+        if(!await RunJobAsync(job)) {
+            _queue.AbandonActive();
+            _activeJob=null;
+            email.Status=EmailTaskStatus.Failed;
+            email.FailureReason="PrepareFailed";
+            EmailTasksView.SaveTasks();
+            PerfLog.Line("EMAIL tailor-failed "+email.Id+" reason=PrepareFailed");
+            _emailJob=null;
+            _emailBusy=false;
+            _emailDone=null;
+            return true;
+        }
+        return await done.Task;
+    }
+
+    JobTask EnsureEmailJob(EmailTask email) {
+        var existing=_tasks.FirstOrDefault(t => t.JobId.Equals(email.Id, StringComparison.OrdinalIgnoreCase));
+        var job=EmailOutput.Bind(email, existing);
+        if(existing is null) {
+            _tasks.Add(job);
+            ApplyQueueOrder();
+        }
+        JobStore.UpsertTracked(job, "email");
+        return job;
+    }
+
+    void PersistEmailJob(JobTask job) {
+        if(_tasks.Contains(job)) Storage.SaveTasks(_tasks);
+        else JobStore.UpsertTracked(job, "email");
+    }
+
+    async Task FinishEmailAsync(JobTask job, bool ready, string? profilePath, string? reason, bool systemFailure) {
+        var email=EmailTasksView.Find(job.JobId);
+        var system=systemFailure;
+        try {
+            if(email is null && !EmailOutput.IsEmail(job)) return;
+            if(ready && profilePath is not null) {
+                job.Status="Failed";
+                job.FailureReason="InvalidOutput";
+                if(email is not null) {
+                    email.Status=EmailTaskStatus.Failed;
+                    email.FailureReason="InvalidOutput";
+                }
+                PerfLog.Line("EMAIL tailor-failed "+job.JobId+" reason=InvalidOutput");
+            } else if(email is not null) {
+                email.Status=EmailTaskStatus.Failed;
+                email.FailureReason=string.IsNullOrWhiteSpace(reason) ? "Failed" : reason;
+                PerfLog.Line("EMAIL tailor-failed "+email.Id+" reason="+email.FailureReason);
+            }
+            if(job.Status!="Failed") {
+                job.Status="Failed";
+                job.FailureReason=string.IsNullOrWhiteSpace(reason) ? "Failed" : reason;
+            }
+            PersistEmailJob(job);
+            if(email is not null) EmailTasksView.SaveTasks();
+            await RecycleChatAsync();
+        } catch(Exception ex) {
+            if(email is not null && email.Status==EmailTaskStatus.Processing) {
+                email.Status=EmailTaskStatus.Failed;
+                email.FailureReason=ex.GetType().Name;
+                try { EmailTasksView.SaveTasks(); } catch { /* the item is already Failed in memory */ }
+            }
+            PerfLog.Line("EMAIL tailor-failed "+(email?.Id ?? job.JobId)+" reason="+ex.GetType().Name);
+            system=false;
+        } finally {
+            SignalEmail(system);
+        }
+    }
+
+    void SignalEmail(bool systemFailure) {
+        _emailJob=null;
+        _emailBusy=false;
+        var done=_emailDone;
+        _emailDone=null;
+        done?.TrySetResult(systemFailure);
+    }
+
     void PauseQueue_Click(object sender,RoutedEventArgs e) {
+        if(_baselineProfileActive || _promptConversionActive || _emailInsideLoop) return;
         if(_queue.State==QueueState.Paused) {
             _queue.Resume();
             QueueStatus.Text="Queue resumed.";
@@ -1471,9 +2352,15 @@ public partial class MainWindow : Window {
     }
 
     void StopQueue_Click(object sender,RoutedEventArgs e) {
+        // A captured BASELINE answer is already being saved. Stop must not cancel that write
+        // or clear the job out from under it. Before that, Stop also stays with the job queue:
+        // a profile rebuild is not a queued job.
+        if(_baselineFinalizing || _baselineProfileActive || _promptConversionActive || _emailInsideLoop) return;
         var inFlight=_queue.Stop();
         DismissAnswerReady("queue stopped");
         _sendCancellation?.Cancel();
+        _cooldownCancellation?.Cancel();     // a job waiting out a rate limit is put back, not resumed
+        _interJobCancellation?.Cancel();
         _watcher.Disarm();
         // The in-flight job never finished, so it goes back in the queue rather than being stranded.
         if(inFlight is not null) {
@@ -1486,11 +2373,16 @@ public partial class MainWindow : Window {
         RefreshButtons();
         QueueStatus.Text="Queue stopped."+(inFlight is null ? "" : " The job in progress was put back in the queue.");
         _ = ReleaseChatAsync();
+        _interJobWaiting=false;
+        if(_tailor.Pending is not null) _ = TryYieldTailorAsync();
+        else ReleaseJobTasksToIdle("stop");
     }
 
     async void SkipJob_Click(object sender,RoutedEventArgs e) {
+        if(_baselineProfileActive || _promptConversionActive || _emailInsideLoop) return;
         var skipped=_queue.SkipActive();
         if(skipped is null) return;
+        _cooldownCancellation?.Cancel();
         DismissAnswerReady("job skipped");
         var job=_tasks.FirstOrDefault(t=>t.JobId.Equals(skipped,StringComparison.OrdinalIgnoreCase));
         if(job is not null) job.Status="Failed";
@@ -1502,12 +2394,80 @@ public partial class MainWindow : Window {
         await AdvanceQueueAsync();
     }
 
+    // ---------- ChatGPT rate limit and pacing (RateLimit.cs decides; this performs the effects) ----------
+
+    readonly RateLimitGate _rateLimit = new();
+    System.Threading.CancellationTokenSource? _cooldownCancellation;
+    System.Threading.CancellationTokenSource? _interJobCancellation;
+    bool _interJobWaiting;
+
+    /// <summary>
+    /// After a successful job: wait the configured GPT Job Delay (Settings, read now), then advance —
+    /// unless the run was stopped, or something else already started the next job, in the meantime.
+    /// 0 seconds advances immediately. One log line per delay, never one per second.
+    /// The wait itself keeps JobTasks. The delay length is unchanged.
+    /// </summary>
+    async Task AdvanceAfterInterJobDelayAsync() {
+        if(await TryYieldTailorAsync()) return;
+        _interJobCancellation?.Cancel();
+        var cancellation=_interJobCancellation=new System.Threading.CancellationTokenSource();
+        var jobDelay=RateLimit.JobDelay(Storage.LoadSettings());
+        _interJobWaiting=true;
+        try {
+            if(jobDelay>TimeSpan.Zero) {
+                QueueStatus.Text=$"Next GPT job in {(int)jobDelay.TotalSeconds}s...";
+                PerfLog.Line($"QUEUE inter-job delay {(int)jobDelay.TotalSeconds}s");
+            }
+            if(!await RateLimit.WaitBetweenJobsAsync(jobDelay,cancellation.Token)) {
+                if(ReferenceEquals(_interJobCancellation,cancellation)) await TryYieldTailorAsync();
+                return;
+            }
+            if(!ReferenceEquals(_interJobCancellation,cancellation)) return;
+            if(await TryYieldTailorAsync()) return;
+            if(_baselineProfileActive || _promptConversionActive) return;
+            if(_queue.IsRunning && _queue.ActiveJobId is null && _activeJob is null) await AdvanceQueueAsync();
+        } finally {
+            if(ReferenceEquals(_interJobCancellation,cancellation)) _interJobWaiting=false;
+        }
+    }
+
+    /// <summary>
+    /// ChatGPT showed "Too many requests": stop everything belonging to this attempt, release the
+    /// browser (nothing is sent), start the configured cooldown, then re-send the SAME job at the SAME
+    /// attempt number — a rate limit is not one of the three attempts and never fails a job.
+    /// SendAttemptAsync itself waits out the cooldown, so no path can send during it.
+    /// </summary>
+    async Task HandleRateLimitAsync(JobTask job) {
+        if(_activeJob!=job || job.Status!="Processing" || _activePrepared is not PreparedRequest prepared) return;
+
+        // The CURRENT configured cooldown, read each time one starts (a repeat uses the latest value).
+        var cooldownLength=RateLimit.Cooldown(Storage.LoadSettings());
+        var until=_rateLimit.Start(cooldownLength);
+        PerfLog.Line(RateLimit.DetectedLog(job.JobId,cooldownLength));
+        QueueStatus.Text=RateLimit.StatusText(until,cooldownLength);
+
+        await ResetForRetryAsync();
+
+        _cooldownCancellation?.Cancel();
+        var cooldown=_cooldownCancellation=new System.Threading.CancellationTokenSource();
+        var resumed=await RateLimit.CooldownThenResumeAsync(_rateLimit,
+            () => _activeJob==job && job.Status=="Processing"
+                ? SendAttemptAsync(job,prepared,Storage.LoadSettings())   // same job, same attempt number
+                : Task.CompletedTask,
+            cooldown.Token);
+        if(!resumed) PerfLog.Line("RATE LIMIT cooldown cancelled "+job.JobId);
+    }
+
     /// <summary>Moves to the next queued job. A job that cannot be prepared is failed and skipped.</summary>
     async Task AdvanceQueueAsync() {
+        // A candidate-profile rebuild is one-off. Queued jobs wait until it has saved and Settings is shown.
+        if(_baselineProfileActive || _promptConversionActive) return;
+        if(await TryYieldTailorAsync()) return;
         // Depth tracks nested fail→advance while an outer AdvanceQueue awaits RunJobAsync.
         // Start() already refuses a second run while Running/Paused.
         _advanceDepth++;
         try {
+            if(await TryYieldTailorAsync()) return;
             if(_queue.State==QueueState.Paused) { QueueStatus.Text="Queue paused."; RefreshButtons(); return; }
 
             while(true) {
@@ -1523,6 +2483,8 @@ public partial class MainWindow : Window {
                     UpdateSummary();
                     RefreshButtons();
                     await ReleaseChatAsync();
+                    if(_tailor.Pending is not null) await TryYieldTailorAsync();
+                    else ReleaseJobTasksToIdle("finished");
                     return;
                 }
 
@@ -1555,7 +2517,12 @@ public partial class MainWindow : Window {
 
     async void OnClipboardTextCaptured(string text) {
         // Manual fallback only — automatic capture does not write the clipboard.
-        if(!ResultCapture.ShouldCapture(text)) return;
+        // An HTML answer is accepted only after ChatGPT has finished, so a copy made while it is
+        // still streaming is ignored.
+        var baseline = _activeJob is not null && ResultCapture.IsBaseline(_activeJob.JobId);
+        if (!baseline) {
+            if(!_htmlAnswerFinished || string.IsNullOrWhiteSpace(text)) return;
+        } else if(!ResultCapture.ShouldCapture(text)) return;
         var job=_activeJob;
         if(job is null) return;
         await AcceptCapturedTextAsync(text, job, source: "clipboard");
@@ -1576,8 +2543,9 @@ public partial class MainWindow : Window {
                 PerfLog.Line("REFUSED late response from a timed-out job while "+job.JobId+" is active");
                 return;
             case CaptureDecision.PromptEcho:
+                var expect=ResultCapture.IsBaseline(job.JobId) ? "a json code block" : "an HTML resume";
                 CaptureStatus.Text="That text is part of your own prompt, not ChatGPT's answer. " +
-                    $"Make sure the answer contains a json code block" +
+                    $"Make sure the answer contains {expect}" +
                     (source == "clipboard" ? $", then press {ChatCompletionWatcher.ShortcutText} again." : ".");
                 PerfLog.Line("REFUSED prompt echo for "+job.JobId+" via "+source);
                 return;
@@ -1585,40 +2553,215 @@ public partial class MainWindow : Window {
         if(!string.Equals(_queue.ActiveJobId,job.JobId,StringComparison.OrdinalIgnoreCase)) return;
         if(_activeJob!=job || job.Status!="Processing") return;
 
+        if(!ResultCapture.IsBaseline(job.JobId)) {
+            await AcceptHtmlTailoringAsync(text, job);
+            return;
+        }
+
         PerfLog.Line("CAPTURE received "+job.JobId+" via "+source);
         _readyJobId=null;
         _readyCancellation?.Cancel();
         DismissAnswerReady("capture received");
 
+        // Normal Prompt mode requires the answer to carry its own style. The mode is the one the
+        // request was SENT in, so changing Settings mid-job cannot reclassify an answer.
+        var requireStyle=PromptModes.IsNormal(_activePrepared?.PromptMode);
+
         CapturedResult result;
-        using(PerfLog.Measure("capture+normalize+validate+save")) result=ResultCapture.Accept(text,job.JobId);
+        using(PerfLog.Measure("capture+normalize+validate+save")) result=ResultCapture.Accept(text,job.JobId,requireStyle);
+
+        if(result.Saved) PerfLog.Line(ResultCapture.StyleLogLine(result.Report?.Profile)+" "+job.JobId);
+        else if(requireStyle && result.Error==CandidateProfileStore.MissingStyleMessage)
+            PerfLog.Line("GPT output invalid: Normal Prompt mode requires style "+job.JobId);
 
         if(result.Saved) {
             _watcher.Disarm();
-            _queue.OnCaptureSucceeded(text);
-            job.Status="Completed";
-            _activePrepared=null;
-            _attempt=0;
-            CaptureStatus.Text=result.Message+(result.Report is not null && result.Report.Changed
-                ? Environment.NewLine+result.Report.Describe() : "");
-            Storage.SaveTasks(_tasks);
-            UpdateSummary();
-            RefreshButtons();
-            _activeJob=null;
-
-            await GenerateDocumentsAsync(job,result.TargetPath);
-            PerfLog.Snapshot("after job "+job.JobId);
-
-            await RecycleChatAsync();
-
-            if(_queue.TryAutoResume()) QueueStatus.Text="Manual action completed — resuming the queue.";
-
-            if(_queue.IsRunning) await AdvanceQueueAsync();
-            return;
+            if(ResultCapture.IsBaseline(job.JobId)) {
+                // Keep the active job until the file is saved and Settings is showing, so the
+                // queue cannot treat this capture as "nothing is running" and start the next job.
+                _baselineFinalizing = true;
+                CaptureStatus.Text=result.Message;
+                await RecycleChatAsync();
+                _queue.OnCaptureSucceeded(text);
+                _activePrepared=null;
+                _attempt=0;
+                _activeJob=null;
+                FinishBaselineProfile(true, result.Message);
+                return;
+            }
         }
 
         CaptureStatus.Text=result.Message;
+        // The answer is already on the page. Sending BASELINE again only produces another generation.
+        if(ResultCapture.IsBaseline(job.JobId)) {
+            _baselineFinalizing=true;
+            _watcher.Disarm();
+            await RecycleChatAsync();
+            _queue.AbandonActive();
+            _activePrepared=null;
+            _activePreparedText=null;
+            _attempt=0;
+            _activeJob=null;
+            FinishBaselineProfile(false, result.Message);
+            return;
+        }
         await HandleGptFailureAsync(job,GptFailure.InvalidOutput);
+    }
+
+    async Task AcceptHtmlTailoringAsync(string text, JobTask job) {
+        PerfLog.Line("CAPTURE received "+job.JobId+" via html");
+        _readyJobId=null;
+        _readyCancellation?.Cancel();
+        DismissAnswerReady("capture received");
+
+        HtmlTailorResult accepted;
+        using(PerfLog.Measure("html capture "+job.JobId))
+            accepted=HtmlTailor.Accept(text, job.JobId);
+        if(!accepted.Ok) {
+            CaptureStatus.Text=$"{job.Company} — {job.Title}: {accepted.Error}";
+            PerfLog.Line("HTML TAILOR invalid "+job.JobId);
+            await HandleGptFailureAsync(job, GptFailure.InvalidOutput);
+            return;
+        }
+
+        _htmlAnswerFinished=false;
+        _watcher.Disarm();
+        _queue.OnCaptureSucceeded(text);
+        if(EmailOutput.IsEmail(job)) {
+            PerfLog.Line("EMAIL HTML accepted id="+job.JobId);
+            _activePrepared=null;
+            _attempt=0;
+            _activeJob=null;
+            CaptureStatus.Text=$"{job.Company} — {job.Title}: HTML resume accepted.";
+            await FinishEmailHtmlAsync(job, accepted.Html);
+            return;
+        }
+        job.Status="Completed";
+        _activePrepared=null;
+        _attempt=0;
+        CaptureStatus.Text=$"{job.Company} — {job.Title}: HTML resume accepted.";
+        Storage.SaveTasks(_tasks);
+        UpdateSummary();
+        RefreshButtons();
+        _activeJob=null;
+
+        await GenerateHtmlDocumentsAsync(job, accepted.Html);
+        PerfLog.Snapshot("after job "+job.JobId);
+        await RecycleChatAsync();
+
+        if(_queue.TryAutoResume()) QueueStatus.Text="Manual action completed — resuming the queue.";
+        if(await TryYieldTailorAsync()) return;
+        if(_queue.IsRunning) await AdvanceAfterInterJobDelayAsync();
+        else NoteTailorIdle("between-jobs");
+    }
+
+    async Task FinishEmailHtmlAsync(JobTask job, string html) {
+        NoteShellBusy(true);
+        var email=EmailTasksView.Find(job.JobId);
+        var emailLoop=IsEmailRun(job);
+        var system=false;
+        try {
+            var settings=Storage.LoadSettings();
+            var task=email ?? new EmailTask {
+                Id=job.JobId,
+                Company=job.Company,
+                JobTitle=job.Title
+            };
+            GenerationResult generation;
+            using(PerfLog.Measure("documents "+job.JobId))
+                generation=await Task.Run(() => EmailOutput.WriteResume(task, job, settings, html));
+            DocumentStatus.Text=generation.Describe();
+            if(generation.DocxGenerated || generation.PdfGenerated) {
+                JobTracker.MarkResumeReady(job, generation.DocxPath ?? generation.PdfPath);
+                try {
+                    JobStore.CommitResume(job, generation.DocxPath, generation.PdfPath, generation.OutputFolder);
+                } catch(Exception ex) {
+                    PerfLog.Line("JOBSTORE resume output failed " + ex.GetType().Name);
+                }
+                job.Status="Completed";
+                job.FailureReason=null;
+                PersistEmailJob(job);
+                RefreshDashboardIfOpen();
+                if(email is not null) {
+                    email.FailureReason=null;
+                    EmailOutput.ApplyStoredResume(email);
+                    if(string.IsNullOrWhiteSpace(email.DocxPath) && string.IsNullOrWhiteSpace(email.PdfPath))
+                        email.ApplyOutput(generation.OutputFolder, generation.DocxPath, generation.PdfPath);
+                    email.Status=EmailTaskStatus.Ready;
+                    EmailTasksView.SaveTasks();
+                }
+                if(ResumeUpload.PublishCurrentResume(job, generation, ResumeUpload.CurrentResumePathFor(settings.ResumeRootFolder)) is CurrentResumeUpdate alias)
+                    PerfLog.Line(alias.LogLine(job.JobId));
+            } else {
+                job.Status="Failed";
+                job.FailureReason=generation.Disabled ? "DocumentsDisabled" : "DocumentsFailed";
+                PersistEmailJob(job);
+                if(email is not null) {
+                    email.Status=EmailTaskStatus.Failed;
+                    email.FailureReason=job.FailureReason;
+                    email.ApplyOutput(generation.OutputFolder, generation.DocxPath, generation.PdfPath);
+                    EmailTasksView.SaveTasks();
+                }
+                PerfLog.Line("EMAIL tailor-failed "+job.JobId+" reason="+job.FailureReason);
+                if(generation.Disabled || generation.FatalError is not null) system=true;
+            }
+            if(generation.AnyFailure)
+                ProfileResultStore.SaveDocGenLog(job.JobId, generation.Describe());
+            PerfLog.Snapshot("after job "+job.JobId);
+            if(emailLoop) await RecycleChatAsync();
+            else if(_queue.IsRunning) {
+                await RecycleChatAsync();
+                if(_queue.TryAutoResume()) QueueStatus.Text="Manual action completed — resuming the queue.";
+                if(await TryYieldTailorAsync()) return;
+                if(_queue.IsRunning) await AdvanceAfterInterJobDelayAsync();
+            }
+        } catch(Exception ex) {
+            if(email is not null && email.Status==EmailTaskStatus.Processing) {
+                email.Status=EmailTaskStatus.Failed;
+                email.FailureReason=ex.GetType().Name;
+                try { EmailTasksView.SaveTasks(); } catch { /* the item is already Failed in memory */ }
+            }
+            job.Status="Failed";
+            job.FailureReason=ex.GetType().Name;
+            try { PersistEmailJob(job); } catch { /* the email task is already Failed */ }
+            PerfLog.Line("EMAIL tailor-failed "+job.JobId+" reason="+ex.GetType().Name+": "+ex.Message);
+            DocumentStatus.Text="Resume tailoring failed. Retry.";
+            system=false;
+        } finally {
+            NoteShellBusy(false);
+            if(emailLoop) SignalEmail(system);
+        }
+    }
+
+    async Task GenerateHtmlDocumentsAsync(JobTask job, string html) {
+        NoteShellBusy(true);
+        var settings=Storage.LoadSettings();
+        DocumentStatus.Text=$"Generating documents for {job.Company} — {job.Title}…";
+        try {
+            GenerationResult generation;
+            using(PerfLog.Measure("html documents "+job.JobId))
+                generation=await Task.Run(() => HtmlTailor.WriteDocuments(job, settings, html));
+            DocumentStatus.Text=generation.Describe();
+            if(generation.DocxGenerated || generation.PdfGenerated) {
+                JobTracker.MarkResumeReady(job, generation.DocxPath ?? generation.PdfPath);
+                try {
+                    JobStore.CommitResume(job, generation.DocxPath, generation.PdfPath, generation.OutputFolder);
+                } catch(Exception ex) {
+                    PerfLog.Line("JOBSTORE resume output failed " + ex.GetType().Name);
+                }
+                RefreshDashboardIfOpen();
+            }
+            if(ResumeUpload.PublishCurrentResume(job, generation, ResumeUpload.CurrentResumePathFor(settings.ResumeRootFolder)) is CurrentResumeUpdate alias)
+                PerfLog.Line(alias.LogLine(job.JobId));
+            if(generation.AnyFailure)
+                ProfileResultStore.SaveDocGenLog(job.JobId, generation.Describe());
+        } catch(Exception ex) {
+            PerfLog.Line("DOCUMENTS failed " + job.JobId + " " + ex.GetType().Name + ": " + ex.Message);
+            DocumentStatus.Text="Document generation failed. Retry.";
+            ProfileResultStore.SaveDocGenLog(job.JobId, ex.ToString());
+        } finally {
+            NoteShellBusy(false);
+        }
     }
 
     // ---------- document generation ----------
@@ -1629,43 +2772,141 @@ public partial class MainWindow : Window {
     }
 
     /// <summary>
-    /// Generates the enabled documents from an already-validated profile file. A document failure is
-    /// reported on its own line and never changes the job's Completed state or the saved JSON.
+    /// Regenerates DOCX and PDF from the saved tailored HTML. A document failure is reported on its
+    /// own line and does not change a completed job back to failed.
     /// </summary>
     public async Task GenerateDocumentsAsync(JobTask job,string profilePath) {
+        _ = profilePath;
+        NoteShellBusy(true);
+        var htmlPath=Path.Combine(HtmlTailor.JobDirectory(job.JobId), "tailored.html");
+        if(!File.Exists(htmlPath)) {
+            DocumentStatus.Text="Documents not generated — the tailored HTML for this job is missing.";
+            NoteShellBusy(false);
+            return;
+        }
+        if(EmailOutput.IsEmail(job)) {
+            NoteShellBusy(false);
+            await FinishEmailHtmlAsync(job, File.ReadAllText(htmlPath));
+            return;
+        }
         var settings=Storage.LoadSettings();
         DocumentStatus.Text=$"Generating documents for {job.Company} — {job.Title}…";
         try {
             GenerationResult generation;
-            // PDFsharp/MigraDoc renders off the UI thread; no browser is involved any more.
             using(PerfLog.Measure("documents "+job.JobId))
-            generation=await Task.Run(() => ResumeGenerator.Generate(
-                job.Company,job.Title,profilePath,settings,ProfileResultStore.EffectiveStylePath(job.JobId),
-                job.JobId,job.Link));
-
+                generation=await Task.Run(() => HtmlTailor.WriteDocuments(job, settings, File.ReadAllText(htmlPath)));
             DocumentStatus.Text=generation.Describe();
-
-            // Tracking: a document exists, so the application is Ready to send. This is the only
-            // status change Resume Builder makes on its own — everything after it is the user's.
-            if(generation.DocxGenerated || generation.PdfGenerated)
-                if(JobTracker.MarkResumeReady(job,generation.DocxPath ?? generation.PdfPath)) {
-                    JobTracker.SaveTrackingData(_tasks);
-                    RefreshDashboardIfOpen();
+            if(generation.DocxGenerated || generation.PdfGenerated) {
+                JobTracker.MarkResumeReady(job, generation.DocxPath ?? generation.PdfPath);
+                try {
+                    JobStore.CommitResume(job, generation.DocxPath, generation.PdfPath, generation.OutputFolder);
+                } catch(Exception ex) {
+                    PerfLog.Line("JOBSTORE resume output failed " + ex.GetType().Name);
                 }
-
-            // Style system: style corrections are recorded next to the job, so a styling surprise can be
-            // explained afterwards without re-running anything.
-            if(generation.AnyFailure || generation.StyleWarnings.Count>0)
-                ProfileResultStore.SaveDocGenLog(job.JobId,
-                    generation.Describe()+(generation.StyleWarnings.Count==0?"":Environment.NewLine+Environment.NewLine+
-                        "Style adjustments:"+Environment.NewLine+"  - "+string.Join(Environment.NewLine+"  - ",generation.StyleWarnings)));
+                RefreshDashboardIfOpen();
+            }
+            if(ResumeUpload.PublishCurrentResume(job, generation, ResumeUpload.CurrentResumePathFor(settings.ResumeRootFolder)) is CurrentResumeUpdate alias)
+                PerfLog.Line(alias.LogLine(job.JobId));
+            if(generation.AnyFailure)
+                ProfileResultStore.SaveDocGenLog(job.JobId, generation.Describe());
         } catch(Exception ex) {
-            DocumentStatus.Text="Documents not generated — "+ResumeGenerator.Explain(ex)+" The tailored JSON is saved.";
-            ProfileResultStore.SaveDocGenLog(job.JobId,ex.ToString());
+            PerfLog.Line("DOCUMENTS failed " + job.JobId + " " + ex.GetType().Name + ": " + ex.Message);
+            DocumentStatus.Text="Document generation failed. Retry.";
+            ProfileResultStore.SaveDocGenLog(job.JobId, ex.ToString());
+        } finally {
+            NoteShellBusy(false);
         }
     }
 
+    void NoteShellBusy(bool busy) {
+        _extraBusy = Math.Max(0, _extraBusy + (busy ? 1 : -1));
+        UpdateBusyIndicators();
+    }
+
+    void ShowProfileChip() {
+        var record = ProfileContext.ProfileId is string id ? ProfileRegistry.Find(id) : null;
+        var name = record?.DisplayName ?? ProfileContext.DisplayName ?? "";
+        ActiveProfileText.Text = name;
+        ActiveProfileText.ToolTip = name;
+        ProfileAvatarHost.Child = null;
+        if (string.IsNullOrWhiteSpace(name)) return;
+        if (ProfileChooserWindow.Avatar(name, ProfileRegistry.LoadableAvatar(record?.AvatarFile), 28) is FrameworkElement avatar) {
+            avatar.Margin = new Thickness(0);
+            avatar.HorizontalAlignment = System.Windows.HorizontalAlignment.Center;
+            avatar.VerticalAlignment = System.Windows.VerticalAlignment.Center;
+            ProfileAvatarHost.Child = avatar;
+        }
+    }
+
+    void SwitchProfile_Click(object sender, RoutedEventArgs e) {
+        var exe = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exe)) {
+            QueueStatus.Text = "Switch Profile could not open the profile list.";
+            return;
+        }
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe) { UseShellExecute = false });
+    }
+
+    void RestoreShellWindow() {
+        if (!ProfileContext.IsOpen) return;
+        ShellWindowState? state;
+        try {
+            var path = Path.Combine(ProfileContext.ProfileRoot, "window.json");
+            if (!File.Exists(path)) return;
+            state = System.Text.Json.JsonSerializer.Deserialize<ShellWindowState>(File.ReadAllText(path));
+        } catch {
+            return;
+        }
+        if (state is null || state.Width < MinWidth || state.Height < MinHeight) return;
+        if (!IsOnAScreen(state.Left, state.Top, state.Width, state.Height)) return;
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        Left = state.Left;
+        Top = state.Top;
+        Width = state.Width;
+        Height = state.Height;
+        if (string.Equals(state.WindowState, "Maximized", StringComparison.OrdinalIgnoreCase))
+            WindowState = System.Windows.WindowState.Maximized;
+        if (!string.IsNullOrWhiteSpace(state.Page)) NavigateTo(state.Page);
+    }
+
+    void SaveShellWindow() {
+        if (!ProfileContext.IsOpen) return;
+        var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
+        try {
+            var state = new ShellWindowState {
+                Left = bounds.Left,
+                Top = bounds.Top,
+                Width = Math.Max(bounds.Width, MinWidth),
+                Height = Math.Max(bounds.Height, MinHeight),
+                WindowState = WindowState == System.Windows.WindowState.Maximized ? "Maximized" : "Normal",
+                Page = _shellPage
+            };
+            File.WriteAllText(Path.Combine(ProfileContext.ProfileRoot, "window.json"),
+                System.Text.Json.JsonSerializer.Serialize(state));
+        } catch (Exception ex) {
+            PerfLog.Line("WINDOW save failed " + ex.GetType().Name);
+        }
+    }
+
+    static bool IsOnAScreen(double left, double top, double width, double height) {
+        var window = new System.Drawing.Rectangle((int)left, (int)top, Math.Max(1, (int)width), Math.Max(1, (int)height));
+        foreach (var screen in System.Windows.Forms.Screen.AllScreens) {
+            var overlap = System.Drawing.Rectangle.Intersect(window, screen.WorkingArea);
+            if (overlap.Width >= 80 && overlap.Height >= 80) return true;
+        }
+        return false;
+    }
+
     /// <summary>Lets the Settings window reuse the same generation path after a manual save.</summary>
+    sealed class ShellWindowState {
+        public double Left { get; set; }
+        public double Top { get; set; }
+        public double Width { get; set; }
+        public double Height { get; set; }
+        public string WindowState { get; set; } = "Normal";
+        public string Page { get; set; } = "TaskQueue";
+    }
+
     public Task GenerateForJobAsync(string jobId) {
         var job=_tasks.FirstOrDefault(t=>t.JobId.Equals(jobId,StringComparison.OrdinalIgnoreCase));
         return job is null ? Task.CompletedTask : GenerateDocumentsAsync(job,ResultCapture.TargetPathFor(jobId));

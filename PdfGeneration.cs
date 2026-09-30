@@ -1,4 +1,8 @@
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using MigraDoc.DocumentObjectModel;
 using MigraDoc.Rendering;
 using PdfSharp.Fonts;
@@ -8,18 +12,207 @@ using Font = MigraDoc.DocumentObjectModel.Font;
 namespace ResumeBuilder;
 
 /// <summary>
-/// PDF output via PDFsharp/MigraDoc (MIT). A6.6.12 replaced the hidden-WebView2 PrintToPdf path:
-/// rendering a PDF no longer starts a browser, so it costs no extra processes and no ~80 MB of
-/// transient renderer memory per document. No Word, no COM, no Office, no browser.
-///
-/// Both renderers still consume the same <see cref="ResumeDocument"/> and the same normalized
-/// <see cref="ResumeStyle"/>, so the DOCX and the PDF carry identical content and the same styling
-/// decisions — a test walks this document model and compares it with the DOCX round trip.
+/// The generated PDF is Word's export of the tailored DOCX, so the PDF matches that file.
+/// The MigraDoc builder below is kept for the existing content-parity checks and is not the PDF
+/// written for a job.
 /// </summary>
 public static class PdfWriter {
+    const int PdfFormat = 17;
+
     static PdfWriter() {
         // PDFsharp resolves fonts itself; point it at the installed Windows fonts once.
         GlobalFontSettings.FontResolver ??= new ResumeFontResolver();
+    }
+
+    /// <summary>Exports one already-written DOCX to PDF. Does not rebuild the resume.</summary>
+    public static void ConvertDocx(string docxPath, string pdfPath) {
+        if (string.IsNullOrWhiteSpace(docxPath) || !File.Exists(docxPath))
+            throw new PdfConvertException("missing-docx", "The tailored DOCX was not created, so the PDF was not converted.");
+        if (Type.GetTypeFromProgID("Word.Application") is null)
+            throw new PdfConvertException("word-missing", "Microsoft Word is not available to convert the tailored DOCX to PDF.");
+
+        var session = new WordSession();
+        Exception? error = null;
+        var thread = new Thread(() => {
+            try { ExportWithWord(docxPath, pdfPath, session); }
+            catch (PdfConvertException ex) { error = ex; }
+            catch (Exception ex) { error = new PdfConvertException(FailureReason(ex), "The tailored DOCX could not be converted to PDF."); }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.IsBackground = true;
+        thread.Start();
+        if (!thread.Join(TimeSpan.FromSeconds(90))) {
+            int pid;
+            bool owned;
+            lock (session) {
+                pid = session.Pid;
+                owned = session.Owned;
+            }
+            if (owned && pid > 0) {
+                try { Process.GetProcessById(pid).Kill(entireProcessTree: true); } catch { /* already gone */ }
+            }
+            throw new PdfConvertException("word-timeout", "Word did not finish converting the DOCX to PDF.");
+        }
+        if (error is not null) throw error;
+    }
+
+    static void ExportWithWord(string docxPath, string pdfPath, WordSession session) {
+        var before = WinwordPids();
+        object? application = null;
+        object? documents = null;
+        object? document = null;
+        var ownsApplication = false;
+        var ownedPid = 0;
+        var export = Path.Combine(Path.GetDirectoryName(pdfPath) ?? Path.GetTempPath(), Path.GetRandomFileName() + ".pdf");
+        try {
+            application = Activator.CreateInstance(Type.GetTypeFromProgID("Word.Application")!)!;
+            ownedPid = OwnedProcessId(application, before, out ownsApplication);
+            RememberOwned(session, ownsApplication, ownedPid);
+            PerfLog.Line("PDF WORD start pid=" + ownedPid.ToString(CultureInfo.InvariantCulture));
+            if (ownsApplication) {
+                ComSet(application, "Visible", false);
+                ComSet(application, "DisplayAlerts", 0);
+            }
+
+            documents = ComGet(application, "Documents");
+            document = ComCall(documents!, "Open", new object[] { docxPath, false, true, false });
+            ComCall(document!, "ExportAsFixedFormat", new object[] { export, PdfFormat, false, 0 });
+            if (ownedPid == 0 && ownsApplication) {
+                var started = StartedPids(before);
+                if (started.Count == 1) {
+                    ownedPid = started[0];
+                    RememberOwned(session, true, ownedPid);
+                }
+            }
+            if (!File.Exists(export) || new FileInfo(export).Length == 0)
+                throw new PdfConvertException("empty-pdf", "Word did not produce a PDF.");
+            if (File.Exists(pdfPath)) File.Delete(pdfPath);
+            File.Move(export, pdfPath);
+        } finally {
+            if (document is not null) {
+                try { ComCall(document, "Close", new object[] { 0, Type.Missing, Type.Missing }); }
+                catch { /* already closed */ }
+                PerfLog.Line("PDF WORD document-close");
+            }
+            ReleaseCom(document);
+            document = null;
+            ReleaseCom(documents);
+            documents = null;
+            if (application is not null && ownsApplication) {
+                try { ComCall(application, "Quit", new object[] { 0, Type.Missing, Type.Missing }); }
+                catch { /* already gone */ }
+                PerfLog.Line("PDF WORD quit");
+            }
+            ReleaseCom(application);
+            application = null;
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            foreach (var pid in StartedPids(before)) WaitForWinwordExit(pid);
+            PerfLog.Line("PDF WORD cleanup-complete");
+            try { if (File.Exists(export)) File.Delete(export); } catch { /* best effort */ }
+        }
+    }
+
+    static void RememberOwned(WordSession session, bool ownsApplication, int ownedPid) {
+        lock (session) {
+            session.Owned = ownsApplication && ownedPid > 0;
+            session.Pid = ownedPid;
+        }
+    }
+
+    /// <summary>
+    /// The process this conversion started. A WINWORD that was already running belongs to the user
+    /// and is never quit or killed. An automation instance often has no window yet, so a single new
+    /// process id is enough to claim it.
+    /// </summary>
+    static int OwnedProcessId(object word, HashSet<int> before, out bool ownsApplication) {
+        var deadline = Environment.TickCount64 + 2000;
+        while (true) {
+            var comPid = WordProcessId(word);
+            if (comPid > 0 && before.Contains(comPid)) {
+                ownsApplication = false;
+                return 0;
+            }
+            if (comPid > 0) {
+                ownsApplication = true;
+                return comPid;
+            }
+            var started = StartedPids(before);
+            if (started.Count == 1) {
+                ownsApplication = true;
+                return started[0];
+            }
+            if (Environment.TickCount64 >= deadline) break;
+            Thread.Sleep(40);
+        }
+        // No window handle. Quit only when this call could not have attached to Word the user already had open.
+        ownsApplication = before.Count == 0;
+        var created = StartedPids(before);
+        return created.Count == 1 ? created[0] : 0;
+    }
+
+    static List<int> StartedPids(HashSet<int> before) =>
+        WinwordPids().Where(id => !before.Contains(id)).ToList();
+
+    static object? ComGet(object target, string name) =>
+        target.GetType().InvokeMember(name, BindingFlags.GetProperty, null, target, null);
+
+    static void ComSet(object target, string name, object value) =>
+        target.GetType().InvokeMember(name, BindingFlags.SetProperty, null, target, new[] { value });
+
+    static object? ComCall(object target, string name, object[] args) =>
+        target.GetType().InvokeMember(name, BindingFlags.InvokeMethod, null, target, args);
+
+    static HashSet<int> WinwordPids() {
+        var ids = new HashSet<int>();
+        foreach (var process in Process.GetProcessesByName("WINWORD")) {
+            try { ids.Add(process.Id); }
+            catch { /* exited while we were listing */ }
+            finally { process.Dispose(); }
+        }
+        return ids;
+    }
+
+    static void ReleaseCom(object? com) {
+        if (com is null) return;
+        try { Marshal.FinalReleaseComObject(com); } catch { /* already released */ }
+    }
+
+    /// <summary>Word exits a moment after Quit. This waits only for the process this conversion started.</summary>
+    static void WaitForWinwordExit(int pid) {
+        var deadline = Environment.TickCount64 + 8000;
+        while (Environment.TickCount64 < deadline) {
+            if (!WinwordPids().Contains(pid)) return;
+            Thread.Sleep(50);
+        }
+    }
+
+    static string FailureReason(Exception ex) {
+        if (ex is COMException com && com.HResult is unchecked((int)0x80010001) or unchecked((int)0x8001010A))
+            return "word-busy";
+        if (ex is COMException) return "word-export";
+        return ex.GetType().Name;
+    }
+
+    static int WordProcessId(object word) {
+        try {
+            var hwnd = Convert.ToInt32(ComGet(word, "Hwnd"), CultureInfo.InvariantCulture);
+            if (hwnd == 0) return 0;
+            GetWindowThreadProcessId((IntPtr)hwnd, out uint pid);
+            return (int)pid;
+        } catch (Exception ex) when (ex is InvalidCastException or COMException or TargetInvocationException or FormatException or OverflowException) {
+            return 0;
+        }
+    }
+
+    [DllImport("user32.dll")]
+    static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    sealed class WordSession {
+        public int Pid;
+        public bool Owned;
     }
 
     public static void Write(ResumeDocument resume, string path) {
@@ -255,4 +448,13 @@ sealed class ResumeFontResolver : IFontResolver {
         var path = Path.Combine(FontsDir, file);
         return File.Exists(path) ? File.ReadAllBytes(path) : null;
     }
+}
+
+/// <summary>A DOCX-to-PDF conversion that did not produce a file. <see cref="Reason"/> is the log token.</summary>
+public sealed class PdfConvertException : Exception {
+    public PdfConvertException(string reason, string message) : base(message) {
+        Reason = reason;
+    }
+
+    public string Reason { get; }
 }

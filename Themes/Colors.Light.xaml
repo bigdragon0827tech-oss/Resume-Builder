@@ -32,6 +32,8 @@
   <SolidColorBrush x:Key="StatusInterviewFg" Color="#9A5B00"/>
   <SolidColorBrush x:Key="StatusDoneBg" Color="#E8DFF5"/>
   <SolidColorBrush x:Key="StatusDoneFg" Color="#5B2F91"/>
+  <SolidColorBrush x:Key="StatusFailedBg" Color="#FDECEC"/>
+  <SolidColorBrush x:Key="StatusFailedFg" Color="#B42318"/>
 
   <!-- Compat aliases used by Settings dashboard markup -->
   <SolidColorBrush x:Key="Accent" Color="#0B6BCB"/>

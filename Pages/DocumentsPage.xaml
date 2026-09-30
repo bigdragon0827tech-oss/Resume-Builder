@@ -31,8 +31,8 @@
      </DataGrid.Resources>
      <DataGrid.Columns>
       <DataGridTextColumn Header="Date" Binding="{Binding DateText}" Width="100"/>
-      <DataGridTextColumn Header="Company" Binding="{Binding Company}" Width="*"/>
-      <DataGridTextColumn Header="Role" Binding="{Binding Title}" Width="2*"/>
+      <DataGridTextColumn Header="Company" Binding="{Binding Company}" Width="*" ElementStyle="{DynamicResource GridTextStyle}"/>
+      <DataGridTextColumn Header="Role" Binding="{Binding Title}" Width="2*" ElementStyle="{DynamicResource GridTextStyle}"/>
       <DataGridTextColumn Header="DOCX" Binding="{Binding DocxLabel}" Width="70"/>
       <DataGridTextColumn Header="PDF" Binding="{Binding PdfLabel}" Width="70"/>
       <DataGridTemplateColumn Header="Actions" Width="220">

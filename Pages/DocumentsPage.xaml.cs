@@ -31,7 +31,7 @@ public partial class DocumentsPage : UserControl {
 
     public void Refresh(IReadOnlyList<JobTask> tasks) {
         _tasks = tasks;
-        JobTracker.RelinkResumes(tasks, Storage.LoadSettings().ResumeRootFolder);
+        JobStore.ApplyResumeLinks(tasks);
         _rows = tasks
             .Where(t => t.ResumeGenerated)
             .OrderByDescending(t => t.ReadyAt ?? t.UpdatedAt)
@@ -111,7 +111,8 @@ public partial class DocumentsPage : UserControl {
         try {
             Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
         } catch (Exception ex) {
-            MessageBox.Show("Could not open:\n\n" + ex.Message);
+            PerfLog.Line("DOCUMENTS open failed " + ex.GetType().Name);
+            MessageBox.Show("Unable to open that file.");
         }
     }
 }

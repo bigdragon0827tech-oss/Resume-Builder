@@ -19,11 +19,11 @@
      <ColumnDefinition Width="*"/>
     </Grid.ColumnDefinitions>
     <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,10,0">
-     <Button x:Name="BackButton" Width="34" Height="32" Margin="0,0,4,0" Style="{DynamicResource BtnGhost}"
+     <Button x:Name="BackButton" Margin="0,0,4,0" Style="{DynamicResource IconButtonStyle}"
              ToolTip="Back" IsEnabled="False" Click="Back_Click" Content="◀"/>
-     <Button x:Name="ForwardButton" Width="34" Height="32" Margin="0,0,4,0" Style="{DynamicResource BtnGhost}"
+     <Button x:Name="ForwardButton" Margin="0,0,4,0" Style="{DynamicResource IconButtonStyle}"
              ToolTip="Forward" IsEnabled="False" Click="Forward_Click" Content="▶"/>
-     <Button x:Name="RefreshButton" Width="34" Height="32" Margin="0,0,4,0" Style="{DynamicResource BtnGhost}"
+     <Button x:Name="RefreshButton" Margin="0,0,4,0" Style="{DynamicResource IconButtonStyle}"
              ToolTip="Refresh" IsEnabled="False" Click="Refresh_Click" Content="⟳"/>
      <Button x:Name="HomeButton" Height="32" Padding="12,0"
              ToolTip="Back to the Jobright home page" IsEnabled="False" Click="Home_Click" Content="Jobright"/>
@@ -48,27 +48,37 @@
     </Grid.ColumnDefinitions>
     <TextBlock Text="Job import" VerticalAlignment="Center" FontWeight="SemiBold"
                Foreground="{DynamicResource Text.Secondary}" FontSize="12" Margin="0,0,16,0"/>
-    <WrapPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" ItemHeight="32">
+    <WrapPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" ItemHeight="34">
      <TextBlock x:Name="FoundJobsText" Text="Found: 0" VerticalAlignment="Center" Margin="0,0,10,0"
                 Foreground="{DynamicResource Text.Muted}" FontSize="12"/>
-     <ComboBox x:Name="JobTargetBox" Width="76" Height="32" Margin="0,0,8,0"
+     <ComboBox x:Name="JobTargetBox" Width="76" Height="34" Margin="0,0,8,0"
                VerticalContentAlignment="Center" HorizontalContentAlignment="Center"
-               SelectedIndex="1" ToolTip="How many new jobs to find">
+               SelectedIndex="1" ToolTip="How many new jobs to import">
       <ComboBoxItem Content="20" HorizontalContentAlignment="Center"/>
       <ComboBoxItem Content="50" HorizontalContentAlignment="Center"/>
       <ComboBoxItem Content="100" HorizontalContentAlignment="Center"/>
       <ComboBoxItem Content="200" HorizontalContentAlignment="Center"/>
       <ComboBoxItem Content="500" HorizontalContentAlignment="Center"/>
      </ComboBox>
-     <Button x:Name="FindJobsButton" Content="Find Jobs" Height="32" Margin="0,0,6,0" Padding="12,0"
-             IsEnabled="False" ToolTip="Find jobs on the current Jobright results page." Click="FindJobs_Click"/>
-     <Button x:Name="StopFindingButton" Content="Stop" Height="32" Margin="0,0,6,0" Padding="12,0"
-             IsEnabled="False" Click="StopFinding_Click"/>
-     <Button x:Name="AutoImportButton" Content="Import Found" Height="32" Margin="0,0,6,0" Padding="12,0"
-             IsEnabled="False" ToolTip="Import the jobs found on this page one by one." Click="AutoImport_Click"/>
-     <Button x:Name="ImportButton" Content="Import Current Job" Height="32" Padding="14,0"
-             Style="{DynamicResource BtnPrimary}" FontWeight="SemiBold"
-             ToolTip="Open a single Jobright job to import it into the queue." Click="Import_Click"/>
+     <!-- Import filters: the same five AppSettings values the Settings window edits. -->
+     <Button x:Name="FiltersButton" Content="Filters (3)" Height="34" Margin="0,0,6,0" Padding="12,0"
+             ToolTip="Which jobs are refused before they become tasks." Click="Filters_Click"/>
+     <Popup x:Name="FiltersPopup" PlacementTarget="{Binding ElementName=FiltersButton}" Placement="Bottom"
+            StaysOpen="False" AllowsTransparency="True" HorizontalOffset="0" VerticalOffset="4">
+      <Border Background="{DynamicResource Bg.SurfaceRaised}" BorderBrush="{DynamicResource Border.Subtle}"
+              BorderThickness="1" CornerRadius="6" Padding="14,12" MaxWidth="340">
+       <StackPanel x:Name="FilterSwitchPanel">
+        <TextBlock Text="Job import filters" FontWeight="SemiBold" FontSize="12"
+                   Foreground="{DynamicResource Text.Primary}" Margin="0,0,0,8"/>
+        <!-- The five checkboxes are created in code from JobImportFilter.Switches. -->
+        <TextBlock x:Name="FilterFooterText" FontSize="11" TextWrapping="Wrap" Margin="0,10,0,0"
+                   Foreground="{DynamicResource Text.Muted}"/>
+       </StackPanel>
+      </Border>
+     </Popup>
+     <Button x:Name="AutoImportFirstButton" Content="Auto Import" Height="34" Padding="14,0"
+             ToolTip="Import new jobs until the goal is reached, or press Stop Auto Import."
+             Click="AutoImportFirst_Click"/>
     </WrapPanel>
    </Grid>
   </Border>
@@ -98,8 +108,12 @@
 
   <Border Grid.Row="4" Background="{DynamicResource Bg.Surface}" BorderBrush="{DynamicResource Border.Subtle}"
           BorderThickness="0,1,0,0" Padding="14,0" MinHeight="28">
-   <TextBlock x:Name="StatusText" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource Text.Muted}"
-              TextTrimming="CharacterEllipsis" Text="Open Job Browser to start the Jobright session…"/>
+   <DockPanel>
+    <ProgressBar x:Name="ImportBusyBar" DockPanel.Dock="Right" Width="88" Height="3" Margin="12,0,0,0"
+                 IsIndeterminate="True" Visibility="Collapsed" VerticalAlignment="Center"/>
+    <TextBlock x:Name="StatusText" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource Text.Muted}"
+               TextTrimming="CharacterEllipsis" Text="Open Job Browser to start the Jobright session…"/>
+   </DockPanel>
   </Border>
  </Grid>
 </UserControl>

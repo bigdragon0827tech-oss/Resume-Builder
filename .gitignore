@@ -62,6 +62,9 @@ publish/
 # Release packages (ZIPs are release artifacts, never development files)
 *.zip
 
+# The installer compiles this Microsoft bootstrapper in; it is not copied into the app folder.
+!Installer/Prerequisites/MicrosoftEdgeWebview2Setup.exe
+
 # Temporary and OS files
 *.tmp
 *.temp

@@ -21,26 +21,39 @@ public static class PerfLog {
     /// <summary>Times a stage; dispose (or let `using` do it) to record the elapsed milliseconds.</summary>
     public static IDisposable Measure(string stage) => new Scope(stage);
 
-    public static void Clear() {
+    /// <summary>Earlier sessions kept as diagnostics.1.log (newest) … diagnostics.5.log.</summary>
+    public const int KeptSessions = 5;
+
+    /// <summary>
+    /// Called once per launch. The previous session's log is ROTATED, not deleted (it was cleared
+    /// before Phase 1), so the log of a session that crashed survives the restart. Bounded to
+    /// <see cref="KeptSessions"/> old files of at most ~1 MB each.
+    /// </summary>
+    public static void StartSession() {
         try {
             lock (Gate) {
                 Directory.CreateDirectory(Storage.DataDir);
-                if (File.Exists(Path))
-                    File.Delete(Path);
+                LogRetention.Rotate(Path, KeptSessions);
             }
         } catch {
             // Diagnostics must never break startup.
         }
     }
-    
-    public static void Line(string text) {
-        if (!Enabled) return;
+
+    public static void Line(string text) => Lines(new[] { text });
+
+    /// <summary>One append for many lines, so a one-time row dump does not open the log once per job.</summary>
+    public static void Lines(IEnumerable<string> lines) {
+        if (!Enabled || lines is null) return;
         try {
             lock (Gate) {
+                var stamp = DateTime.Now.ToString("HH:mm:ss.fff");
+                var text = string.Join("", lines.Select(line => stamp + "  " + line + Environment.NewLine));
+                if (text.Length == 0) return;
                 Directory.CreateDirectory(Storage.DataDir);
                 var path = Path;
-                if (File.Exists(path) && new FileInfo(path).Length > MaxBytes) File.Delete(path);
-                File.AppendAllText(path, DateTime.Now.ToString("HH:mm:ss.fff") + "  " + text + Environment.NewLine);
+                if (File.Exists(path) && new FileInfo(path).Length > MaxBytes) LogRetention.Rotate(path, KeptSessions);
+                File.AppendAllText(path, text);
             }
         } catch {
             // Diagnostics must never break a run.
@@ -107,4 +120,81 @@ public static class PollPolicy {
 
     /// <summary>How many probes a budget allows (the first probe happens before any delay).</summary>
     public static int Attempts(int budgetMs) => Delays(budgetMs).Count() + 1;
+}
+
+/// <summary>Bounded retention for log files, so diagnostics never grow without limit.</summary>
+public static class LogRetention {
+    /// <summary>
+    /// "x.log" -> "x.1.log", "x.1.log" -> "x.2.log" … keeping at most <paramref name="keep"/> old
+    /// files; the oldest is dropped. An empty or missing log is left alone.
+    /// </summary>
+    public static void Rotate(string path, int keep) {
+        if (!File.Exists(path) || new FileInfo(path).Length == 0) return;
+
+        string Numbered(int n) => System.IO.Path.ChangeExtension(path, null) + "." + n + System.IO.Path.GetExtension(path);
+
+        if (File.Exists(Numbered(keep))) File.Delete(Numbered(keep));
+        for (var n = keep - 1; n >= 1; n--)
+            if (File.Exists(Numbered(n))) File.Move(Numbered(n), Numbered(n + 1));
+        File.Move(path, Numbered(1));
+    }
+
+    /// <summary>Deletes all but the newest <paramref name="keep"/> files matching <paramref name="pattern"/>.</summary>
+    public static void Prune(string directory, string pattern, int keep) {
+        if (!Directory.Exists(directory)) return;
+        foreach (var old in new DirectoryInfo(directory).GetFiles(pattern)
+                     .OrderByDescending(f => f.LastWriteTimeUtc).ThenByDescending(f => f.Name).Skip(keep)) {
+            try { old.Delete(); } catch { /* a locked file is kept */ }
+        }
+    }
+}
+
+/// <summary>
+/// Writes crash-yyyyMMdd-HHmmss.log for an exception nothing else handled. Contents: time, app
+/// version, where it was caught, OS, and the exception with its stack — never settings, cookies,
+/// WebView2 data or resume text. Never throws; keeps the newest <see cref="Kept"/> crash logs.
+/// </summary>
+public static class CrashLog {
+    public const int Kept = 10;
+    static readonly object Gate = new();
+    static Exception? _lastLogged;
+
+    /// <summary>Returns the file written, or null when this exception was already logged or writing failed.</summary>
+    public static string? Write(Exception exception, string source, string? directory = null) {
+        try {
+            lock (Gate) {
+                // The dispatcher and the AppDomain can both report the same fatal exception.
+                if (ReferenceEquals(_lastLogged, exception)) return null;
+                _lastLogged = exception;
+
+                var dir = directory ?? Storage.DataDir;
+                Directory.CreateDirectory(dir);
+
+                var path = System.IO.Path.Combine(dir, $"crash-{DateTime.Now:yyyyMMdd-HHmmss}.log");
+                for (var n = 2; File.Exists(path); n++)
+                    path = System.IO.Path.Combine(dir, $"crash-{DateTime.Now:yyyyMMdd-HHmmss}-{n}.log");
+
+                var version = typeof(CrashLog).Assembly
+                    .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+                    .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion ?? "?";
+
+                var text = new StringBuilder()
+                    .AppendLine("Resume Builder crash report")
+                    .AppendLine("Time:    " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"))
+                    .AppendLine("Version: " + version)
+                    .AppendLine("Source:  " + source)
+                    .AppendLine("OS:      " + Environment.OSVersion)
+                    .AppendLine()
+                    .AppendLine(exception.ToString())
+                    .ToString();
+                File.WriteAllText(path, text);
+
+                LogRetention.Prune(dir, "crash-*.log", Kept);
+                PerfLog.Line($"CRASH {source} {exception.GetType().Name} logged to {System.IO.Path.GetFileName(path)}");
+                return path;
+            }
+        } catch {
+            return null;
+        }
+    }
 }

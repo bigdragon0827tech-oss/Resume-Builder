@@ -396,7 +396,7 @@ public static class StyleValidator {
         }
 
         // The weight rules are not negotiable, so asking for them is an error, not a preference.
-        if (section is "body" or "skillValues" or "education" or "bullet"
+        if (StyleSchema.AlwaysRegular.Contains(section, StringComparer.Ordinal)
             && o["bold"] is JsonValue bold && bold.TryGetValue<bool>(out var isBold) && isBold)
             errors.Add($"{path}.bold must be false — {Because(section)}");
     }

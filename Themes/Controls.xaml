@@ -62,8 +62,12 @@
     <Setter Property="Background" Value="{DynamicResource Bg.SurfaceRaised}"/>
     <Setter Property="BorderBrush" Value="{DynamicResource Border.Subtle}"/>
     <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="MinHeight" Value="34"/>
     <Setter Property="Padding" Value="12,6"/>
     <Setter Property="FontSize" Value="{DynamicResource Font.Size.Body}"/>
+    <Setter Property="FontWeight" Value="Normal"/>
+    <Setter Property="HorizontalContentAlignment" Value="Center"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
     <Setter Property="Cursor" Value="Hand"/>
     <Setter Property="SnapsToDevicePixels" Value="True"/>
     <Setter Property="Template">
@@ -77,20 +81,22 @@
             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
           </Border>
           <ControlTemplate.Triggers>
-            <Trigger Property="IsMouseOver" Value="True">
-              <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Bg.Hover}"/>
-              <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Border.Strong}"/>
-            </Trigger>
             <Trigger Property="IsEnabled" Value="False">
               <Setter Property="Opacity" Value="0.45"/>
             </Trigger>
-            <Trigger Property="IsFocused" Value="True">
+            <Trigger Property="IsKeyboardFocused" Value="True">
               <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Accent.Default}"/>
             </Trigger>
           </ControlTemplate.Triggers>
         </ControlTemplate>
       </Setter.Value>
     </Setter>
+    <Style.Triggers>
+      <Trigger Property="IsMouseOver" Value="True">
+        <Setter Property="Background" Value="{DynamicResource Bg.Hover}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Border.Strong}"/>
+      </Trigger>
+    </Style.Triggers>
   </Style>
 
   <Style TargetType="Button" BasedOn="{StaticResource BtnBase}"/>
@@ -117,6 +123,64 @@
     <Setter Property="Background" Value="{DynamicResource Bg.SurfaceRaised}"/>
     <Setter Property="BorderBrush" Value="{DynamicResource Danger}"/>
     <Setter Property="Foreground" Value="{DynamicResource Danger}"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+  </Style>
+
+  <!-- Names used by pages. They share one template so height, radius, hover, focus and disabled stay aligned. -->
+  <Style x:Key="PrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource BtnPrimary}"/>
+  <Style x:Key="SecondaryButtonStyle" TargetType="Button" BasedOn="{StaticResource BtnBase}"/>
+  <Style x:Key="DestructiveButtonStyle" TargetType="Button" BasedOn="{StaticResource BtnDanger}"/>
+  <Style x:Key="IconButtonStyle" TargetType="Button" BasedOn="{StaticResource BtnGhost}">
+    <Setter Property="Width" Value="32"/>
+    <Setter Property="Height" Value="32"/>
+    <Setter Property="MinHeight" Value="32"/>
+    <Setter Property="Padding" Value="0"/>
+    <Setter Property="FontSize" Value="14"/>
+  </Style>
+  <Style x:Key="CompactSecondaryButtonStyle" TargetType="Button" BasedOn="{StaticResource SecondaryButtonStyle}">
+    <Setter Property="MinHeight" Value="28"/>
+    <Setter Property="Height" Value="28"/>
+    <Setter Property="Padding" Value="8,0"/>
+    <Setter Property="FontSize" Value="12"/>
+  </Style>
+  <Style x:Key="CompactPrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource PrimaryButtonStyle}">
+    <Setter Property="MinHeight" Value="28"/>
+    <Setter Property="Height" Value="28"/>
+    <Setter Property="Padding" Value="8,0"/>
+    <Setter Property="FontSize" Value="12"/>
+  </Style>
+  <Style x:Key="CompactDestructiveButtonStyle" TargetType="Button" BasedOn="{StaticResource DestructiveButtonStyle}">
+    <Setter Property="MinHeight" Value="28"/>
+    <Setter Property="Height" Value="28"/>
+    <Setter Property="Padding" Value="8,0"/>
+    <Setter Property="FontSize" Value="12"/>
+  </Style>
+
+  <Style x:Key="StatusBadgeStyle" TargetType="Border">
+    <Setter Property="CornerRadius" Value="10"/>
+    <Setter Property="Padding" Value="8,3"/>
+    <Setter Property="Background" Value="{DynamicResource Bg.SurfaceRaised}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource Border.Subtle}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="HorizontalAlignment" Value="Left"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+    <Setter Property="SnapsToDevicePixels" Value="True"/>
+  </Style>
+
+  <Style x:Key="GridTextStyle" TargetType="TextBlock">
+    <Setter Property="VerticalAlignment" Value="Center"/>
+    <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+    <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+  </Style>
+
+  <Style x:Key="IconFrameStyle" TargetType="Border">
+    <Setter Property="Width" Value="22"/>
+    <Setter Property="Height" Value="22"/>
+    <Setter Property="CornerRadius" Value="4"/>
+    <Setter Property="ClipToBounds" Value="True"/>
+    <Setter Property="Background" Value="{DynamicResource Bg.Input}"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+    <Setter Property="SnapsToDevicePixels" Value="True"/>
   </Style>
 
   <Style TargetType="TextBox">
@@ -409,6 +473,8 @@
     <Setter Property="CanUserDeleteRows" Value="False"/>
     <Setter Property="CanUserResizeRows" Value="False"/>
     <Setter Property="RowHeaderWidth" Value="0"/>
+    <Setter Property="RowHeight" Value="44"/>
+    <Setter Property="FontSize" Value="12"/>
   </Style>
 
   <Style TargetType="DataGridColumnHeader">
@@ -418,7 +484,8 @@
     <Setter Property="BorderThickness" Value="0,0,0,1"/>
     <Setter Property="Padding" Value="12,8"/>
     <Setter Property="FontWeight" Value="SemiBold"/>
-    <Setter Property="FontSize" Value="11.5"/>
+    <Setter Property="FontSize" Value="12"/>
+    <Setter Property="HorizontalContentAlignment" Value="Left"/>
   </Style>
 
   <Style TargetType="DataGridCell">
@@ -445,6 +512,7 @@
   <Style TargetType="DataGridRow">
     <Setter Property="Background" Value="Transparent"/>
     <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    <Setter Property="MinHeight" Value="40"/>
     <Style.Triggers>
       <Trigger Property="IsMouseOver" Value="True">
         <Setter Property="Background" Value="{DynamicResource Bg.Hover}"/>
@@ -452,6 +520,13 @@
       <Trigger Property="IsSelected" Value="True">
         <Setter Property="Background" Value="{DynamicResource Bg.Selected}"/>
       </Trigger>
+      <MultiTrigger>
+        <MultiTrigger.Conditions>
+          <Condition Property="IsSelected" Value="True"/>
+          <Condition Property="IsMouseOver" Value="True"/>
+        </MultiTrigger.Conditions>
+        <Setter Property="Background" Value="{DynamicResource Bg.Selected}"/>
+      </MultiTrigger>
     </Style.Triggers>
   </Style>
 
@@ -646,19 +721,45 @@
     <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
     <Setter Property="BorderBrush" Value="{DynamicResource Border.Subtle}"/>
     <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Padding" Value="4"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ContextMenu">
+          <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8" Padding="{TemplateBinding Padding}"
+                  SnapsToDevicePixels="True">
+            <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle"/>
+          </Border>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
   </Style>
 
   <Style TargetType="MenuItem">
     <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
     <Setter Property="Background" Value="Transparent"/>
-    <Style.Triggers>
-      <Trigger Property="IsHighlighted" Value="True">
-        <Setter Property="Background" Value="{DynamicResource Bg.Hover}"/>
-      </Trigger>
-      <Trigger Property="IsEnabled" Value="False">
-        <Setter Property="Opacity" Value="0.45"/>
-      </Trigger>
-    </Style.Triggers>
+    <Setter Property="Padding" Value="12,8"/>
+    <Setter Property="FontSize" Value="13"/>
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="MenuItem">
+          <Border x:Name="Bd" Background="Transparent" CornerRadius="6" Margin="2,1" Padding="{TemplateBinding Padding}">
+            <ContentPresenter ContentSource="Header" VerticalAlignment="Center"/>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsHighlighted" Value="True">
+              <Setter TargetName="Bd" Property="Background" Value="{DynamicResource Bg.Hover}"/>
+            </Trigger>
+            <Trigger Property="Tag" Value="danger">
+              <Setter Property="Foreground" Value="{DynamicResource Danger}"/>
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+              <Setter Property="Opacity" Value="0.45"/>
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
   </Style>
 
   <Style TargetType="Calendar">
