@@ -63,6 +63,7 @@
     <Compile Include="..\..\DocxHtmlReader.cs" Link="DocxHtmlReader.cs" />
     <Compile Include="..\..\HtmlDocxWriter.cs" Link="HtmlDocxWriter.cs" />
     <Compile Include="..\..\HtmlTailor.cs" Link="HtmlTailor.cs" />
+    <Compile Include="..\..\ResumeContent.cs" Link="ResumeContent.cs" />
     <Compile Include="..\..\BrowserGeneration.cs" Link="BrowserGeneration.cs" />
   </ItemGroup>
 

@@ -119,8 +119,8 @@ public static class ChatResponseReader {
 """;
 
     /// <summary>
-    /// Reads one finished HTML resume from the last assistant turn. Used only after a confirmed Ready,
-    /// and only when the request was sent as HTML. It does not click, fetch, or change the page.
+    /// Reads one JSON patch from the last assistant turn. Used only after a confirmed Ready.
+    /// It does not click, fetch, or change the page.
     /// </summary>
     public const string ReadLastAssistantHtmlScript = """
 (function () {
@@ -129,10 +129,9 @@ public static class ChatResponseReader {
     if (a && a.length) return a;
     return [];
   }
-  function looksLikeHtml(t) {
+  function looksLikePatch(t) {
     if (!t) return false;
-    var s = t.toLowerCase();
-    return s.indexOf('<html') >= 0 && s.indexOf('</html>') >= 0;
+    return t.indexOf('"updates"') >= 0 && t.indexOf('{') >= 0 && t.indexOf('}') >= 0;
   }
   function codeTexts(root) {
     var out = [];
@@ -144,26 +143,23 @@ public static class ChatResponseReader {
     return out;
   }
   var list = assistants();
-  if (!list.length) return { status: 'missing', text: '', assistants: 0, detail: 'no-html' };
+  if (!list.length) return { status: 'missing', text: '', assistants: 0, detail: 'no-patch' };
   var last = list[list.length - 1];
   var codes = codeTexts(last);
   var hits = [];
   for (var c = 0; c < codes.length; c++) {
-    if (looksLikeHtml(codes[c])) hits.push(codes[c]);
+    if (looksLikePatch(codes[c])) hits.push(codes[c]);
   }
   if (hits.length > 1) {
     hits.sort(function (a, b) { return b.length - a.length; });
     if (hits[0] !== hits[1] && hits[1].length > hits[0].length * 0.6)
-      return { status: 'ambiguous', text: '', assistants: list.length, detail: 'multiple-html' };
+      return { status: 'ambiguous', text: '', assistants: list.length, detail: 'multiple-patch' };
   }
   if (hits.length >= 1)
     return { status: 'ok', text: hits[0], assistants: list.length };
   var text = (last.textContent || '').trim();
-  if (!looksLikeHtml(text))
-    return { status: 'missing', text: '', assistants: list.length, detail: 'no-html' };
-  var opens = text.toLowerCase().split('<html').length - 1;
-  if (opens > 1)
-    return { status: 'ambiguous', text: '', assistants: list.length, detail: 'multiple-html' };
+  if (!looksLikePatch(text))
+    return { status: 'missing', text: '', assistants: list.length, detail: 'no-patch' };
   return { status: 'ok', text: text, assistants: list.length };
 })();
 """;

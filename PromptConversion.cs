@@ -4,6 +4,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace ResumeBuilder;
 
@@ -33,19 +34,26 @@ public static class PromptConversion {
     public const string FailedStatus = "Prompt conversion failed";
 
     public const string OutputModeHtml = "HTML";
+    public const string OutputModePatch = "Patch";
     public const int HtmlContractVersion = 1;
+    public const int ResumePatchContractVersion = 1;
+    public const string PatchContractMarker = "===== RESUME BUILDER JSON PATCH OUTPUT CONTRACT =====";
 
     /// <summary>
-    /// Output rules the adapted prompt must keep. The user's tailoring strategy stays in their own words.
+    /// The only output contract appended to an imported prompt. The user's tailoring strategy is not rewritten.
     /// </summary>
-    public const string HtmlContract =
-        "Return one HTML document and nothing else. Do not return JSON.\r\n"
-        + "Keep the <style> block exactly, including every existing CSS class, font, color, spacing, border, and alignment.\r\n"
-        + "Keep the page and layout structure, the header and footer, the section heading markup, the employment metadata layout, the table structure, and the bullet and list style.\r\n"
-        + "Keep the original top-level section order exactly. Do not move, merge, split, or reorder sections. Do not add a visible heading when the original section has none. Do not remove Education or Certifications.\r\n"
-        + "You may change the headline, the summary, skill categories and items, the number of skill items and groups, allowed job titles, experience bullets, the number of experience bullets, and optional project or subtitle text.\r\n"
-        + "When you add a bullet or a skill item, copy the neighboring HTML structure and class. Do not invent new CSS or classes.\r\n"
-        + "Do not change the name, contact details, company names, employment dates, locations, employment type, work arrangement, education facts, or certifications.\r\n";
+    public const string PatchContract =
+        "Return one JSON object and nothing else. Do not return HTML, CSS, a style block, or a full resume document.\r\n"
+        + "Change only ids listed in editableFields. Return only fields you change:\r\n"
+        + "{ \"updates\": [ { \"id\": \"summary\", \"value\": [ \"Updated paragraph\" ] } ] }\r\n"
+        + "Use the type named on that id: string, nullableString, stringArray, skillGroups, or projectArray.\r\n"
+        + "skillGroups is an array of { \"label\": \"...\", \"items\": [ \"...\" ] }.\r\n"
+        + "stringArray and projectArray are arrays of strings. nullableString is a string or null.\r\n"
+        + "Do not return unchanged values, unknown ids, or locked facts.\r\n";
+
+    static readonly string[] OutputHeadings = {
+        "OUTPUT FORMAT", "OUTPUT CONTRACT", "RESPONSE FORMAT", "RETURN FORMAT", "HTML CONTRACT", "FINAL OUTPUT"
+    };
 
     public sealed class Record {
         public string OriginalPromptPath { get; set; } = "";
@@ -55,6 +63,7 @@ public static class PromptConversion {
         public string ConvertedAt { get; set; } = "";
         public string OutputMode { get; set; } = "";
         public int HtmlContractVersion { get; set; }
+        public int ResumePatchContractVersion { get; set; }
     }
 
     public static string HashFile(string path) {
@@ -72,8 +81,8 @@ public static class PromptConversion {
         var savedHash = record.OriginalPromptHash ?? "";
         return string.Equals(Path.GetFullPath(originalPath), Path.GetFullPath(savedPath), StringComparison.OrdinalIgnoreCase)
             && string.Equals(savedHash, HashFile(originalPath), StringComparison.OrdinalIgnoreCase)
-            && string.Equals(record.OutputMode, OutputModeHtml, StringComparison.Ordinal)
-            && record.HtmlContractVersion == HtmlContractVersion;
+            && string.Equals(record.OutputMode, OutputModePatch, StringComparison.Ordinal)
+            && record.ResumePatchContractVersion == ResumePatchContractVersion;
     }
 
     /// <summary>
@@ -89,19 +98,19 @@ public static class PromptConversion {
             "The tailoring prompt has not been prepared. Open Settings, choose the Tailoring Prompt again, and wait until it says Prompt ready.");
     }
 
+    /// <summary>Deterministic adapted prompt. The file the user imported is not modified.</summary>
+    public static string Adapt(string? userPrompt) {
+        var kept = RemoveOutputSections(userPrompt ?? "");
+        return kept.TrimEnd() + "\r\n\r\n" + PatchContractMarker + "\r\n" + PatchContract;
+    }
+
     public static string BuildInstruction(string userPrompt, bool resumeMode) {
         _ = resumeMode;
-        return "Adapt the user's resume-tailoring prompt for Resume Builder.\r\n"
-            + "Preserve the user's resume-tailoring strategy, rules, tone, constraints, and logic.\r\n"
-            + "Change ONLY the final output requirements.\r\n"
-            + "Remove or replace any conflicting output-format instructions (plain text, markdown, tables, JSON, or a different HTML shape).\r\n"
-            + "Do not rewrite the user's tailoring methodology.\r\n"
-            + "The adapted prompt must require the HTML output contract below, unchanged.\r\n"
-            + "Return ONLY the full adapted prompt. No commentary before or after it.\r\n\r\n"
-            + "===== HTML OUTPUT CONTRACT =====\r\n"
-            + HtmlContract + "\r\n===== USER PROMPT =====\r\n"
-            + userPrompt;
+        return Adapt(userPrompt);
     }
+
+    public static bool TryAdapt(string originalPath, out string error) =>
+        TrySave(originalPath, Adapt(File.ReadAllText(originalPath)), out error);
 
     /// <summary>
     /// Accepts a converted prompt, or rejects it and leaves the previous converted file in place.
@@ -126,8 +135,9 @@ public static class PromptConversion {
             ConvertedPromptPath = Path.GetFullPath(ConvertedPath),
             ConvertedPromptHash = HashFile(ConvertedPath),
             ConvertedAt = DateTimeOffset.Now.ToString("o"),
-            OutputMode = OutputModeHtml,
-            HtmlContractVersion = HtmlContractVersion
+            OutputMode = OutputModePatch,
+            HtmlContractVersion = HtmlContractVersion,
+            ResumePatchContractVersion = ResumePatchContractVersion
         };
         var json = JsonSerializer.Serialize(record, new JsonSerializerOptions { WriteIndented = true });
         var metaTemp = MetadataPath + ".tmp";
@@ -140,10 +150,41 @@ public static class PromptConversion {
     public static bool IsUsable(string text) {
         if (text.Length < 80) return false;
         if (ResultCapture.LooksLikeProfileResult(text) && text.TrimStart().StartsWith('{')) return false;
-        return text.Contains("<style> block exactly", StringComparison.Ordinal)
-            && text.Contains("top-level section order", StringComparison.Ordinal)
-            && text.Contains("Do not invent new CSS", StringComparison.Ordinal)
-            && text.Contains("certifications", StringComparison.Ordinal);
+        return text.Contains(PatchContractMarker, StringComparison.Ordinal)
+            && text.Contains("\"updates\"", StringComparison.Ordinal);
+    }
+
+    static string RemoveOutputSections(string prompt) {
+        var lines = Regex.Split(prompt, "\r\n|\n|\r");
+        var kept = new List<string>();
+        var skipping = false;
+        foreach (var line in lines) {
+            if (IsHeading(line) && IsOutputHeading(line)) {
+                skipping = true;
+                continue;
+            }
+            if (skipping && IsHeading(line) && !IsOutputHeading(line)) skipping = false;
+            if (!skipping) kept.Add(line);
+        }
+        return string.Join("\r\n", kept);
+    }
+
+    static bool IsHeading(string line) {
+        var text = line.Trim();
+        if (text.Length == 0 || text.Length > 80) return false;
+        if (text.StartsWith('#')) return true;
+        if (text.Contains("====", StringComparison.Ordinal)) return true;
+        var letters = text.Count(char.IsLetter);
+        if (letters < 4) return false;
+        return text.Count(char.IsUpper) >= letters * 0.75 && !text.EndsWith('.') && !text.EndsWith('?');
+    }
+
+    static bool IsOutputHeading(string line) {
+        var compact = Regex.Replace(line.ToUpperInvariant(), @"[^A-Z ]", " ");
+        compact = Regex.Replace(compact, @"\s+", " ").Trim();
+        foreach (var heading in OutputHeadings)
+            if (compact.Contains(heading, StringComparison.Ordinal)) return true;
+        return false;
     }
 
     public static Record? Load() {

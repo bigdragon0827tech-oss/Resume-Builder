@@ -56,6 +56,8 @@ public static class HtmlTailor {
         Directory.CreateDirectory(directory);
         var sourcePath = Path.Combine(directory, "source.html");
         WriteTextAtomic(sourcePath, html);
+        var bound = ResumeContent.Bind(html);
+        WriteTextAtomic(Path.Combine(directory, "content-model.json"), bound.ModelJson());
 
         var text = promptText.TrimEnd()
             + "\n\n===== JOB =====\n"
@@ -63,12 +65,11 @@ public static class HtmlTailor {
             + "Title: " + (job.Title ?? "") + "\n"
             + "Link: " + (job.Link ?? "") + "\n\n"
             + "Job description:\n" + (job.Jd ?? "")
-            + "\n\n===== RESUME HTML =====\n"
-            + html
-            + "\n\n===== HTML OUTPUT =====\n"
-            + "Put the HTML document in one fenced html code block, or return the raw HTML.\n"
-            + "Do not explain the changes.\n"
-            + PromptConversion.HtmlContract;
+            + "\n\n" + ResumeContent.ModelMarker + "\n"
+            + bound.ModelJson()
+            + "\n\n===== JSON PATCH =====\n"
+            + "Return only changed editable fields. Do not return HTML.\n"
+            + PromptConversion.PatchContract;
 
         var prepared = new PreparedRequest {
             JobId = job.JobId ?? "",
@@ -98,28 +99,26 @@ public static class HtmlTailor {
         var tailoredBytes = File.Exists(tailoredPath) ? File.ReadAllBytes(tailoredPath) : null;
         try {
             var sourceHtml = File.ReadAllText(sourcePath);
-            if (!TryExtract(captured, out var html, out var error)) {
-                LogReject("extract", error);
+            var bound = ResumeContent.Bind(sourceHtml);
+            WriteTextAtomic(Path.Combine(directory, "content-model.json"), bound.ModelJson());
+            var applied = bound.Apply(captured);
+            if (!applied.Ok) {
+                LogReject("patch", applied.Error);
                 SaveRejected(directory, captured);
-                return HtmlTailorResult.Failed(error + " The existing resume was not changed.");
+                return HtmlTailorResult.Failed(applied.Error + " The existing resume was not changed.");
             }
-            LogShape(sourceHtml, html);
-            if (!TryValidate(html, out error)) {
+            if (applied.Ignored.Count > 0)
+                PerfLog.Line("HTML PATCH ignored-count=" + applied.Ignored.Count + " id=" + SafeId(jobId));
+            if (!TryValidate(applied.Html, out var error)) {
                 LogReject("validate", error);
                 SaveRejected(directory, captured);
                 return HtmlTailorResult.Failed(error + " The existing resume was not changed.");
             }
-            var restored = Restore(sourceHtml, html, LoadFacts());
-            if (!TryValidate(restored, out error)) {
-                LogReject("validate", error);
-                SaveRejected(directory, html);
-                return HtmlTailorResult.Failed(error + " The existing resume was not changed.");
-            }
-            WriteTextAtomic(tailoredPath, restored);
+            WriteTextAtomic(tailoredPath, applied.Html);
             if (!File.ReadAllBytes(sourcePath).AsSpan().SequenceEqual(sourceBytes))
                 throw new InvalidDataException("The source HTML was changed.");
             PerfLog.Line("HTML accepted id=" + SafeId(jobId));
-            return HtmlTailorResult.Succeeded(restored, tailoredPath);
+            return HtmlTailorResult.Succeeded(applied.Html, tailoredPath);
         } catch (Exception ex) {
             SaveRejected(directory, captured);
             if (tailoredBytes is null) {

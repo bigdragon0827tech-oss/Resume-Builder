@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Xml.Linq;
 using System.Text.Json.Nodes;
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
@@ -416,6 +417,8 @@ static class Program {
             Test("HTML tailoring uses the Original Resume only", HtmlOriginalResumeIsTheOnlySource);
             Test("HTML tailoring regenerates source HTML when the Original Resume changes", HtmlOriginalResumeRegenerates);
             Test("HTML tailoring restores style and allows section edits", HtmlTailorLocksStyleAndSectionOrder);
+            Test("resume content patches update HTML and ignore locked fields", ResumeContentPatches);
+            Test("resume content layouts keep original text and patch known structures", ResumeContentLayouts);
             Test("HTML line height is Word multiple spacing", HtmlLineHeightUsesMultipleSpacing);
 
             Console.WriteLine();
@@ -1530,7 +1533,8 @@ static class Program {
 
     static string AdaptedSample() =>
         "Preserve the user's tailoring strategy and tone.\r\n"
-        + PromptConversion.HtmlContract;
+        + PromptConversion.PatchContractMarker + "\r\n"
+        + PromptConversion.PatchContract;
 
     static void PromptConversionReusesUnchangedSource() => WithAdaptationRoot(() => {
         var source = Path.Combine(NewDir("prompt-src"), "mine.txt");
@@ -1541,14 +1545,12 @@ static class Program {
         Check(PromptConversion.Matches(source), "the same file and hash is ready");
         Equal(File.ReadAllText(PromptConversion.ConvertedPath), PromptConversion.RequireText(source), "jobs read the converted copy");
         var saved = PromptConversion.Load();
-        Equal(PromptConversion.OutputModeHtml, saved?.OutputMode ?? "", "the adaptation is HTML");
-        Equal(PromptConversion.HtmlContractVersion.ToString(), (saved?.HtmlContractVersion ?? 0).ToString(), "the HTML contract version is current");
+        Equal(PromptConversion.OutputModePatch, saved?.OutputMode ?? "", "the adaptation is a patch");
+        Equal(PromptConversion.ResumePatchContractVersion.ToString(), (saved?.ResumePatchContractVersion ?? 0).ToString(), "the patch contract version is current");
         var instruction = PromptConversion.BuildInstruction(File.ReadAllText(source), resumeMode: true);
-        Check(instruction.Contains(PromptConversion.HtmlContract, StringComparison.Ordinal), "the HTML contract is the required output");
-        Check(instruction.Contains("top-level section order", StringComparison.Ordinal), "section order is locked");
-        Check(instruction.Contains("<style> block exactly", StringComparison.Ordinal), "the style block is locked");
+        Check(instruction.Contains(PromptConversion.PatchContract, StringComparison.Ordinal), "the patch contract is the required output");
         Check(instruction.Contains("Do not invent employers", StringComparison.Ordinal), "the user's strategy is included");
-        Check(!instruction.Contains("descriptionLines", StringComparison.Ordinal), "the JSON schema is not the HTML contract");
+        Check(!instruction.Contains("descriptionLines", StringComparison.Ordinal), "the old profile schema is not the patch contract");
     });
 
     static void PromptConversionDetectsSourceChange() => WithAdaptationRoot(() => {
@@ -7780,8 +7782,8 @@ static class Program {
                 File.WriteAllBytes(settings.StyleReferenceResume, new byte[] { 1, 2, 3 });
                 var prepared = EmailOutput.PrepareRun(EmailOutput.Bind(email), settings);
                 Check(prepared.HtmlTailoring, "email tailoring uses HTML");
-                Check(prepared.Text.Contains("===== RESUME HTML =====", StringComparison.Ordinal), "the HTML resume is sent");
-                Check(prepared.Text.Contains("Do not return JSON.", StringComparison.Ordinal), "the shared HTML contract is sent");
+                Check(prepared.Text.Contains(ResumeContent.ModelMarker, StringComparison.Ordinal), "the resume content model is sent");
+                Check(prepared.Text.Contains("\"updates\"", StringComparison.Ordinal), "the shared patch contract is sent");
                 Check(!prepared.Text.Contains("===== COMPLETE JOB PAYLOAD =====", StringComparison.Ordinal), "the JSON resume payload is not sent");
                 Equal(Path.GetFullPath(docx), HtmlTailor.OriginalResumeFile(settings), "Original Resume is the source");
                 var second = EmailOutput.PrepareRun(EmailOutput.Bind(email), settings);
@@ -7790,7 +7792,7 @@ static class Program {
                 var ordinary = new JobTask { JobId = "RB-ORDINARY", Company = "Acme", Title = "Engineer", Jd = "Build things.", Link = "https://example.com/job" };
                 var jobPrepared = EmailOutput.PrepareRun(ordinary, settings);
                 Check(jobPrepared.HtmlTailoring, "a job task uses HTML");
-                Check(jobPrepared.Text.Contains("===== RESUME HTML =====", StringComparison.Ordinal), "a job task sends the resume HTML");
+                Check(jobPrepared.Text.Contains(ResumeContent.ModelMarker, StringComparison.Ordinal), "a job task sends the resume content model");
                 Check(!jobPrepared.Text.Contains("===== COMPLETE JOB PAYLOAD =====", StringComparison.Ordinal), "a job task does not request resume JSON");
                 var manual = EmailOutput.PrepareRun(new JobTask { JobId = "RB-MANUAL", Company = "Acme", Title = "Engineer", Jd = "Build things.", Link = "https://example.com/manual" }, settings);
                 Check(manual.HtmlTailoring, "a selected job uses HTML");
@@ -7808,7 +7810,7 @@ static class Program {
     static void HtmlTailorBilly() {
         Check(!new PreparedRequest().HtmlTailoring, "only HtmlTailor marks a request as HTML");
         Check(ChatResponseReader.ScriptIsReadOnly(ChatResponseReader.ReadLastAssistantHtmlScript), "HTML reader is read-only");
-        Check(ChatResponseReader.ReadLastAssistantHtmlScript.Contains("<html", StringComparison.Ordinal), "HTML reader looks for html");
+        Check(ChatResponseReader.ReadLastAssistantHtmlScript.Contains("\"updates\"", StringComparison.Ordinal), "the reader looks for a JSON patch");
         Check(ChatResponseReader.ReadLastAssistantScript.Contains("no-profile-json", StringComparison.Ordinal), "JSON reader is unchanged");
 
         var source = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "BillyLin.docx");
@@ -7823,19 +7825,24 @@ static class Program {
         var sourceHtml = Path.Combine(folder, "source.html");
         var sourceHtmlBytes = File.ReadAllBytes(sourceHtml);
 
-        var tailored = html
-            .Replace("Senior Full-Stack &amp; AI/ML Software Engineer", "TAILORED_HEADLINE")
-            .Replace("Senior AI/ML and software engineering leader", "TAILORED_SUMMARY")
-            .Replace("Prompt Engineering", "TAILORED_SKILL")
-            .Replace("Caterpillar Inc. | Senior AI Software Engineer | Sep 2025 - Apr 2026",
-                "Changed Employer Inc. | TAILORED_TITLE | Jan 1999 - Apr 2026")
-            .Replace("California, United States | Contract | Remote", "California, United States | Contract | ONSITE")
-            .Replace("University of California, Berkeley", "Changed School")
-            .Replace(">BILLY LIN<", ">CHANGED NAME<")
-            .Replace("reducing experiment turnaround time by 40%", "TAILORED_BULLET reducing experiment turnaround time by 40%");
-        Check(tailored.Contains("TAILORED_HEADLINE") && tailored.Contains("TAILORED_BULLET"), "the sample text was not found to tailor");
+        Check(html.Contains("Senior Full-Stack", StringComparison.Ordinal) && html.Contains("Caterpillar Inc.", StringComparison.Ordinal),
+            "the sample text was not found to tailor");
+        var model = ResumeContent.Bind(html).Model;
+        Check(model.Identity.Name is not null && model.Identity.Headline is not null, "name and headline were not mapped");
+        var role = model.Experience.First(item => (item.Company.Value ?? "").Contains("Caterpillar", StringComparison.Ordinal));
+        var patch = "{\"updates\":["
+            + "{\"id\":\"header.headline\",\"value\":\"TAILORED_HEADLINE\"},"
+            + "{\"id\":\"header.name\",\"value\":\"CHANGED NAME\"},"
+            + "{\"id\":\"summary\",\"value\":[\"TAILORED_SUMMARY\"]},"
+            + "{\"id\":\"skills\",\"value\":[{\"label\":\"AI\",\"items\":[\"TAILORED_SKILL\"]}]},"
+            + "{\"id\":\"" + role.Company.Id + "\",\"value\":\"Changed Employer Inc.\"},"
+            + "{\"id\":\"" + role.Title.Id + "\",\"value\":\"TAILORED_TITLE\"},"
+            + "{\"id\":\"" + role.Dates.Id + "\",\"value\":\"Jan 1999 - Apr 2026\"},"
+            + "{\"id\":\"" + role.Bullets.Id + "\",\"value\":[\"TAILORED_BULLET reducing experiment turnaround time by 40%\"]},"
+            + "{\"id\":\"" + model.Education[0].Id + "\",\"value\":\"Changed School\"}"
+            + "]}";
 
-        var accepted = HtmlTailor.Accept(tailored, jobId);
+        var accepted = HtmlTailor.Accept(patch, jobId);
         Check(accepted.Ok, accepted.Error);
         var result = accepted.Html;
         Check(result.Contains("TAILORED_HEADLINE"), "headline was not tailored");
@@ -8031,6 +8038,294 @@ static class Program {
         Console.WriteLine("        " + docx);
     }
 
+    static void ResumeContentPatches() {
+        var html = PatchResumeHtml(includeProject: true);
+        var bound = ResumeContent.Bind(html);
+        var model = bound.Model;
+        var json = bound.ModelJson();
+        Check(json.Contains("BILLY LIN", StringComparison.Ordinal), "the name is in the model");
+        Check(json.Contains("billy@example.com", StringComparison.Ordinal), "contact is in the model");
+        Check(json.Contains("Caterpillar Inc.", StringComparison.Ordinal), "the employer is in the model");
+        Check(json.Contains("Sep 2025 - Apr 2026", StringComparison.Ordinal), "the dates are in the model");
+        Check(json.Contains("California, United States", StringComparison.Ordinal), "the location is in the model");
+        Check(json.Contains("University of California, Berkeley", StringComparison.Ordinal), "education is in the model");
+        Check(json.Contains("Sample certification", StringComparison.Ordinal), "the certification is in the model");
+        Check(CandidateProfileRoles.Map.Any(item => item.Path == "experience.company" && item.Role == CandidateProfileRoles.Locked),
+            "candidate profile employers stay locked facts");
+        Check(CandidateProfileRoles.Map.Any(item => item.Path == "summary" && item.Role == CandidateProfileRoles.Tailorable),
+            "candidate profile summary stays tailorable");
+        Check(CandidateProfileRoles.Map.Any(item => item.Path == "experience.descriptionLines" && item.Role == CandidateProfileRoles.Career),
+            "candidate profile achievements stay career context");
+
+        var role = model.Experience[0];
+        Equal("experience.caterpillar-01", role.Id, "experience id");
+        Check(role.Company.Editable == false && role.Dates.Editable == false && role.Title.Editable, "the app marks editability");
+
+        var locked = ApplyPatch(html, "{\"updates\":[{\"id\":\"" + role.Company.Id + "\",\"value\":\"Changed Employer\"}]}");
+        Check(locked.Html.Contains("Caterpillar Inc.", StringComparison.Ordinal), "a locked employer update was applied");
+        Check(!locked.Html.Contains("Changed Employer", StringComparison.Ordinal), "the locked employer text was written");
+        Check(locked.Ignored.Any(item => item.StartsWith("locked:", StringComparison.Ordinal)), "the locked update was logged as ignored");
+
+        var headline = ApplyPatch(html, "{\"updates\":[{\"id\":\"header.headline\",\"value\":\"Senior Backend Engineer\"}]}");
+        Check(headline.Html.Contains("Senior Backend Engineer", StringComparison.Ordinal), "the headline was not updated");
+        Check(headline.Html.Contains("<style>", StringComparison.Ordinal), "the style block was dropped");
+
+        var summary = ApplyPatch(html, "{\"updates\":[{\"id\":\"summary\",\"value\":[\"Only one paragraph.\"]}]}");
+        Check(summary.Html.Contains("Only one paragraph.", StringComparison.Ordinal), "the summary was not replaced");
+        Check(!summary.Html.Contains("Para two.", StringComparison.Ordinal), "the extra summary paragraph remained");
+
+        var moreSkills = ApplyPatch(html, "{\"updates\":[{\"id\":\"skills\",\"value\":["
+            + "{\"label\":\"Backend Engineering\",\"items\":[\"Java\",\"Spring Boot\",\"Python\"]},"
+            + "{\"label\":\"Cloud\",\"items\":[\"AWS\"]},"
+            + "{\"label\":\"Data\",\"items\":[\"SQL\"]}]}]}");
+        Check(moreSkills.Html.Contains("Data: SQL", StringComparison.Ordinal), "a skill group was not added");
+        var fewerSkills = ApplyPatch(html, "{\"updates\":[{\"id\":\"skills\",\"value\":[{\"label\":\"Backend Engineering\",\"items\":[\"Java\"]}]}]}");
+        Check(fewerSkills.Html.Contains("Backend Engineering: Java", StringComparison.Ordinal), "the remaining skill group was lost");
+        Check(!fewerSkills.Html.Contains("Cloud:", StringComparison.Ordinal), "a removed skill group remained");
+        Check(!fewerSkills.Html.Contains("Spring Boot", StringComparison.Ordinal), "a removed skill remained");
+
+        var moreBullets = ApplyPatch(html, "{\"updates\":[{\"id\":\"" + role.Bullets.Id + "\",\"value\":[\"First bullet.\",\"Second bullet.\",\"Third bullet.\"]}]}");
+        Check(moreBullets.Html.Contains("• Third bullet.", StringComparison.Ordinal), "a bullet was not added");
+        Equal("4", CountOf(moreBullets.Html, "•").ToString(), "bullet count did not increase");
+        var fewerBullets = ApplyPatch(html, "{\"updates\":[{\"id\":\"" + role.Bullets.Id + "\",\"value\":[\"Only bullet.\"]}]}");
+        Check(fewerBullets.Html.Contains("Only bullet.", StringComparison.Ordinal), "the remaining bullet was lost");
+        Check(!fewerBullets.Html.Contains("Second bullet.", StringComparison.Ordinal), "a removed bullet remained");
+
+        var project = ApplyPatch(html, "{\"updates\":[{\"id\":\"" + role.Projects.Id + "\",\"value\":[\"Engineering AI Platform\"]}]}");
+        Check(project.Html.Contains("Engineering AI Platform", StringComparison.Ordinal), "the project line was not changed");
+        Check(!project.Html.Contains("Platform Project", StringComparison.Ordinal), "the old project line remained");
+        var rejectedProject = ApplyPatch(html, "{\"updates\":[{\"id\":\"" + role.Projects.Id + "\",\"value\":\"Engineering AI Platform\"}]}");
+        Check(rejectedProject.Html.Contains("Platform Project", StringComparison.Ordinal), "a string project value removed the original project");
+        var removed = ApplyPatch(html, "{\"updates\":[{\"id\":\"" + role.Projects.Id + "\",\"value\":[]}]}");
+        Check(!removed.Html.Contains("Platform Project", StringComparison.Ordinal), "the project line was not removed");
+
+        var without = PatchResumeHtml(includeProject: false);
+        var added = ApplyPatch(without, "{\"updates\":[{\"id\":\"experience.caterpillar-01.projects\",\"value\":[\"Engineering AI Platform\"]}]}");
+        Check(added.Html.Contains("Engineering AI Platform", StringComparison.Ordinal), "a missing project line was not added");
+        Check(added.Html.Contains("class=\"a\"", StringComparison.Ordinal), "the added project dropped the original class");
+
+        var unknown = ApplyPatch(html, "{\"updates\":[{\"id\":\"not.a.field\",\"value\":\"Nope\"},{\"id\":\"header.headline\",\"value\":\"Visible Headline\"}]}");
+        Check(unknown.Ok && unknown.Html.Contains("Visible Headline", StringComparison.Ordinal), "a valid field was dropped with an unknown id");
+        Check(!unknown.Html.Contains("Nope", StringComparison.Ordinal), "an unknown id was written");
+
+        var folderId = "RB-PATCH-MALFORMED";
+        HtmlTailor.WriteSource(folderId, html);
+        var sourcePath = Path.Combine(HtmlTailor.JobDirectory(folderId), "source.html");
+        var before = File.ReadAllBytes(sourcePath);
+        var broken = HtmlTailor.Accept("{ not json", folderId);
+        Check(!broken.Ok, "malformed JSON was accepted");
+        Check(File.ReadAllBytes(sourcePath).AsSpan().SequenceEqual(before), "malformed JSON changed the source HTML");
+        if (Directory.Exists(HtmlTailor.JobDirectory(folderId))) Directory.Delete(HtmlTailor.JobDirectory(folderId), true);
+
+        var rules = "Tailor every bullet to the job description. Do not invent employers.\r\nKeep metrics that already exist.";
+        var adapted = PromptConversion.Adapt(rules);
+        Check(adapted.Contains("Do not invent employers", StringComparison.Ordinal), "a user rule was rewritten");
+        Check(adapted.Contains("Keep metrics that already exist.", StringComparison.Ordinal), "a user rule was dropped");
+        Check(adapted.Contains(PromptConversion.PatchContractMarker, StringComparison.Ordinal), "the patch contract was not appended");
+
+        var oldContract = "Follow the JD first.\r\n\r\n===== OUTPUT FORMAT =====\r\nReturn complete HTML.\r\nPreserve the <style> block.\r\nReturn the full document.\r\n\r\nSKILLS RULES\r\nKeep only skills the candidate has used.";
+        var replaced = PromptConversion.Adapt(oldContract);
+        Check(replaced.Contains("Follow the JD first.", StringComparison.Ordinal), "a tailoring rule before the output section was dropped");
+        Check(replaced.Contains("SKILLS RULES", StringComparison.Ordinal), "the section after the output contract was dropped");
+        Check(replaced.Contains("Keep only skills the candidate has used.", StringComparison.Ordinal), "a later user rule was dropped");
+        Check(!replaced.Contains("Return complete HTML.", StringComparison.Ordinal), "the old HTML output instruction remained");
+        Check(!replaced.Contains("Preserve the <style> block.", StringComparison.Ordinal), "the old style instruction remained");
+        Check(replaced.Contains(PromptContractVersionMarker(), StringComparison.Ordinal), "the patch contract was not added after replacement");
+
+        var plain = "Match the role to the candidate's real experience.";
+        var appended = PromptConversion.Adapt(plain);
+        Check(appended.StartsWith(plain, StringComparison.Ordinal), "a prompt with no output section was rewritten");
+        Check(appended.Contains(PromptConversion.PatchContract, StringComparison.Ordinal), "the patch contract was not appended");
+
+        WithPreparedFiles(() => {
+            var previous = HtmlTailor.OriginalCacheRoot;
+            HtmlTailor.OriginalCacheRoot = NewDir("patch-shared-cache");
+            try {
+                var docx = Path.Combine(NewDir("patch-shared-docx"), "original.docx");
+                WriteSyntheticResume(docx);
+                var prompt = Path.Combine(NewDir("patch-shared-prompt"), "prompt.txt");
+                File.WriteAllText(prompt, "Tailor the resume to the job.");
+                var profile = Path.Combine(NewDir("patch-shared-profile"), "profile.json");
+                File.WriteAllText(profile, """{"info":{"name":"Ada Lovelace"},"summary":"","skills":[],"experience":[],"education":[],"certifications":[]}""");
+                var settings = new AppSettings {
+                    PromptMode = PromptModes.Resume,
+                    MasterPrompt = prompt,
+                    OriginalResume = docx,
+                    CandidateProfile = profile,
+                    ResumeRootFolder = Path.Combine(NewDir("patch-shared-out"), "Resumes"),
+                    Docx = true
+                };
+                var jobPrepared = HtmlTailor.Prepare(new JobTask {
+                    JobId = "RB-PATCH-JOB", Company = "Acme", Title = "Engineer", Jd = "Build APIs.", Link = "https://example.com/job"
+                }, settings);
+                var emailPrepared = EmailOutput.PrepareRun(EmailOutput.Bind(new EmailTask {
+                    Id = "ET-PATCH", Company = "Acme", JobTitle = "Engineer", JobDescription = "Build APIs.", EmailUrl = "https://example.com/email"
+                }), settings);
+                Check(jobPrepared.HtmlTailoring && emailPrepared.HtmlTailoring, "both paths tailor HTML");
+                Check(jobPrepared.Text.Contains(ResumeContent.ModelMarker, StringComparison.Ordinal)
+                    && emailPrepared.Text.Contains(ResumeContent.ModelMarker, StringComparison.Ordinal),
+                    "both paths send the resume content model");
+                Check(jobPrepared.Text.Contains("\"updates\"", StringComparison.Ordinal)
+                    && emailPrepared.Text.Contains("\"updates\"", StringComparison.Ordinal),
+                    "both paths request a JSON patch");
+                Check(!jobPrepared.Text.Contains("===== RESUME HTML =====", StringComparison.Ordinal)
+                    && !emailPrepared.Text.Contains("===== RESUME HTML =====", StringComparison.Ordinal),
+                    "a path still sends the full HTML resume");
+            } finally {
+                HtmlTailor.OriginalCacheRoot = previous;
+                foreach (var id in new[] { "RB-PATCH-JOB", "ET-PATCH" }) {
+                    var dir = HtmlTailor.JobDirectory(id);
+                    if (Directory.Exists(dir)) Directory.Delete(dir, true);
+                }
+            }
+        });
+    }
+
+    static void ResumeContentLayouts() {
+        var billy = "<html><body>"
+            + "<p>BILLY LIN</p><p>Senior Engineer</p><p>billy@example.com</p>"
+            + "<h1>TECHNICAL SKILLS</h1>"
+            + "<p>Backend Engineering</p><p>Java, Spring Boot, Python</p>"
+            + "<p>Cloud</p><p>AWS, GCP</p>"
+            + "</body></html>";
+        var billyModel = ResumeContent.Bind(billy).Model;
+        Equal("2", (billyModel.Skills?.Value.Count ?? 0).ToString(), "Billy-style skill groups");
+        Equal("skillGroups", billyModel.EditableFields.Find(field => field.Id == "skills")?.Type ?? "", "skills type");
+        var moreItems = ApplyPatch(billy, "{\"updates\":[{\"id\":\"skills\",\"value\":["
+            + "{\"label\":\"Backend Engineering\",\"items\":[\"Java\",\"Kotlin\"]},"
+            + "{\"label\":\"Cloud\",\"items\":[\"AWS\"]}]}]}");
+        Check(moreItems.Html.Contains("Kotlin", StringComparison.Ordinal), "a skill item was not added");
+        Check(!moreItems.Html.Contains("Spring Boot", StringComparison.Ordinal), "a removed skill item remained");
+        Check(moreItems.Html.Contains("AWS", StringComparison.Ordinal), "the remaining skill group was lost");
+
+        var luis = "<html><body><h1>TECHNICAL SKILLS</h1>"
+            + "<p>Frontend</p><p>• Angular</p><p>• React</p>"
+            + "<p>Backend</p><p>• C#</p><p>• Java</p></body></html>";
+        var luisModel = ResumeContent.Bind(luis).Model;
+        Equal("2", (luisModel.Skills?.Value.Count ?? 0).ToString(), "Luis bullet skill groups");
+        Equal("2", (luisModel.Skills?.Value[0].Items.Count ?? 0).ToString(), "Luis bullet items");
+        var fewerLuis = ApplyPatch(luis, "{\"updates\":[{\"id\":\"skills\",\"value\":["
+            + "{\"label\":\"Frontend\",\"items\":[\"Angular\"]},"
+            + "{\"label\":\"Backend\",\"items\":[\"C#\",\"Java\"]}]}]}");
+        Check(!fewerLuis.Html.Contains("React", StringComparison.Ordinal), "a removed bullet skill remained");
+        Check(fewerLuis.Html.Contains("Angular", StringComparison.Ordinal), "a kept bullet skill was lost");
+
+        var brandon = "<html><body><h1>TECHNICAL SKILLS</h1>"
+            + "<p>Programming: Python, Java</p><p>Cloud: AWS</p></body></html>";
+        Equal("2", (ResumeContent.Bind(brandon).Model.Skills?.Value.Count ?? 0).ToString(), "Brandon same-line skill groups");
+
+        var clifton = "<html><body><p>CLIFTON COLLINS</p><p>clifton@example.com</p>"
+            + "<p>Built distributed systems for payments and kept the original wording.</p>"
+            + "<h1>EDUCATION</h1><p>State University</p>"
+            + "<h1>SKILLS</h1><p>Languages: Java, Python</p></body></html>";
+        var cliftonModel = ResumeContent.Bind(clifton).Model;
+        Check(cliftonModel.Summary is null, "a missing summary heading was invented");
+        Check(cliftonModel.Identity.Headline is null, "a sentence was treated as the headline");
+        Check(cliftonModel.Education.Count == 1 && cliftonModel.Skills is not null, "education before skills was not read");
+        Check(cliftonModel.Blocks.Any(block => block.Kind == "unclassified" && block.Text.Contains("original wording", StringComparison.Ordinal)),
+            "unclassified header text was dropped");
+
+        var jeff = "<html><body><p>JEFF FERMON</p><p>jeff@example.com</p><h1>TECHNICAL SKILLS</h1>"
+            + "<table><tr><td><p class=\"a\">Languages</p></td><td><p class=\"a\">Java, Python</p></td></tr>"
+            + "<tr><td><p class=\"a\">Cloud</p></td><td><p class=\"a\">AWS</p></td></tr></table>"
+            + "<h1>PROFESSIONAL EXPERIENCE</h1>"
+            + "<p class=\"a\">Acme Corp</p><p class=\"a\">Engineer | Jan 2020 - Dec 2021</p>"
+            + "<p class=\"a\">Billing Platform</p><p class=\"a\">Payments API</p><p class=\"a\">• One.</p>"
+            + "<p class=\"a\">Senior Engineer | Jan 2022 - Present</p><p class=\"a\">• Two.</p>"
+            + "</body></html>";
+        var jeffModel = ResumeContent.Bind(jeff).Model;
+        Equal("2", (jeffModel.Skills?.Value.Count ?? 0).ToString(), "Jeff table skill groups");
+        Equal("2", jeffModel.Experience.Count.ToString(), "Jeff titles under one employer");
+        Equal("2", jeffModel.Experience[0].Projects.Value.Count.ToString(), "Jeff projects under one employer");
+        var addedRow = ApplyPatch(jeff, "{\"updates\":[{\"id\":\"skills\",\"value\":["
+            + "{\"label\":\"Languages\",\"items\":[\"Java\",\"Python\"]},"
+            + "{\"label\":\"Cloud\",\"items\":[\"AWS\"]},"
+            + "{\"label\":\"Data\",\"items\":[\"SQL\"]}]}]}");
+        Check(addedRow.Html.Contains("SQL", StringComparison.Ordinal) && addedRow.Html.Contains("class=\"a\"", StringComparison.Ordinal),
+            "a table skill row was not added in the original style");
+        var fewerBullets = ApplyPatch(jeff, "{\"updates\":[{\"id\":\"" + jeffModel.Experience[0].Bullets.Id + "\",\"value\":[]}]}");
+        Check(!fewerBullets.Html.Contains("• One.", StringComparison.Ordinal), "an experience bullet was not removed");
+        Check(fewerBullets.Html.Contains("Billing Platform", StringComparison.Ordinal), "removing a bullet removed a project");
+        var moreBullets = ApplyPatch(jeff, "{\"updates\":[{\"id\":\"" + jeffModel.Experience[1].Bullets.Id + "\",\"value\":[\"Two.\",\"Three.\"]}]}");
+        Check(moreBullets.Html.Contains("• Three.", StringComparison.Ordinal), "an experience bullet was not added");
+
+        var noHeadline = "<html><body><p>BILLY LIN</p><p>billy@example.com</p><h1>SKILLS</h1><p>Languages: Java</p></body></html>";
+        var bare = ResumeContent.Bind(noHeadline).Model;
+        Check(!bare.EditableFields.Any(field => field.Id == "header.headline"), "header.headline was offered without a headline");
+        Check(!bare.EditableFields.Any(field => field.Id == "summary"), "summary was offered without a summary");
+        Check(bare.EditableFields.Any(field => field.Id == "skills" && field.Type == ResumeContent.SkillGroupsType), "skills was left out of the schema");
+
+        var kept = ApplyPatch(billy, "{\"updates\":[{\"id\":\"skills\",\"value\":\"Java\"},{\"id\":\"header.headline\",\"value\":[\"Nope\"]}]}");
+        Check(kept.Html.Contains("Spring Boot", StringComparison.Ordinal) && kept.Html.Contains("Senior Engineer", StringComparison.Ordinal),
+            "a rejected skills patch removed the original skills");
+        Check(kept.Ignored.Any(item => item.StartsWith("type:", StringComparison.Ordinal)), "the rejected skills patch was not ignored");
+
+        var loose = "<html><body><h1>PROFESSIONAL EXPERIENCE</h1>"
+            + "<p>Caterpillar Inc. | Engineer | Sep 2025 - Apr 2026</p>"
+            + "<p>This standalone sentence stays because it is not a project.</p>"
+            + "<p>• First bullet.</p></body></html>";
+        var looseModel = ResumeContent.Bind(loose).Model;
+        Check(looseModel.Blocks.Any(block => block.Kind == "unclassified" && block.Text.Contains("standalone sentence", StringComparison.Ordinal)),
+            "an uncertain experience line was dropped");
+        var patchedLoose = ApplyPatch(loose, "{\"updates\":[{\"id\":\"" + looseModel.Experience[0].Bullets.Id + "\",\"value\":[\"Changed bullet.\"]}]}");
+        Check(patchedLoose.Html.Contains("standalone sentence", StringComparison.Ordinal), "a bullet patch removed unclassified text");
+        Check(patchedLoose.Html.Contains("Changed bullet.", StringComparison.Ordinal), "the bullet patch was not applied");
+
+        var documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        foreach (var name in new[] { "BillyLin.docx", "Luis_Torres.docx", "Jeff_Fermon.docx", "Clifton Isiah Collins.docx", "Brandon Liu.docx" }) {
+            var path = Path.Combine(documents, name);
+            if (!File.Exists(path)) continue;
+            var html = HtmlResumeHtml.Normalize(HtmlResumeHtml.Emit(DocxHtmlReader.Read(path)));
+            var before = VisibleText(ResumeContent.Bind(html).Html());
+            var applied = ResumeContent.Bind(html).Apply("{\"updates\":[{\"id\":\"skills\",\"value\":\"rejected\"}]}");
+            Check(applied.Ok, name + " rejected a skills patch as malformed");
+            Check(VisibleText(applied.Html) == before, name + " rejected skills patch changed original text");
+        }
+    }
+
+    static string VisibleText(string html) =>
+        string.Concat(XDocument.Parse(html).DescendantNodes().OfType<XText>().Select(node => node.Value));
+
+    static string PromptContractVersionMarker() => PromptConversion.PatchContractMarker;
+
+    static PatchApplication ApplyPatch(string html, string patch) => ResumeContent.Bind(html).Apply(patch);
+
+    static int CountOf(string text, string token) {
+        var count = 0;
+        var index = 0;
+        while ((index = text.IndexOf(token, index, StringComparison.Ordinal)) >= 0) {
+            count++;
+            index += token.Length;
+        }
+        return count;
+    }
+
+    static string PatchResumeHtml(bool includeProject) =>
+        "<html><head><style>\n"
+        + "body { font-family: Arial; font-size: 12pt; }\n"
+        + ".a { font-size: 11pt; }\n"
+        + "</style></head><body>\n"
+        + "<p class=\"a\">BILLY LIN</p>\n"
+        + "<p class=\"a\">Senior Engineer</p>\n"
+        + "<p class=\"a\">billy@example.com | 555-0100</p>\n"
+        + "<h1 class=\"a\">PROFESSIONAL SUMMARY</h1>\n"
+        + "<p class=\"a\">Para one.</p>\n"
+        + "<p class=\"a\">Para two.</p>\n"
+        + "<h1 class=\"a\">TECHNICAL SKILLS</h1>\n"
+        + "<p class=\"a\">Backend Engineering: Java, Spring Boot</p>\n"
+        + "<p class=\"a\">Cloud: AWS</p>\n"
+        + "<h1 class=\"a\">PROFESSIONAL EXPERIENCE</h1>\n"
+        + "<p class=\"a\">Caterpillar Inc. | Engineer | Sep 2025 - Apr 2026</p>\n"
+        + (includeProject ? "<p class=\"a\">Platform Project</p>\n" : "")
+        + "<p class=\"a\">• First bullet.</p>\n"
+        + "<p class=\"a\">• Second bullet.</p>\n"
+        + "<p class=\"a\">California, United States | Contract | Remote</p>\n"
+        + "<h1 class=\"a\">EDUCATION</h1>\n"
+        + "<p class=\"a\">University of California, Berkeley</p>\n"
+        + "<h1 class=\"a\">CERTIFICATIONS</h1>\n"
+        + "<p class=\"a\">• Sample certification</p>\n"
+        + "</body></html>";
+
     static string HtmlTailorSample() =>
         "<html><head><style>\n"
         + "body { font-family: Arial; font-size: 12pt; }\n"
@@ -8061,31 +8356,13 @@ static class Program {
         var rejectedHtml = Path.Combine(folder, "tailored.rejected.html");
         Check(File.Exists(sourceHtml) && File.Exists(rejectedHtml), "the rejected HTML sample is missing");
         var sourceBytes = File.ReadAllBytes(sourceHtml);
+        var tailoredPath = Path.Combine(folder, "tailored.html");
+        var tailoredBytes = File.Exists(tailoredPath) ? File.ReadAllBytes(tailoredPath) : null;
         var accepted = HtmlTailor.Accept(File.ReadAllText(rejectedHtml), "RB-20260927-010753-7ee075d6");
-        Check(accepted.Ok, accepted.Error);
+        Check(!accepted.Ok, "a full HTML answer was applied");
         Check(File.ReadAllBytes(sourceHtml).AsSpan().SequenceEqual(sourceBytes), "source.html was overwritten");
-        Check(accepted.Html.Contains("Senior Backend Engineer"), "the tailored headline was removed");
-        Check(accepted.Html.Contains("Brandon Liu"), "the name was lost");
-        Check(accepted.Html.Contains("ServiceNow"), "the employer was lost");
-        Check(accepted.Html.Contains("July 2026"), "the employment date was lost");
-        Check(accepted.Html.Contains("San Diego, CA"), "the location was lost");
-        Check(accepted.Html.Contains("University of California, San Diego"), "education was lost");
-        Check(accepted.Html.Contains("Google Cloud Professional Machine Learning Engineer"), "a certification was lost");
-        var docx = Path.Combine(folder, "tailored.docx");
-        if (File.Exists(docx)) File.Delete(docx);
-        HtmlTailor.WriteDocx(accepted.Html, docx);
-        using (var output = WordprocessingDocument.Open(docx, false)) {
-            var errors = new OpenXmlValidator(FileFormatVersions.Office2019).Validate(output).Take(4).Select(error => error.Description);
-            Check(!errors.Any(), "tailored DOCX is not schema-valid: " + string.Join(" | ", errors));
-        }
-        var visible = HtmlRoundTrip.VisibleText(docx);
-        Check(visible.Contains("Senior Backend Engineer"), "DOCX is missing the tailored headline");
-        Check(visible.Contains("Brandon Liu"), "DOCX is missing the name");
-        Check(visible.Contains("ServiceNow"), "DOCX is missing the employer");
-        Check(visible.Contains("July 2026"), "DOCX is missing the date");
-        Console.WriteLine("        source-elements=" + CountTags(sourceHtml) + " returned-elements=" + CountTags(rejectedHtml));
-        Console.WriteLine("        " + accepted.SavedHtmlPath);
-        Console.WriteLine("        " + docx);
+        if (tailoredBytes is null) Check(!File.Exists(tailoredPath), "a failed HTML answer created tailored.html");
+        else Check(File.ReadAllBytes(tailoredPath).AsSpan().SequenceEqual(tailoredBytes), "a failed HTML answer changed tailored.html");
     }
 
     static int CountTags(string path) {

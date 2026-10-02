@@ -509,89 +509,23 @@ public partial class MainWindow : Window {
     /// <summary>Settings asks before offering a reset; a running queue refuses it.</summary>
     public bool IsQueueRunning => _queue.IsRunning;
 
-    bool _promptConversionActive;
-
     /// <summary>
-    /// Sends the user's tailoring prompt through the AI Workspace and stores the adapted copy.
-    /// Does not change the file the user selected. Refuses while Job Tasks or Email Tasks own the workspace.
+    /// Prepares the imported tailoring prompt locally and stores the adapted copy.
+    /// Does not change the file the user selected and does not use ChatGPT.
     /// </summary>
-    public async Task<(bool Ok, string Detail)> AdaptTailoringPromptAsync(string originalPath, bool resumeMode) {
+    public Task<(bool Ok, string Detail)> AdaptTailoringPromptAsync(string originalPath, bool resumeMode) {
+        _ = resumeMode;
         const string kept = "The previous prepared prompt was kept.";
-        if (_promptConversionActive)
-            return (false, "in-progress");
-        if (_tailor.Mode != TailorMode.Idle || _tailor.Pending is not null
-            || _baselineProfileActive || _queue.IsRunning || JobWorkspaceBusy
-            || _emailBusy || _emailInsideLoop || _extractHolding) {
-            PerfLog.Line("PROMPT adapt refused reason=busy");
-            return (false, "Job Tasks or Email Tasks are using ChatGPT. Wait until they finish, then choose the Tailoring Prompt again. " + kept);
-        }
         if (!File.Exists(originalPath))
-            return (false, "The Tailoring Prompt file could not be read. " + kept);
+            return Task.FromResult((false, "The Tailoring Prompt file could not be read. " + kept));
         if (PromptConversion.Matches(originalPath))
-            return (true, "");
-
-        var decision = _tailor.Request(TailorMode.PromptConversion, requestedModeBusy: false);
-        if (decision != TailorDecision.StartNow) {
-            PerfLog.Line("PROMPT adapt refused reason=" + decision);
-            return (false, "Job Tasks or Email Tasks are using ChatGPT. Wait until they finish, then choose the Tailoring Prompt again. " + kept);
+            return Task.FromResult((true, ""));
+        if (!PromptConversion.TryAdapt(originalPath, out var error)) {
+            PerfLog.Line("PROMPT adapt failed reason=unusable");
+            return Task.FromResult((false, error.Length > 0 ? error : "The tailoring prompt could not be prepared. " + kept));
         }
-
-        _promptConversionActive = true;
-        _watcher.Disarm();
-        NavigateTo("AiWorkspace");
-        var detail = "ChatGPT did not finish preparing the prompt. " + kept;
-        try {
-            await EnsureChatAsync();
-            if (Chat is null || !await NavigateFreshChatAsync()) {
-                PerfLog.Line("PROMPT adapt failed reason=browser");
-                return (false, detail);
-            }
-            var instruction = PromptConversion.BuildInstruction(File.ReadAllText(originalPath), resumeMode);
-            var fill = await ChatComposer.FillAsync(Chat, instruction);
-            if (!fill.Success) {
-                PerfLog.Line("PROMPT adapt failed reason=fill");
-                return (false, detail);
-            }
-            _sendCancellation?.Cancel();
-            _sendCancellation = new System.Threading.CancellationTokenSource();
-            var send = await ChatSender.SendAsync(new WebViewChatProbe(Chat), _sendCancellation.Token);
-            if (!send.Success) {
-                PerfLog.Line("PROMPT adapt failed reason=send");
-                return (false, detail);
-            }
-            using var wait = new System.Threading.CancellationTokenSource();
-            var outcome = await ChatCompletionWatcher.WaitForAnswerAsync(
-                new WebViewCompletionProbe(Chat), wait.Token, null, null,
-                () => RateLimit.IsShownAsync(Chat));
-            if (outcome != CompletionOutcome.Ready) {
-                PerfLog.Line("PROMPT adapt failed reason=" + outcome);
-                return (false, detail);
-            }
-            var read = await ChatResponseReader.ReadStableAsync(async ct => {
-                if (Chat is null) return new ChatReadResult { Status = ChatReadStatus.Error, Detail = "browser" };
-                var raw = await Chat.ExecuteScriptAsync(EmailExtractor.ReadScript);
-                return ChatResponseReader.ParseScriptPayload(raw);
-            }, budgetMs: EmailExtractor.CaptureBudgetMs, requireStable: true, cancellation: wait.Token);
-            var saveError = "";
-            if (!read.Success || !PromptConversion.TrySave(originalPath, read.Text, out saveError)) {
-                PerfLog.Line("PROMPT adapt failed reason=unusable");
-                return (false, saveError.Length > 0 ? saveError : detail);
-            }
-            PerfLog.Line("PROMPT adapt saved");
-            return (true, "");
-        } catch (Exception ex) {
-            PerfLog.Line("PROMPT adapt failed reason=" + ex.GetType().Name);
-            return (false, detail);
-        } finally {
-            _promptConversionActive = false;
-            if (_tailor.Mode == TailorMode.PromptConversion && _tailor.Pending is null)
-                _tailor.Release();
-            else             if (_tailor.Pending is not null)
-                await TryYieldTailorAsync();
-            NavigateTo("Settings");
-            SettingsHost.ShowSection("Candidate Profile");
-            RefreshButtons();
-        }
+        PerfLog.Line("PROMPT adapt saved");
+        return Task.FromResult((true, ""));
     }
 
     bool _baselineProfileActive;
@@ -600,10 +534,8 @@ public partial class MainWindow : Window {
 
     /// <summary>True when no job is using ChatGPT, so a candidate-profile rebuild can send.</summary>
     public bool CanStartBaselineProfile(out string reason) {
-        if (_promptConversionActive || _baselineProfileActive || _queue.IsRunning || _activeJob is not null || _tasks.Any(t => t.Status == "Processing")) {
-            reason = _promptConversionActive
-                ? "A tailoring prompt is being prepared. Wait until that finishes."
-                : "A job is already running. Wait until it finishes, then choose the resume again.";
+        if ( _baselineProfileActive || _queue.IsRunning || _activeJob is not null || _tasks.Any(t => t.Status == "Processing")) {
+            reason = "A job is already running. Wait until it finishes, then choose the resume again.";
             return false;
         }
         reason = "";
@@ -966,7 +898,7 @@ public partial class MainWindow : Window {
     }
 
     void RefreshButtons() {
-        var running=_queue.IsRunning || _baselineProfileActive || _promptConversionActive;
+        var running=_queue.IsRunning || _baselineProfileActive;
         RetryFailedButton.IsEnabled=!running && _tasks.Any(t=>t.Status=="Failed");
         GenerateDocumentsButton.IsEnabled=!running && TaskList.SelectedItem is JobTask g && g.Status=="Completed";
         ProcessSelectedButton.IsEnabled=!running && TaskList.SelectedItem is JobTask j && j.Status!="Processing";
@@ -980,7 +912,7 @@ public partial class MainWindow : Window {
 
     /// <summary>Binds indeterminate progress bars to real queue / Processing state — never simulated.</summary>
     void UpdateBusyIndicators() {
-        var busy = _extraBusy > 0 || _baselineProfileActive || _promptConversionActive || _queue.IsRunning || _tasks.Any(t => t.Status == "Processing");
+        var busy = _extraBusy > 0 || _baselineProfileActive || _queue.IsRunning || _tasks.Any(t => t.Status == "Processing");
         if (ShellBusyBar is not null)
             ShellBusyBar.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         if (ChatBusyBar is not null)
@@ -1813,7 +1745,7 @@ public partial class MainWindow : Window {
     }
 
     void ProcessSelected_Click(object sender,RoutedEventArgs e) {
-        if(_baselineProfileActive || _promptConversionActive) return;
+        if(_baselineProfileActive) return;
         if(_tailor.Mode==TailorMode.EmailTasks || _tailor.Pending==TailorMode.EmailTasks) {
             QueueStatus.Text="Paused — Email Tasks active";
             return;
@@ -1839,10 +1771,8 @@ public partial class MainWindow : Window {
     // ---------- A6.6.12 sequential queue ----------
 
     async void StartQueue_Click(object sender,RoutedEventArgs e) {
-        if(_baselineProfileActive || _promptConversionActive) {
-            QueueStatus.Text=_promptConversionActive
-                ? "Wait until the tailoring prompt is ready, then start the queue."
-                : "Wait until the candidate profile finishes, then start the queue.";
+        if(_baselineProfileActive) {
+            QueueStatus.Text="Wait until the candidate profile finishes, then start the queue.";
             return;
         }
         await RequestTailorModeAsync(TailorMode.JobTasks);
@@ -1862,10 +1792,8 @@ public partial class MainWindow : Window {
 
     async Task BeginEmailRunAsync(bool batch, string? onlyId) {
         if(_emailLoopActive) return;
-        if(_baselineProfileActive || _promptConversionActive) {
-            QueueStatus.Text=_promptConversionActive
-                ? "Wait until the tailoring prompt is ready, then start Email Tasks."
-                : "Wait until the candidate profile finishes, then start Email Tasks.";
+        if(_baselineProfileActive) {
+            QueueStatus.Text="Wait until the candidate profile finishes, then start Email Tasks.";
             return;
         }
         _emailLoopActive=true;
@@ -1935,7 +1863,7 @@ public partial class MainWindow : Window {
             if(JobWorkspaceBusy) return false;
             return FinishExtractHandoff();
         }
-        if(_promptConversionActive || _tailor.Pending is null || JobWorkspaceBusy || _emailBusy) return false;
+        if( _tailor.Pending is null || JobWorkspaceBusy || _emailBusy) return false;
         var previous=_tailor.Mode;
         var next=_tailor.Release();
         LogJobQueueActive();
@@ -2024,7 +1952,7 @@ public partial class MainWindow : Window {
     TaskCompletionSource<bool>? _extractReady;
 
     public async Task<EmailExtractor.Draft?> ExtractEmailWithGptAsync(string pasted, string emailUrl) {
-        if(_extractHolding || _emailInsideLoop || _emailBusy || _baselineProfileActive || _promptConversionActive) {
+        if(_extractHolding || _emailInsideLoop || _emailBusy || _baselineProfileActive) {
             PerfLog.Line("EMAIL extract-gpt-failed reason=busy");
             return null;
         }
@@ -2333,7 +2261,7 @@ public partial class MainWindow : Window {
     }
 
     void PauseQueue_Click(object sender,RoutedEventArgs e) {
-        if(_baselineProfileActive || _promptConversionActive || _emailInsideLoop) return;
+        if(_baselineProfileActive || _emailInsideLoop) return;
         if(_queue.State==QueueState.Paused) {
             _queue.Resume();
             QueueStatus.Text="Queue resumed.";
@@ -2355,7 +2283,7 @@ public partial class MainWindow : Window {
         // A captured BASELINE answer is already being saved. Stop must not cancel that write
         // or clear the job out from under it. Before that, Stop also stays with the job queue:
         // a profile rebuild is not a queued job.
-        if(_baselineFinalizing || _baselineProfileActive || _promptConversionActive || _emailInsideLoop) return;
+        if(_baselineFinalizing || _baselineProfileActive || _emailInsideLoop) return;
         var inFlight=_queue.Stop();
         DismissAnswerReady("queue stopped");
         _sendCancellation?.Cancel();
@@ -2379,7 +2307,7 @@ public partial class MainWindow : Window {
     }
 
     async void SkipJob_Click(object sender,RoutedEventArgs e) {
-        if(_baselineProfileActive || _promptConversionActive || _emailInsideLoop) return;
+        if(_baselineProfileActive || _emailInsideLoop) return;
         var skipped=_queue.SkipActive();
         if(skipped is null) return;
         _cooldownCancellation?.Cancel();
@@ -2424,7 +2352,7 @@ public partial class MainWindow : Window {
             }
             if(!ReferenceEquals(_interJobCancellation,cancellation)) return;
             if(await TryYieldTailorAsync()) return;
-            if(_baselineProfileActive || _promptConversionActive) return;
+            if(_baselineProfileActive) return;
             if(_queue.IsRunning && _queue.ActiveJobId is null && _activeJob is null) await AdvanceQueueAsync();
         } finally {
             if(ReferenceEquals(_interJobCancellation,cancellation)) _interJobWaiting=false;
@@ -2461,7 +2389,7 @@ public partial class MainWindow : Window {
     /// <summary>Moves to the next queued job. A job that cannot be prepared is failed and skipped.</summary>
     async Task AdvanceQueueAsync() {
         // A candidate-profile rebuild is one-off. Queued jobs wait until it has saved and Settings is shown.
-        if(_baselineProfileActive || _promptConversionActive) return;
+        if(_baselineProfileActive) return;
         if(await TryYieldTailorAsync()) return;
         // Depth tracks nested fail→advance while an outer AdvanceQueue awaits RunJobAsync.
         // Start() already refuses a second run while Running/Paused.
@@ -2543,7 +2471,7 @@ public partial class MainWindow : Window {
                 PerfLog.Line("REFUSED late response from a timed-out job while "+job.JobId+" is active");
                 return;
             case CaptureDecision.PromptEcho:
-                var expect=ResultCapture.IsBaseline(job.JobId) ? "a json code block" : "an HTML resume";
+                var expect=ResultCapture.IsBaseline(job.JobId) ? "a json code block" : "a JSON patch";
                 CaptureStatus.Text="That text is part of your own prompt, not ChatGPT's answer. " +
                     $"Make sure the answer contains {expect}" +
                     (source == "clipboard" ? $", then press {ChatCompletionWatcher.ShortcutText} again." : ".");
